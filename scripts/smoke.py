@@ -85,6 +85,18 @@ def main():
 
     request("/api/config", {"fill_seconds": 2})
     request("/api/command", {"action": "fill_on"})
+    # The machine must not move on the request: while the command is in
+    # flight the confirmed state is still OFF and only the target says ON.
+    s = wait_for(
+        lambda st: st["pending"] is not None
+        and st["controls"]["target"] is not None
+        and st["controls"]["target"]["fill"] == "ON",
+        "FILL command in flight",
+    )
+    check(
+        s["controls"]["fill"] == "OFF" and s["controls"]["last_result"] == "pending",
+        "confirmed FILL stays OFF until the ACK",
+    )
     wait_for(lambda st: st["fill"]["active"], "fill running")
     s = wait_for(
         lambda st: st["controls"]["fill"] == "ON" and st["controls"]["target"] is None,
@@ -110,6 +122,16 @@ def main():
     )
 
     request("/api/command", {"action": "srv_on"})
+    s = wait_for(
+        lambda st: st["pending"] is not None
+        and st["controls"]["target"] is not None
+        and st["controls"]["target"]["srv"] == "ON",
+        "SRV command in flight",
+    )
+    check(
+        s["controls"]["srv"] == "OFF" and s["controls"]["last_result"] == "pending",
+        "confirmed SRV stays OFF until the ACK",
+    )
     wait_for(lambda st: st["vehicle"]["state"]["srv"], "SRV on")
     s = wait_for(
         lambda st: st["actions"]["ign_pwr"]["enabled"]

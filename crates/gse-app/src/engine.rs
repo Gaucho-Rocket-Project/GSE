@@ -1498,6 +1498,10 @@ impl Engine {
             let mut st = self.shared.lock();
             st.pending = None;
             st.controls.target = None;
+            // The ACK is the confirmation point of the state machine: adopt
+            // the state the board acknowledged, even when a follow-up command
+            // (such as the reset-fill latch clear) is already in flight.
+            st.controls.state = ControlState::from_snapshot(&ack.state);
             st.controls.last_result = Some(if ack.result.is_ok() {
                 "acknowledged"
             } else {

@@ -90,9 +90,11 @@ States are `FILL OFF|ON`, `SRV OFF|ON` and `IGN SAFE|PWR`; the initial state is
 
 The confirmed state only moves when the vehicle **acknowledges**. Sending a
 command records a *target* (shown in the console as `→`) but never changes the
-confirmed state; a rejected command or an ACK timeout leaves the machine exactly
-where it was. The vehicle enforces the identical table for every command, so an
-unsafe transition cannot happen even if the console is bypassed.
+confirmed state, and the console keeps displaying that old state even if an
+earlier `STATE` frame already reports the servo moving during its settle time.
+A rejected command or an ACK timeout leaves the machine exactly where it was.
+The vehicle enforces the identical table for every command, so an unsafe
+transition cannot happen even if the console is bypassed.
 
 | Event | From | Result |
 |---|---|---|

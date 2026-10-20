@@ -295,9 +295,12 @@ Notes:
   the independent backstop.
 - The console exposes the machine at `/api/state` → `controls`
   (`fill`, `srv`, `ign`, `safe`, `ready`, `target`, `last_event`,
-  `last_result`). `fill`/`srv`/`ign` and `safe` always mirror the last vehicle
-  snapshot; `target` is the state the in-flight command will reach; `last_result`
-  is `pending`, then `acknowledged`, `rejected` or `timeout`.
+  `last_result`). `fill`/`srv`/`ign` and `safe` are the *confirmed* state: they
+  follow the last vehicle snapshot when no command is in flight, and are frozen
+  at the previous value until the in-flight command's ACK arrives (a `STATE`
+  frame reporting the servo moving during its settle time does not confirm the
+  transition). `target` is the state the in-flight command will reach;
+  `last_result` is `pending`, then `acknowledged`, `rejected` or `timeout`.
 
 ## Versioning
 

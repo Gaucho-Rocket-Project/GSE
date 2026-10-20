@@ -23,11 +23,14 @@ The script sets the fill time to 3 s so the whole scenario takes about five
 seconds, then:
 
 1. waits until both boards report `online` and the controls are `ready`,
-2. commands **FILL ON** and waits for the ACK,
+2. commands **FILL ON**, samples the machine while the command is in flight and
+   asserts that the confirmed state is still OFF with FILL ON only as a target,
+   then waits for the ACK,
 3. waits for the timed auto-close and for the fill sequence to be marked
    complete,
 4. checks that `ign_pwr` is still refused,
-5. commands **SRV ON** and checks that `ign_pwr` becomes enabled,
+5. commands **SRV ON**, makes the same in-flight assertion, then checks that
+   `ign_pwr` becomes enabled,
 6. commands **RESET CONTROLS** and checks that every control is back at
    OFF/SAFE and that the fill-sequence and E-STOP latches are cleared,
 7. with `--shutdown`, requests shutdown and greps the session log for
@@ -36,7 +39,9 @@ seconds, then:
 Every line is printed only when the state changes. `pending` is the moment a
 command is sent and the target appears (the confirmed state is untouched),
 `state` is a change in the confirmed state, `ack` is the ACK landing and the
-pending target disappearing.
+pending target disappearing. A `STATE` frame that reports the servo moving
+during its settle time is telemetry, not confirmation: the confirmed state and
+the console LEDs only change when the ACK arrives.
 
 ## Recorded run
 
@@ -45,25 +50,24 @@ Console `http://127.0.0.1:8798`, simulator with 10 ms radio latency,
 
 ```text
 GSE control-state trace
-  + 0.004s  state    FILL OFF · SRV OFF · IGN SAFE
+  + 0.003s  state    FILL OFF · SRV OFF · IGN SAFE
   initial  FILL=OFF SRV=OFF IGN=SAFE  (ready)
   action   FILL ON (3 s fill)
-  + 0.019s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL ON  · SRV OFF · IGN SAFE  [pending fill_on]
-  + 0.041s  state    FILL ON  · SRV OFF · IGN SAFE -> FILL ON  · SRV OFF · IGN SAFE  [pending fill_on]
-  + 0.412s  ack      FILL ON  · SRV OFF · IGN SAFE
-  + 3.417s  pending  FILL ON  · SRV OFF · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending fill_off]
-  + 3.451s  state    FILL OFF · SRV OFF · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending fill_off]
-  + 3.813s  ack      FILL OFF · SRV OFF · IGN SAFE
+  + 0.016s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL ON  · SRV OFF · IGN SAFE  [pending fill_on]
+  ack-gate confirmed FILL stayed OFF while the command was in flight
+  + 0.426s  ack      FILL ON  · SRV OFF · IGN SAFE
+  + 3.323s  pending  FILL ON  · SRV OFF · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending fill_off]
+  + 3.724s  ack      FILL OFF · SRV OFF · IGN SAFE
   gates    enabled: fill_on, srv_on, reset_controls, reset_fill, estop
   action   SRV ON
-  + 3.814s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL OFF · SRV ON  · IGN SAFE  [pending srv_on]
-  + 3.847s  state    FILL OFF · SRV ON  · IGN SAFE -> FILL OFF · SRV ON  · IGN SAFE  [pending srv_on]
-  + 4.221s  ack      FILL OFF · SRV ON  · IGN SAFE
+  + 3.738s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL OFF · SRV ON  · IGN SAFE  [pending srv_on]
+  ack-gate confirmed SRV stayed OFF while the command was in flight
+  + 4.140s  ack      FILL OFF · SRV ON  · IGN SAFE
   gates    IGN PWR is now enabled (SRV ON + completed fill)
   action   RESET CONTROLS
-  + 4.233s  pending  FILL OFF · SRV ON  · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending reset_controls]
-  + 4.267s  state    FILL OFF · SRV OFF · IGN SAFE  [pending reset_fill]
-  + 4.290s  ack      FILL OFF · SRV OFF · IGN SAFE
+  + 4.154s  pending  FILL OFF · SRV ON  · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending reset_controls]
+  + 4.188s  ack      FILL OFF · SRV OFF · IGN SAFE  [pending reset_fill]
+  + 4.211s  ack      FILL OFF · SRV OFF · IGN SAFE
   final    FILL=OFF SRV=OFF IGN=SAFE  (latches cleared)
   shutdown -> ALL SAFE
   verified ALL SAFE was acknowledged before exit
@@ -75,7 +79,7 @@ TRACE OK
 | Requirement | Where it shows up |
 |---|---|
 | everything starts OFF/SAFE | first line, `ready` after both boards answered the handshake |
-| a control only changes after the ACK | `pending` line keeps `FILL OFF` confirmed with `-> FILL ON` as target; the confirmed `FILL ON` appears on the `ack` line ~370 ms later |
+| a control only changes after the ACK | `pending` line keeps `FILL OFF` confirmed with `-> FILL ON` as target; `ack-gate confirmed FILL stayed OFF while the command was in flight`; the confirmed `FILL ON` appears on the `ack` line ~390 ms later, even though the vehicle had already reported the valve open |
 | FILL auto-closes at the configured time | second `pending`/`ack` pair at ~3.4 s, `fill_off` issued by the app, not the operator |
 | IGN stays greyed until the fill sequence is complete *and* SRV is ON | `gates enabled:` after the fill omits `ign_pwr`; it appears only after the `srv_on` ACK |
 | no unsafe transition is reachable | FILL/SRV were never both ON; the vehicle would reject the command with `RejectedSafety` even if the console were bypassed |

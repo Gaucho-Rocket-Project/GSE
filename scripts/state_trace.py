@@ -83,9 +83,13 @@ class Trace:
         tag = "state"
         if previous is not None:
             was_pending = previous[5]
-            if pending and not was_pending:
-                tag = "pending"
-            elif not pending and was_pending:
+            now_pending = pending["action"] if pending else None
+            if now_pending and now_pending != was_pending:
+                # A new command is in flight. If another one was already
+                # pending, this transition is actually the previous ACK
+                # landing before the follow-up (e.g. reset_fill) was sent.
+                tag = "ack" if was_pending else "pending"
+            elif not now_pending and was_pending:
                 tag = "ack"
         pending_text = f"  [pending {pending['action']}]" if pending else ""
         print(
@@ -143,6 +147,15 @@ def main():
     print("  action   FILL ON (3 s fill)")
     request("/api/command", {"action": "fill_on"})
     state = trace.sample(
+        "FILL ON command in flight",
+        2,
+        lambda s: s["pending"] is not None,
+    )
+    assert state["controls"]["fill"] == "OFF", "confirmed state moved before the ACK"
+    assert state["controls"]["target"] and state["controls"]["target"]["fill"] == "ON"
+    print("  ack-gate confirmed FILL stayed OFF while the command was in flight")
+
+    state = trace.sample(
         "FILL ON acknowledgement",
         5,
         lambda s: s["controls"]["fill"] == "ON" and not s["pending"],
@@ -162,6 +175,15 @@ def main():
 
     print("  action   SRV ON")
     request("/api/command", {"action": "srv_on"})
+    state = trace.sample(
+        "SRV ON command in flight",
+        2,
+        lambda s: s["pending"] is not None,
+    )
+    assert state["controls"]["srv"] == "OFF", "confirmed state moved before the ACK"
+    assert state["controls"]["target"] and state["controls"]["target"]["srv"] == "ON"
+    print("  ack-gate confirmed SRV stayed OFF while the command was in flight")
+
     state = trace.sample(
         "SRV ON acknowledgement",
         5,

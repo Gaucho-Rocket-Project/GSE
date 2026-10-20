@@ -360,10 +360,12 @@ impl AppState {
             controls_ready: self.controls.ready,
             state: self.vehicle.state,
         });
-        // The machine follows the vehicle, never the operator's intent: the
-        // state only moves after the board has acknowledged the command.
-        self.controls.state = ControlState::from_snapshot(&self.vehicle.state);
+        // The machine follows the vehicle, never the operator's intent, and
+        // it only moves once the command has been acknowledged. A STATE frame
+        // can already report the output moving during the settle time; until
+        // the ACK lands that is the *target*, not the confirmed state.
         if self.pending.is_none() {
+            self.controls.state = ControlState::from_snapshot(&self.vehicle.state);
             self.controls.target = None;
         }
         let snap = self.vehicle.state;
@@ -1015,6 +1017,46 @@ mod tests {
         );
         assert_eq!(st.controls.state.srv.label(), "ON");
         assert!(!st.actions.fill_on.enabled);
+    }
+
+    #[test]
+    fn confirmed_state_waits_for_the_ack() {
+        let mut st = state();
+        st.controls.ready = true;
+        st.refresh();
+        assert_eq!(st.controls.state, ControlState::SAFE);
+
+        // The board has already driven the valve open and reports it, but the
+        // command is still waiting for its ACK: the machine records only the
+        // target and keeps the confirmed state at OFF.
+        st.vehicle.state = StateSnapshot {
+            flags: flags::FILL_OPEN,
+            ..StateSnapshot::default()
+        };
+        st.controls.target = Some(ControlState {
+            fill: gse_proto::FillState::On,
+            ..ControlState::SAFE
+        });
+        st.pending = Some(PendingInfo {
+            cmd_id: 1,
+            action: "fill_on".into(),
+            label: "FILL ON".into(),
+            attempts: 1,
+            sent_epoch_ms: 0,
+            timeout_ms: 800,
+        });
+        st.refresh();
+        assert_eq!(st.controls.state.fill.label(), "OFF");
+        assert_eq!(st.controls.target.unwrap().fill.label(), "ON");
+        // The gates already see the true output, so nothing unsafe is offered.
+        assert!(!st.actions.srv_on.enabled);
+        assert!(!st.actions.fill_on.enabled);
+
+        // ACK: the command is no longer pending and the transition is confirmed.
+        st.pending = None;
+        st.refresh();
+        assert_eq!(st.controls.state.fill.label(), "ON");
+        assert!(st.controls.target.is_none());
     }
 
     #[test]
