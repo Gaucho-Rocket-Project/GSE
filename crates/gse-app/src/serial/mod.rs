@@ -3,7 +3,7 @@
 //! Implemented with direct OS APIs so the app has **zero crate dependencies**
 //! and can be built offline on all three supported operating systems:
 //!
-//! * Linux / macOS: `open(2)` + `termios` + `poll(2)`
+//! * Linux / macOS: `termios` + `poll(2)` on a descriptor opened by `std::fs`
 //! * Windows: `CreateFileA` + `SetCommState` + `ReadFile` / `WriteFile`
 //!
 //! The NUCLEO-H753ZI ground board exposes its ST-LINK virtual COM port

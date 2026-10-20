@@ -1,9 +1,10 @@
 //! POSIX serial backend (Linux and macOS) using `termios` + `poll`.
 #![allow(dead_code)]
 
-use std::ffi::CString;
 use std::io;
-use std::os::raw::{c_char, c_int, c_ulong, c_void};
+use std::os::fd::IntoRawFd;
+use std::os::raw::{c_int, c_ulong, c_void};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -56,7 +57,6 @@ mod plat {
 }
 
 const MACOS: bool = cfg!(any(target_os = "macos", feature = "check-macos"));
-const O_RDWR: c_int = 2;
 const TCSANOW: c_int = 0;
 const TCIFLUSH: c_int = 0;
 const CLOCAL: CFlag = 0x800;
@@ -81,6 +81,11 @@ struct PollFd {
 #[repr(C, align(8))]
 struct Termios([u8; 256]);
 
+// Do not declare `open(2)` here. Its C prototype is variadic and recent rustc
+// rejects a mismatched declaration of a symbol the standard library itself uses
+// (`invalid_runtime_symbol_definitions`), so the device node is opened through
+// `std::fs::OpenOptions` with the flags we need and the raw descriptor is taken
+// over for `termios`/`poll`.
 extern "C" {
     fn tcgetattr(fd: c_int, termios_p: *mut c_void) -> c_int;
     fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const c_void) -> c_int;
@@ -88,7 +93,6 @@ extern "C" {
     fn cfsetispeed(termios_p: *mut c_void, speed: plat::Speed) -> c_int;
     fn cfsetospeed(termios_p: *mut c_void, speed: plat::Speed) -> c_int;
     fn tcflush(fd: c_int, queue_selector: c_int) -> c_int;
-    fn open(path: *const c_char, flags: c_int) -> c_int;
     fn close(fd: c_int) -> c_int;
     fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
@@ -116,13 +120,12 @@ pub struct Port {
 
 impl Port {
     pub fn open(path: &str, baud: u32) -> io::Result<Self> {
-        let cpath = CString::new(path)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
-        let flags = O_RDWR | plat::O_NOCTTY | plat::O_NONBLOCK | plat::O_CLOEXEC;
-        let fd = unsafe { open(cpath.as_ptr(), flags) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(plat::O_NOCTTY | plat::O_NONBLOCK | plat::O_CLOEXEC)
+            .open(path)?;
+        let fd = file.into_raw_fd();
         let port = Port { fd };
         if let Err(e) = port.configure(baud) {
             drop(port);
