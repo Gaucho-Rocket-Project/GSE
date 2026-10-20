@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  formatting:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      - run: >-
+          rustfmt --edition 2021 --check
+          firmware/stm32h753/src/lib.rs
+          firmware/stm32h753/src/hw.rs
+          firmware/stm32h753/src/bin/ground.rs
+          firmware/stm32h753/src/bin/vehicle.rs
+          firmware/stm32h753/build.rs
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Type-check the serial backends for the other supported operating
+      # systems on this Linux runner (they are cfg-gated per host OS).
+      - run: cargo clippy -p gse-app --all-targets --features check-windows -- -D warnings
+      - run: cargo clippy -p gse-app --all-targets --features check-macos -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The workspace has no doctests; every example lives in a real test.
+      - run: cargo test --workspace --lib --bins --tests
+
+  smoke:
+    name: end-to-end smoke test
+    runs-on: ubuntu-latest
+    needs: [clippy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: ./scripts/smoke.sh
+
+  firmware:
+    name: firmware (thumbv7em)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/stm32h753
+      # Run from inside the package so `firmware/stm32h753/.cargo/config.toml`
+      # supplies the Cortex-M target triple and the `-Tlink.x` link argument.
+      - name: Build ground and vehicle firmware
+        working-directory: firmware/stm32h753
+        run: cargo build --release --bins

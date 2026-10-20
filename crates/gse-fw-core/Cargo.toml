@@ -1,0 +1,16 @@
+[package]
+name = "gse-fw-core"
+description = "Platform independent vehicle/ground logic for the GSE NUCLEO-H753ZI firmware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+gse-proto = { workspace = true }
+
+[features]
+default = []
+# Provides an in-memory hardware mock (used by the desktop simulator and tests).
+mock = []

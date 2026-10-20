@@ -1,0 +1,22 @@
+[package]
+name = "gse-app"
+description = "GSE ground station: serial link, safety supervisor, local web GUI"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gse-app"
+path = "src/main.rs"
+
+[dependencies]
+gse-proto = { workspace = true }
+
+[features]
+default = []
+# Type-check the Windows serial backend on non-Windows hosts (cargo check only).
+check-windows = []
+# Type-check the macOS termios branch on non-macOS hosts.
+check-macos = []

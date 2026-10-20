@@ -1,0 +1,34 @@
+# Standalone package: the host workspace excludes `firmware/` on purpose so
+# that `cargo test` on a laptop never tries to build for Cortex-M.
+[package]
+name = "gse-stm32h753"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Board support for the GSE NUCLEO-H753ZI ground and vehicle boards"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+name = "gse_board"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gse-ground"
+path = "src/bin/ground.rs"
+
+[[bin]]
+name = "gse-vehicle"
+path = "src/bin/vehicle.rs"
+
+[dependencies]
+gse-proto = { path = "../../crates/gse-proto", default-features = false }
+gse-fw-core = { path = "../../crates/gse-fw-core", default-features = false }
+cortex-m-rt = "0.7"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+debug = true
+panic = "abort"

@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/gse-proto",
+    "crates/gse-fw-core",
+    "crates/gse-app",
+    "crates/gse-sim",
+    "crates/gse-fw-check",
+]
+exclude = ["firmware"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+authors = ["Gaucho Rocket Project"]
+
+[workspace.dependencies]
+gse-proto = { path = "crates/gse-proto", default-features = false }
+gse-fw-core = { path = "crates/gse-fw-core", default-features = false }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+strip = true
