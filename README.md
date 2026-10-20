@@ -319,7 +319,8 @@ scripts/state_trace.py http://127.0.0.1:8765 <token> [--shutdown]
 
 It prints one line per transition — `pending`, `state`, `ack` — with the
 confirmed state and the in-flight target, then verifies that RESET CONTROLS
-returns to OFF/SAFE with the latches cleared.
+returns to OFF/SAFE with the latches cleared. A recorded run is in
+[`docs/state-machine-trace.md`](docs/state-machine-trace.md).
 
 ## Troubleshooting
 
