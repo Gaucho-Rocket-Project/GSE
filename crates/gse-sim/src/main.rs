@@ -445,20 +445,31 @@ fn run(opts: Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Convert real elapsed time into whole simulated milliseconds, carrying the
+/// sub-millisecond remainder into the next call.
+///
+/// The mock boards run on an integer millisecond clock. Truncating every loop
+/// iteration (and re-basing on the start of each step) threw the remainder
+/// away, so the simulated clock ran several percent slow: a 60 s fill reached
+/// the host's deadline with only ~56 s elapsed on the board, and the vehicle
+/// rightly rejected the FILL OFF as an aborted sequence.
+fn take_millis(elapsed: Duration, carry: &mut Duration) -> u32 {
+    let total = elapsed + *carry;
+    let ms = total.as_millis() as u32;
+    *carry = total - Duration::from_millis(ms as u64);
+    ms
+}
+
 fn serve_client(boards: &mut Boards, mut stream: TcpStream, _id: u32) -> io::Result<(u64, u64)> {
     stream.set_nodelay(true)?;
     stream.set_nonblocking(true)?;
     let mut sim = Sim::new(boards, &mut stream);
     let mut last = Instant::now();
+    let mut carry = Duration::ZERO;
     loop {
         let step_start = Instant::now();
-        let elapsed = step_start.duration_since(last);
-        let elapsed_ms = elapsed.as_millis() as u32;
-        let advance = if elapsed_ms == 0 {
-            TICK_MS as u32
-        } else {
-            elapsed_ms
-        };
+        let advance = take_millis(step_start.duration_since(last), &mut carry);
+        last = step_start;
         match sim.step(advance) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -470,7 +481,6 @@ fn serve_client(boards: &mut Boards, mut stream: TcpStream, _id: u32) -> io::Res
             }
             Err(e) => return Err(e),
         }
-        last = step_start;
         let spent = step_start.elapsed();
         if spent < Duration::from_millis(TICK_MS) {
             thread::sleep(Duration::from_millis(TICK_MS) - spent);
@@ -514,6 +524,28 @@ mod tests {
     fn bad_options_rejected() {
         assert!(Options::parse(["--nope".to_string()]).is_err());
         assert!(Options::parse(["--latency".to_string(), "soon".to_string()]).is_err());
+    }
+
+    #[test]
+    fn simulated_clock_does_not_drift() {
+        // A loop that takes 2.4 ms per iteration must advance 2400 ms over
+        // 1000 iterations. Truncating each one (the old behaviour) gave 2000 ms.
+        let mut carry = Duration::ZERO;
+        let mut total = 0u32;
+        for _ in 0..1_000 {
+            total += take_millis(Duration::from_micros(2_400), &mut carry);
+        }
+        assert_eq!(total, 2_400);
+
+        // Sub-millisecond loops still make progress instead of starving the
+        // clock forever.
+        let mut carry = Duration::ZERO;
+        let mut total = 0u32;
+        for _ in 0..1_000 {
+            total += take_millis(Duration::from_micros(300), &mut carry);
+        }
+        assert_eq!(total, 300);
+        assert!(carry < Duration::from_millis(1));
     }
 
     #[test]

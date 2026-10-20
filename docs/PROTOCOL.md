@@ -231,11 +231,17 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 ### Fill timer, enforced twice
 
 - On `FILL ON` the host sends `arg_s = configured fill seconds` (1…600, default
-  60) and arms its own deadline. At the deadline it sends `FILL OFF` with the
-  `AUTO` flag and notifies the operator in the log and with a toast.
-- The vehicle runs an independent timer from the moment the valve opens and
-  closes it with `FILL_AUTO_OFF`/`FillAutoOff` even if the host disappears. The
-  host's auto-off is therefore a second, not the only, line of defence.
+  60). The vehicle runs the authoritative timer from the moment the valve opens
+  and reports the remaining time in every `STATE` frame.
+- The board's countdown reaching zero is what triggers the host's automatic
+  `FILL OFF` (with the `AUTO` flag); the operator is notified in the log and
+  with a toast. The host's own deadline is only a backstop with a 5 s grace,
+  because the laptop clock and the board's SysTick are independent: cutting the
+  fill on host time can reach the board *before* the configured duration and
+  abort a good sequence.
+- The vehicle also closes the valve itself with `FILL_AUTO_OFF`/`FillAutoOff`
+  two seconds after its deadline even if the host disappears, so the automatic
+  close does not depend on the link.
 - A fill cycle counts as complete when the valve stayed open for the full
   duration (500 ms tolerance), which sets `FILL_SEQ_COMPLETE` and unlocks IGN.
 - Closing early with any other command sets `FILL_SEQ_ABORTED`; the operator

@@ -40,6 +40,10 @@ const PROBE_TIMEOUT_MS: u64 = 700;
 const SHUTDOWN_TIMEOUT_MS: u64 = 2_500;
 /// How long a pending command may finish before shutdown cancels it.
 const SHUTDOWN_CANCEL_AFTER_MS: u64 = 500;
+/// Grace on the host's own fill deadline before the automatic FILL OFF is sent
+/// anyway. The board owns the fill timer (see [`auto_off_due`]); this only
+/// matters if its countdown never reaches zero.
+const AUTO_OFF_HOST_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserAction {
@@ -1134,9 +1138,7 @@ impl Engine {
         if !fill_open || !vehicle_online || pending || auto_off_sent || !timer_active {
             return;
         }
-        let deadline_reached =
-            self.fill_deadline.map(|d| now >= d).unwrap_or(false) || remaining == 0;
-        if !deadline_reached {
+        if !auto_off_due(remaining, self.fill_deadline, now) {
             return;
         }
         self.auto_off_sent = true;
@@ -1524,18 +1526,21 @@ impl Engine {
             );
             match action {
                 Some(UserAction::FillOn) => {
-                    let duration = if ack.state.fill_duration_s > 0 {
-                        ack.state.fill_duration_s as u32 * 1000
+                    // The ACK carries the board's own countdown, which already
+                    // excludes the settle time before the valve reported open.
+                    // Prefer it over the nominal duration so the host deadline
+                    // matches the timer that decides completion.
+                    let duration = if ack.state.fill_remaining_ms > 0 {
+                        ack.state.fill_remaining_ms as u64
                     } else {
-                        ack.state.fill_remaining_ms
+                        ack.state.fill_duration_s as u64 * 1000
                     };
-                    self.fill_deadline =
-                        Some(Instant::now() + Duration::from_millis(duration as u64));
+                    self.fill_deadline = Some(Instant::now() + Duration::from_millis(duration));
                     self.fill_started = Some(Instant::now());
                     self.auto_off_sent = false;
                     {
                         let mut st = self.shared.lock();
-                        st.fill.ends_at_epoch_ms = clock::unix_ms() + duration as u64;
+                        st.fill.ends_at_epoch_ms = clock::unix_ms() + duration;
                         st.fill.duration_s = ack.state.fill_duration_s;
                         st.fill.auto_off_pending = false;
                     }
@@ -2088,6 +2093,24 @@ impl Engine {
     }
 }
 
+/// True when the automatic FILL OFF is due.
+///
+/// The board owns the fill timer: its countdown decides whether the sequence
+/// counts as complete, so expiry is taken from the vehicle snapshot. The host
+/// deadline is only a backstop and is given a grace margin, because the laptop
+/// clock and the board's SysTick are independent - at 0.5 s in 60 s of skew a
+/// host-timed cut would reach the board *before* the configured duration and
+/// abort a perfectly good fill. A lost STATE frame is covered the same way, and
+/// the vehicle's own fallback closes the valve two seconds after its deadline.
+fn auto_off_due(vehicle_remaining_ms: u32, host_deadline: Option<Instant>, now: Instant) -> bool {
+    if vehicle_remaining_ms == 0 {
+        return true;
+    }
+    host_deadline
+        .map(|deadline| now >= deadline + AUTO_OFF_HOST_GRACE)
+        .unwrap_or(false)
+}
+
 /// Probe a freshly opened port by sending a PING to `target` and waiting for a
 /// valid frame from that endpoint. Returns the link if the board answered.
 fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<Box<dyn ByteLink>> {
@@ -2181,6 +2204,32 @@ mod tests {
         assert_eq!(fill.control, Control::Fill);
         assert_eq!(fill.action, ACTION_ON);
         assert_eq!(fill.arg_s, 42);
+    }
+
+    #[test]
+    fn auto_fill_off_follows_the_board_timer() {
+        let now = Instant::now();
+
+        // The host's own deadline has passed, but the board still reports time
+        // left: the sequence must not be cut short. This is the drift that
+        // aborted a 60 s fill after ~56 s of board time.
+        assert!(!auto_off_due(5_000, Some(now), now));
+        assert!(!auto_off_due(
+            5_000,
+            Some(now - Duration::from_secs(4)),
+            now
+        ));
+
+        // The board's own countdown reaching zero is the trigger.
+        assert!(auto_off_due(0, Some(now), now));
+        assert!(auto_off_due(0, None, now));
+
+        // Backstop only: a host deadline well past its grace still sends FILL
+        // OFF, so a stuck board timer cannot leave the valve open forever.
+        assert!(auto_off_due(5_000, Some(now - Duration::from_secs(6)), now));
+
+        // No fill running: nothing to do.
+        assert!(!auto_off_due(5_000, None, now));
     }
 
     #[test]

@@ -56,7 +56,7 @@ Every gate is evaluated in the app (buttons greyed out, API/keyboard refused)
 | # | Rule | Where enforced |
 |---|------|----------------|
 | 1 | FILL and SRV can never be ON at the same time | `safety.rs` gates; `vehicle.rs` rejects the command |
-| 2 | FILL closes automatically after the configured time (default 60 s) and the operator is notified | host timer in `engine.rs` sends `FILL OFF` with `AUTO`; the vehicle has its own independent timer and emits `FillAutoOff` |
+| 2 | FILL closes automatically after the configured time (default 60 s) and the operator is notified | the board's countdown (reported in `STATE`) triggers `FILL OFF` with `AUTO` in `engine.rs`; the vehicle also closes it itself 2 s after its deadline and emits `FillAutoOff` |
 | 3 | IGN PWR is impossible until the fill sequence has completed | `safety.rs` (greyed out) + vehicle state machine |
 | 4 | IGN PWR is impossible unless SRV is ON | `safety.rs` (greyed out) + vehicle state machine |
 | 5 | Losing the link forces all outputs safe after 5 s and inhibits ignition | vehicle `check_link` and `LINK_LOSS_SAFE` |
