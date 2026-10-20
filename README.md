@@ -311,6 +311,16 @@ resets the controls, reconnects with SRV ON to prove the startup handshake
 forces OFF/SAFE, then shuts down with an output active and checks in the session
 log that ALL SAFE was commanded and acknowledged.
 
+To watch the machine itself, against a console you already have running:
+
+```bash
+scripts/state_trace.py http://127.0.0.1:8765 <token> [--shutdown]
+```
+
+It prints one line per transition — `pending`, `state`, `ack` — with the
+confirmed state and the in-flight target, then verifies that RESET CONTROLS
+returns to OFF/SAFE with the latches cleared.
+
 ## Troubleshooting
 
 | Symptom | Check |
