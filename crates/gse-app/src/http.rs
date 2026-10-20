@@ -67,10 +67,7 @@ pub fn bind(host: &str, port: u16) -> io::Result<(TcpListener, SocketAddr)> {
             port.saturating_add(offset)
         };
         let addr = format!("{host}:{candidate}");
-        let resolved: Vec<SocketAddr> = match addr.to_socket_addrs() {
-            Ok(it) => it.collect(),
-            Err(e) => return Err(e),
-        };
+        let resolved: Vec<SocketAddr> = addr.to_socket_addrs()?.collect();
         for sock in resolved {
             match TcpListener::bind(sock) {
                 Ok(listener) => {
@@ -82,9 +79,8 @@ pub fn bind(host: &str, port: u16) -> io::Result<(TcpListener, SocketAddr)> {
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::AddrInUse, "could not bind any port")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::AddrInUse, "could not bind any port")))
 }
 
 pub fn url_for(addr: SocketAddr, host: &str) -> String {
@@ -101,31 +97,24 @@ pub fn url_for(addr: SocketAddr, host: &str) -> String {
 }
 
 /// Accept loop; call this on a dedicated thread.
-pub fn serve(
-    listener: TcpListener,
-    shared: Arc<Shared>,
-    requests: Sender<Request>,
-    token: String,
-    verbose: bool,
-) {
+pub fn serve(listener: TcpListener, shared: Arc<Shared>, requests: Sender<Request>) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let shared = Arc::clone(&shared);
                 let requests = requests.clone();
-                let token = token.clone();
                 let _ = thread::Builder::new()
                     .name("gse-http-conn".to_string())
                     .spawn(move || {
-                        if let Err(e) = handle_connection(stream, &shared, &requests, &token, verbose) {
-                            if verbose {
+                        if let Err(e) = handle_connection(stream, &shared, &requests) {
+                            if shared.verbose {
                                 eprintln!("[gse] HTTP connection error: {e}");
                             }
                         }
                     });
             }
             Err(e) => {
-                if verbose {
+                if shared.verbose {
                     eprintln!("[gse] accept error: {e}");
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -138,16 +127,22 @@ fn handle_connection(
     mut stream: TcpStream,
     shared: &Arc<Shared>,
     requests: &Sender<Request>,
-    token: &str,
-    verbose: bool,
 ) -> io::Result<()> {
+    let token = shared.token.as_str();
+    let verbose = shared.verbose;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
     stream.set_nodelay(true).ok();
     let request = match read_request(&mut stream) {
         Ok(req) => req,
         Err(e) => {
-            let _ = write_response(&mut stream, 400, &[("Content-Type", "text/plain".into())], e.to_string().as_bytes(), false);
+            let _ = write_response(
+                &mut stream,
+                400,
+                &[("Content-Type", "text/plain".into())],
+                e.to_string().as_bytes(),
+                false,
+            );
             return Ok(());
         }
     };
@@ -207,7 +202,11 @@ fn handle_connection(
             false,
         ),
         ("GET", "/api/health") => {
-            write_json(&mut stream, 200, "{\"ok\":true}")
+            let body = format!(
+                "{{\"ok\":true,\"subscribers\":{}}}",
+                shared.events.subscriber_count()
+            );
+            write_json(&mut stream, 200, &body)
         }
         ("GET", "/api/state") => {
             let body = shared.snapshot();
@@ -292,7 +291,11 @@ fn handle_connection(
                     let _ = requests.send(Request::Action(action));
                     write_json(&mut stream, 200, "{\"ok\":true}")
                 }
-                Err(e) => write_json(&mut stream, 400, &format!("{{\"error\":{}}}", json::quoted(&e))),
+                Err(e) => write_json(
+                    &mut stream,
+                    400,
+                    &format!("{{\"error\":{}}}", json::quoted(&e)),
+                ),
             }
         }
         ("POST", "/api/config") => {
@@ -304,7 +307,11 @@ fn handle_connection(
                     let _ = requests.send(Request::SetConfig(patch));
                     write_json(&mut stream, 200, "{\"ok\":true}")
                 }
-                Err(e) => write_json(&mut stream, 400, &format!("{{\"error\":{}}}", json::quoted(&e))),
+                Err(e) => write_json(
+                    &mut stream,
+                    400,
+                    &format!("{{\"error\":{}}}", json::quoted(&e)),
+                ),
             }
         }
         ("POST", "/api/shortcuts") => {
@@ -321,7 +328,11 @@ fn handle_connection(
                     write_json(&mut stream, 200, "{\"ok\":true}")
                 }
                 Ok(None) => write_json(&mut stream, 200, "{\"ok\":true}"),
-                Err(e) => write_json(&mut stream, 400, &format!("{{\"error\":{}}}", json::quoted(&e))),
+                Err(e) => write_json(
+                    &mut stream,
+                    400,
+                    &format!("{{\"error\":{}}}", json::quoted(&e)),
+                ),
             }
         }
         ("POST", "/api/connect") => {
@@ -344,6 +355,7 @@ fn handle_connection(
             }
             write_json(&mut stream, 200, "{\"ok\":true,\"stopping\":true}")?;
             let _ = requests.send(Request::Shutdown);
+            crate::signals::request();
             Ok(())
         }
         ("POST", "/api/log/clear") => {
@@ -376,7 +388,11 @@ fn handle_connection(
 }
 
 fn forbidden(stream: &mut TcpStream) -> io::Result<()> {
-    write_json(stream, 403, "{\"error\":\"invalid or missing session token\"}")
+    write_json(
+        stream,
+        403,
+        "{\"error\":\"invalid or missing session token\"}",
+    )
 }
 
 fn authorized(request: &HttpRequest, token: &str) -> bool {
@@ -413,9 +429,8 @@ fn read_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
         }
     }
 
-    let head = std::str::from_utf8(&data[..header_end]).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "headers are not valid UTF-8")
-    })?;
+    let head = std::str::from_utf8(&data[..header_end])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "headers are not valid UTF-8"))?;
     let mut lines = head.split("\r\n");
     let request_line = lines
         .next()
@@ -424,10 +439,7 @@ fn read_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
     if method.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "missing method",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "missing method"));
     }
     let (path, query_string) = match target.split_once('?') {
         Some((p, q)) => (p.to_string(), q.to_string()),
@@ -561,7 +573,9 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
         patch.port = Some(port.trim().to_string());
     }
     if let Some(v) = body.get("baud") {
-        let baud = v.as_i64().ok_or_else(|| "baud must be a number".to_string())? as u32;
+        let baud = v
+            .as_i64()
+            .ok_or_else(|| "baud must be a number".to_string())? as u32;
         if !BAUDS.contains(&baud) {
             return Err(format!("unsupported baud rate {baud}"));
         }
@@ -582,16 +596,9 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
     Ok(patch)
 }
 
-fn parse_shortcut(
-    request: &HttpRequest,
-    shared: &Arc<Shared>,
-) -> Result<Option<Request>, String> {
+fn parse_shortcut(request: &HttpRequest, shared: &Arc<Shared>) -> Result<Option<Request>, String> {
     let body = request.json_body()?;
-    if body
-        .get("reset")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
+    if body.get("reset").and_then(Value::as_bool).unwrap_or(false) {
         return Ok(Some(Request::ResetShortcuts));
     }
     let action = body
@@ -693,7 +700,10 @@ fn handle_sse(mut stream: TcpStream, shared: &Arc<Shared>) -> io::Result<()> {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 if stream
-                    .write_all(format!(": keepalive {:?}\n\n", clock::iso8601_utc(clock::unix_ms())).as_bytes())
+                    .write_all(
+                        format!(": keepalive {:?}\n\n", clock::iso8601_utc(clock::unix_ms()))
+                            .as_bytes(),
+                    )
                     .is_err()
                 {
                     break;
@@ -741,6 +751,8 @@ mod tests {
         let mut r = request("POST", "/api/command");
         r.body = br#"{"action":"fill_on"}"#.to_vec();
         assert_eq!(parse_action(&r).unwrap(), UserAction::FillOn);
+        r.body = br#"{"action":"reset_controls"}"#.to_vec();
+        assert_eq!(parse_action(&r).unwrap(), UserAction::ResetControls);
         r.body = br#"{"action":"nope"}"#.to_vec();
         assert!(parse_action(&r).is_err());
     }
@@ -765,7 +777,7 @@ mod tests {
         r.headers
             .push(("x-gse-token".to_string(), token.to_string()));
         assert!(authorized(&r, token));
-        let mut r = request("GET", "/api/events?token=abc123");
+        let r = request("GET", "/api/events?token=abc123");
         assert!(authorized(&r, token));
         let r = request("GET", "/api/events?token=nope");
         assert!(!authorized(&r, token));

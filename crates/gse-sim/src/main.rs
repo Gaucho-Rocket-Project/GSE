@@ -233,11 +233,35 @@ impl Radio {
     }
 }
 
-/// One simulated pair of boards for one host connection.
-struct Sim<'a> {
+/// The two boards and the radio between them. These outlive any single host
+/// connection: unplugging the laptop's USB cable does not reboot the flight
+/// hardware, so the simulator must not forget the vehicle state either.
+struct Boards {
     ground: Ground<MockGround>,
     vehicle: Vehicle<MockVehicle>,
     radio: Radio,
+}
+
+impl Boards {
+    fn new(config: RadioConfig, seed: u32) -> Self {
+        Boards {
+            ground: Ground::new(MockGround::default()),
+            vehicle: Vehicle::new(MockVehicle::default()),
+            radio: Radio::new(config, seed),
+        }
+    }
+
+    /// Let both boards run for `ms` without a host attached, so link-loss
+    /// failsafes and timers behave as they do on real hardware.
+    fn advance(&mut self, ms: u32) {
+        self.ground.hal_mut().advance(ms);
+        self.vehicle.hal_mut().advance(ms);
+    }
+}
+
+/// One host connection attached to the persistent [`Boards`].
+struct Sim<'a> {
+    boards: &'a mut Boards,
     stream: &'a mut TcpStream,
     pending_out: Vec<u8>,
     bytes_from_host: u64,
@@ -245,11 +269,9 @@ struct Sim<'a> {
 }
 
 impl<'a> Sim<'a> {
-    fn new(stream: &'a mut TcpStream, config: RadioConfig, seed: u32) -> Self {
+    fn new(boards: &'a mut Boards, stream: &'a mut TcpStream) -> Self {
         Sim {
-            ground: Ground::new(MockGround::default()),
-            vehicle: Vehicle::new(MockVehicle::default()),
-            radio: Radio::new(config, seed),
+            boards,
             stream,
             pending_out: Vec::new(),
             bytes_from_host: 0,
@@ -258,9 +280,9 @@ impl<'a> Sim<'a> {
     }
 
     fn step(&mut self, elapsed_ms: u32) -> io::Result<()> {
-        let ground_hal = self.ground.hal_mut();
+        let ground_hal = self.boards.ground.hal_mut();
         ground_hal.advance(elapsed_ms);
-        self.vehicle.hal_mut().advance(elapsed_ms);
+        self.boards.vehicle.hal_mut().advance(elapsed_ms);
 
         // USB serial: host -> ground board.
         let mut buf = [0u8; 512];
@@ -274,7 +296,7 @@ impl<'a> Sim<'a> {
                 }
                 Ok(n) => {
                     self.bytes_from_host = self.bytes_from_host.wrapping_add(n as u64);
-                    self.ground.hal_mut().feed_bytes_to_usb(&buf[..n]);
+                    self.boards.ground.hal_mut().feed_bytes_to_usb(&buf[..n]);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -283,24 +305,28 @@ impl<'a> Sim<'a> {
         }
 
         // Ground bridge: host frames -> radio.
-        self.ground.poll();
-        let radio_out = std::mem::take(&mut self.ground.hal_mut().radio_out);
+        self.boards.ground.poll();
+        let radio_out = std::mem::take(&mut self.boards.ground.hal_mut().radio_out);
         let now = Instant::now();
-        self.radio.transmit(Dest::ToVehicle, radio_out, now);
-        let ground_hal = self.ground.hal_mut();
-        self.radio.deliver(now, ground_hal, self.vehicle.hal_mut());
+        self.boards.radio.transmit(Dest::ToVehicle, radio_out, now);
+        let ground_hal = self.boards.ground.hal_mut();
+        self.boards
+            .radio
+            .deliver(now, ground_hal, self.boards.vehicle.hal_mut());
 
         // Vehicle logic: commands in, acks/state out.
-        self.vehicle.poll();
-        let radio_out = std::mem::take(&mut self.vehicle.hal_mut().radio_out);
+        self.boards.vehicle.poll();
+        let radio_out = std::mem::take(&mut self.boards.vehicle.hal_mut().radio_out);
         let now = Instant::now();
-        self.radio.transmit(Dest::ToGround, radio_out, now);
-        let ground_hal = self.ground.hal_mut();
-        self.radio.deliver(now, ground_hal, self.vehicle.hal_mut());
+        self.boards.radio.transmit(Dest::ToGround, radio_out, now);
+        let ground_hal = self.boards.ground.hal_mut();
+        self.boards
+            .radio
+            .deliver(now, ground_hal, self.boards.vehicle.hal_mut());
 
         // Ground bridge again so the radio -> USB path sees what just arrived.
-        self.ground.poll();
-        let usb_out = std::mem::take(&mut self.ground.hal_mut().usb_out);
+        self.boards.ground.poll();
+        let usb_out = std::mem::take(&mut self.boards.ground.hal_mut().usb_out);
         if !usb_out.is_empty() {
             self.bytes_to_host = self.bytes_to_host.wrapping_add(usb_out.len() as u64);
             self.pending_out.extend_from_slice(&usb_out);
@@ -374,36 +400,41 @@ fn run(opts: Options) -> Result<(), String> {
         println!("  connect with: gse-app --sim   (or --port tcp:{local})");
     }
 
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(1);
+    let mut boards = Boards::new(opts.radio, seed);
+    let mut last_active = Instant::now();
     let mut client_id = 0u32;
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
                 client_id = client_id.wrapping_add(1);
-                let config = opts.radio;
-                let quiet = opts.quiet;
                 let id = client_id;
-                let _ = thread::Builder::new()
-                    .name(format!("gse-sim-client-{id}"))
-                    .spawn(move || {
-                        if !quiet {
-                            println!("[sim] host #{id} connected from {:?}", stream.peer_addr());
+                let idle_ms = last_active.elapsed().as_millis().min(60_000) as u32;
+                if idle_ms > 0 {
+                    boards.advance(idle_ms);
+                }
+                if !opts.quiet {
+                    println!("[sim] host #{id} connected from {:?}", stream.peer_addr());
+                }
+                match serve_client(&mut boards, stream, id) {
+                    Ok((from_host, to_host)) => {
+                        if !opts.quiet {
+                            println!(
+                                "[sim] host #{id} disconnected ({} bytes up, {} bytes down)",
+                                from_host, to_host
+                            );
                         }
-                        match serve_client(stream, config, id) {
-                            Ok((from_host, to_host)) => {
-                                if !quiet {
-                                    println!(
-                                        "[sim] host #{id} disconnected ({} bytes up, {} bytes down)",
-                                        from_host, to_host
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                if !quiet {
-                                    println!("[sim] host #{id} ended: {e}");
-                                }
-                            }
+                    }
+                    Err(e) => {
+                        if !opts.quiet {
+                            println!("[sim] host #{id} ended: {e}");
                         }
-                    });
+                    }
+                }
+                last_active = Instant::now();
             }
             Err(e) => {
                 eprintln!("[sim] accept error: {e}");
@@ -414,25 +445,20 @@ fn run(opts: Options) -> Result<(), String> {
     Ok(())
 }
 
-fn serve_client(
-    mut stream: TcpStream,
-    config: RadioConfig,
-    id: u32,
-) -> io::Result<(u64, u64)> {
+fn serve_client(boards: &mut Boards, mut stream: TcpStream, _id: u32) -> io::Result<(u64, u64)> {
     stream.set_nodelay(true)?;
     stream.set_nonblocking(true)?;
-    let seed = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(1))
-        ^ (id.wrapping_mul(0x9E37_79B9));
-    let mut sim = Sim::new(&mut stream, config, seed);
+    let mut sim = Sim::new(boards, &mut stream);
     let mut last = Instant::now();
     loop {
         let step_start = Instant::now();
         let elapsed = step_start.duration_since(last);
         let elapsed_ms = elapsed.as_millis() as u32;
-        let advance = if elapsed_ms == 0 { TICK_MS as u32 } else { elapsed_ms };
+        let advance = if elapsed_ms == 0 {
+            TICK_MS as u32
+        } else {
+            elapsed_ms
+        };
         match sim.step(advance) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}

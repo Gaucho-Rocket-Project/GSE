@@ -116,9 +116,8 @@ pub struct Port {
 
 impl Port {
     pub fn open(path: &str, baud: u32) -> io::Result<Self> {
-        let cpath = CString::new(path).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte")
-        })?;
+        let cpath = CString::new(path)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))?;
         let flags = O_RDWR | plat::O_NOCTTY | plat::O_NONBLOCK | plat::O_CLOEXEC;
         let fd = unsafe { open(cpath.as_ptr(), flags) };
         if fd < 0 {

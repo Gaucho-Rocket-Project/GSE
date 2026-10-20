@@ -81,11 +81,7 @@ impl LogEntry {
         json::field(&mut out, "level", &json::quoted(self.level.as_str()));
         json::field(&mut out, "source", &json::quoted(self.source.as_str()));
         json::field(&mut out, "msg", &json::quoted(&self.message));
-        json::field(
-            &mut out,
-            "code",
-            &json::opt_str_json(self.code),
-        );
+        json::field(&mut out, "code", &json::opt_str_json(self.code));
         out.push('}');
         out
     }
@@ -123,7 +119,11 @@ impl SessionLog {
         let stamp = clock::iso8601_utc(started_epoch_ms)
             .replace(['-', ':'], "")
             .replace('T', "-");
-        let stamp = stamp.trim_end_matches('Z').split('.').next().unwrap_or("session");
+        let stamp = stamp
+            .trim_end_matches('Z')
+            .split('.')
+            .next()
+            .unwrap_or("session");
         let path = dir.join(format!("session-{stamp}.log"));
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut log = SessionLog {
@@ -148,12 +148,13 @@ impl SessionLog {
     pub fn write(&mut self, entry: &LogEntry) {
         let uptime = entry.epoch_ms.saturating_sub(self.started_ms);
         let code = entry.code.map(|c| format!(" ({c})")).unwrap_or_default();
+        let uptime_text = format!("{uptime}ms");
         let line = format!(
             "{}  {:<4}  [{:<4}] +{:<9} {}{}\n",
             clock::iso8601_utc(entry.epoch_ms),
             entry.level.label(),
             entry.source.label(),
-            format_args!("{}ms", uptime),
+            uptime_text,
             entry.message,
             code
         );

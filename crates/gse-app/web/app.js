@@ -13,6 +13,7 @@
     srv_off: "SRV OFF",
     ign_pwr: "IGN PWR",
     ign_safe: "IGN SAFE",
+    reset_controls: "RESET CONTROLS",
     reset_fill: "RESET FILL SEQ",
     clear_faults: "CLEAR FAULTS",
     estop: "EMERGENCY STOP"
@@ -22,6 +23,7 @@
     srv_toggle: "SRV ON / OFF",
     ign_toggle: "IGN PWR / SAFE",
     estop: "All safe (E-STOP)",
+    reset_controls: "Reset controls to OFF/SAFE",
     reset_fill: "Reset fill sequence",
     clear_faults: "Clear latched faults"
   };
@@ -300,10 +302,33 @@
     });
 
     var vs = s.vehicle.state || {};
-    setLed("led-fill", vs.fill ? "OPEN" : (vs.fill_timer ? "TIMER" : "CLOSED"),
-      vs.fill ? "on" : (vs.fill_timer ? "pwr" : ""));
-    setLed("led-srv", vs.srv ? "ON" : "OFF", vs.srv ? "on" : "");
-    setLed("led-ign", vs.ign ? "PWR" : "SAFE", vs.ign ? "pwr" : "");
+    // LED text comes from the confirmed control machine, not from a guess:
+    // it only changes when the vehicle acknowledges the transition.
+    var ctl = s.controls || {};
+    var fillOn = ctl.fill ? ctl.fill === "ON" : !!vs.fill;
+    var srvOn = ctl.srv ? ctl.srv === "ON" : !!vs.srv;
+    var ignPwr = ctl.ign ? ctl.ign === "PWR" : !!vs.ign;
+    setLed("led-fill", fillOn ? "ON" : "OFF", fillOn ? "on" : "");
+    setLed("led-srv", srvOn ? "ON" : "OFF", srvOn ? "on" : "");
+    setLed("led-ign", ignPwr ? "PWR" : "SAFE", ignPwr ? "pwr" : "");
+
+    var machineText;
+    if (!ctl.ready) {
+      machineText = "INIT · confirming OFF/SAFE";
+      if (ctl.fill || ctl.srv || ctl.ign) {
+        machineText += " · FILL " + (ctl.fill || "OFF") + " · SRV " +
+          (ctl.srv || "OFF") + " · IGN " + (ctl.ign || "SAFE");
+      }
+    } else {
+      machineText = "FILL " + (ctl.fill || "OFF") + " · SRV " +
+        (ctl.srv || "OFF") + " · IGN " + (ctl.ign || "SAFE");
+    }
+    if (ctl.target) {
+      machineText += " → FILL " + ctl.target.fill + " · SRV " +
+        ctl.target.srv + " · IGN " + ctl.target.ign;
+    }
+    $("machine-text").textContent = machineText;
+    document.body.dataset.controls = ctl.ready ? "ready" : "init";
 
     $("tele-summary").textContent = s.vehicle.summary || "–";
     $("tele-fw").textContent = versionText(s.vehicle.fw);
@@ -425,6 +450,7 @@
       srv_on: "srv_toggle",
       ign_pwr: "ign_toggle",
       estop: "estop",
+      reset_controls: "reset_controls",
       reset_fill: "reset_fill",
       clear_faults: "clear_faults"
     };
@@ -442,7 +468,8 @@
       displayCombo(sc.srv_toggle) + " srv · " +
       displayCombo(sc.ign_toggle) + " ign · " +
       displayCombo(sc.estop) + " e-stop · " +
-      displayCombo(sc.reset_fill) + " reset · " +
+      displayCombo(sc.reset_controls) + " reset all · " +
+      displayCombo(sc.reset_fill) + " reset fill · " +
       displayCombo(sc.clear_faults) + " faults";
   }
 

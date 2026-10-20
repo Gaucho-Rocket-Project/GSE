@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gse_proto::{flags, faults, LinkStat, StateSnapshot};
+use gse_proto::{faults, flags, ControlState, LinkStat, StateSnapshot};
 
 use crate::broadcaster::Broadcaster;
 use crate::clock;
@@ -30,6 +30,7 @@ pub struct Actions {
     pub srv_off: ActionState,
     pub ign_pwr: ActionState,
     pub ign_safe: ActionState,
+    pub reset_controls: ActionState,
     pub reset_fill: ActionState,
     pub clear_faults: ActionState,
     pub estop: ActionState,
@@ -44,6 +45,7 @@ impl Actions {
             "srv_off" => &self.srv_off,
             "ign_pwr" => &self.ign_pwr,
             "ign_safe" => &self.ign_safe,
+            "reset_controls" => &self.reset_controls,
             "reset_fill" => &self.reset_fill,
             "clear_faults" => &self.clear_faults,
             "estop" => &self.estop,
@@ -60,6 +62,7 @@ impl Actions {
             ("srv_off", &self.srv_off),
             ("ign_pwr", &self.ign_pwr),
             ("ign_safe", &self.ign_safe),
+            ("reset_controls", &self.reset_controls),
             ("reset_fill", &self.reset_fill),
             ("clear_faults", &self.clear_faults),
             ("estop", &self.estop),
@@ -176,6 +179,73 @@ pub struct FillUi {
     pub completed_at_epoch_ms: u64,
 }
 
+/// Projection of the deterministic control machine for the UI.
+#[derive(Clone, Debug)]
+pub struct ControlsUi {
+    /// Last state confirmed by the vehicle (ACK/STATE), never a guess.
+    pub state: ControlState,
+    /// State the in-flight command will reach once acknowledged.
+    pub target: Option<ControlState>,
+    /// Startup handshake finished: every output verified OFF/SAFE.
+    pub ready: bool,
+    /// Last event pushed into the machine, e.g. `fill_on`.
+    pub last_event: Option<&'static str>,
+    /// `pending` after send, then `acknowledged` / `rejected` / `timeout`.
+    pub last_result: Option<&'static str>,
+}
+
+impl Default for ControlsUi {
+    fn default() -> Self {
+        ControlsUi {
+            state: ControlState::SAFE,
+            target: None,
+            ready: false,
+            last_event: None,
+            last_result: None,
+        }
+    }
+}
+
+impl ControlsUi {
+    pub fn to_json(&self) -> String {
+        let mut out = String::from("{");
+        json::field(&mut out, "fill", &json::quoted(self.state.fill.label()));
+        json::field(&mut out, "srv", &json::quoted(self.state.srv.label()));
+        json::field(&mut out, "ign", &json::quoted(self.state.ign.label()));
+        json::field(
+            &mut out,
+            "summary",
+            &json::quoted(&format!(
+                "FILL={} SRV={} IGN={}",
+                self.state.fill.label(),
+                self.state.srv.label(),
+                self.state.ign.label()
+            )),
+        );
+        json::field(&mut out, "safe", json::bool_json(self.state.is_safe()));
+        json::field(&mut out, "ready", json::bool_json(self.ready));
+        match self.target {
+            Some(target) => {
+                let mut t = String::from("{");
+                json::field(&mut t, "fill", &json::quoted(target.fill.label()));
+                json::field(&mut t, "srv", &json::quoted(target.srv.label()));
+                json::field(&mut t, "ign", &json::quoted(target.ign.label()));
+                t.push('}');
+                json::field(&mut out, "target", &t);
+            }
+            None => json::field(&mut out, "target", "null"),
+        }
+        json::field(&mut out, "last_event", &json::opt_str_json(self.last_event));
+        json::field(
+            &mut out,
+            "last_result",
+            &json::opt_str_json(self.last_result),
+        );
+        out.push('}');
+        out
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingInfo {
     pub cmd_id: u16,
@@ -204,6 +274,7 @@ pub struct AppState {
     pub ground: GroundInfo,
     pub vehicle: VehicleInfo,
     pub actions: Actions,
+    pub controls: ControlsUi,
     pub fill: FillUi,
     pub pending: Option<PendingInfo>,
     pub log: VecDeque<LogEntry>,
@@ -232,6 +303,7 @@ impl AppState {
             ground: GroundInfo::default(),
             vehicle: VehicleInfo::default(),
             actions: Actions::default(),
+            controls: ControlsUi::default(),
             pending: None,
             log: VecDeque::new(),
             next_log_id: 1,
@@ -285,8 +357,15 @@ impl AppState {
             ground_online: self.ground.status == GroundStatus::Online,
             vehicle_online: self.vehicle.status == VehicleStatus::Online,
             pending: self.pending.is_some(),
+            controls_ready: self.controls.ready,
             state: self.vehicle.state,
         });
+        // The machine follows the vehicle, never the operator's intent: the
+        // state only moves after the board has acknowledged the command.
+        self.controls.state = ControlState::from_snapshot(&self.vehicle.state);
+        if self.pending.is_none() {
+            self.controls.target = None;
+        }
         let snap = self.vehicle.state;
         self.fill.active = snap.fill_open();
         self.fill.remaining_ms = snap.fill_remaining_ms;
@@ -339,11 +418,7 @@ impl AppState {
             "last_rejected",
             json::bool_json(snapshot.has(flags::LAST_REJECTED)),
         );
-        json::field(
-            &mut out,
-            "inhibited",
-            json::bool_json(snapshot.inhibited()),
-        );
+        json::field(&mut out, "inhibited", json::bool_json(snapshot.inhibited()));
         json::field(&mut out, "estop", json::bool_json(snapshot.estop()));
         json::field(
             &mut out,
@@ -459,7 +534,11 @@ impl AppState {
             "frames_to_radio",
             &self.ground.link.frames_to_radio.to_string(),
         );
-        json::field(&mut link, "crc_errors", &self.ground.link.crc_errors.to_string());
+        json::field(
+            &mut link,
+            "crc_errors",
+            &self.ground.link.crc_errors.to_string(),
+        );
         json::field(
             &mut link,
             "uart_errors",
@@ -485,7 +564,11 @@ impl AppState {
             &json::quoted(self.ground.status.as_str()),
         );
         json::field(&mut out, "port", &json::quoted(&self.ground.port));
-        json::field(&mut out, "fw", &json::opt_str_json(self.ground.fw.as_deref()));
+        json::field(
+            &mut out,
+            "fw",
+            &json::opt_str_json(self.ground.fw.as_deref()),
+        );
         json::field(
             &mut out,
             "device_id",
@@ -498,7 +581,11 @@ impl AppState {
         json::field(&mut out, "age_ms", &age.to_string());
         json::field(&mut out, "protocol", &self.ground.protocol.to_string());
         json::field(&mut out, "link", &link);
-        json::field(&mut out, "error", &json::opt_str_json(self.ground.error.as_deref()));
+        json::field(
+            &mut out,
+            "error",
+            &json::opt_str_json(self.ground.error.as_deref()),
+        );
         out.push('}');
         out
     }
@@ -516,7 +603,11 @@ impl AppState {
             "status",
             &json::quoted(self.vehicle.status.as_str()),
         );
-        json::field(&mut out, "fw", &json::opt_str_json(self.vehicle.fw.as_deref()));
+        json::field(
+            &mut out,
+            "fw",
+            &json::opt_str_json(self.vehicle.fw.as_deref()),
+        );
         json::field(
             &mut out,
             "device_id",
@@ -538,15 +629,31 @@ impl AppState {
         json::field(&mut out, "age_ms", &age.to_string());
         json::field(&mut out, "state", &Self::state_json(&self.vehicle.state));
         json::field(&mut out, "flags", &Self::flags_json(&self.vehicle.state));
-        json::field(&mut out, "fault_names", &Self::faults_json(&self.vehicle.state));
+        json::field(
+            &mut out,
+            "fault_names",
+            &Self::faults_json(&self.vehicle.state),
+        );
         json::field(
             &mut out,
             "summary",
             &json::quoted(&format!(
                 "FILL={} SRV={} IGN={}",
-                if self.vehicle.state.fill_open() { "ON" } else { "OFF" },
-                if self.vehicle.state.srv_on() { "ON" } else { "OFF" },
-                if self.vehicle.state.ign_pwr() { "PWR" } else { "SAFE" }
+                if self.vehicle.state.fill_open() {
+                    "ON"
+                } else {
+                    "OFF"
+                },
+                if self.vehicle.state.srv_on() {
+                    "ON"
+                } else {
+                    "OFF"
+                },
+                if self.vehicle.state.ign_pwr() {
+                    "PWR"
+                } else {
+                    "SAFE"
+                }
             )),
         );
         out.push('}');
@@ -574,6 +681,7 @@ impl AppState {
         json::field(&mut out, "port_hint", &json::quoted(&self.port_hint));
         json::field(&mut out, "ground", &self.ground_json());
         json::field(&mut out, "vehicle", &self.vehicle_json());
+        json::field(&mut out, "controls", &self.controls.to_json());
 
         let mut fill = String::from("{");
         json::field(&mut fill, "duration_s", &self.fill.duration_s.to_string());
@@ -622,7 +730,10 @@ impl AppState {
                 json::field(
                     &mut pending,
                     "age_ms",
-                    &self.now_epoch_ms.saturating_sub(p.sent_epoch_ms).to_string(),
+                    &self
+                        .now_epoch_ms
+                        .saturating_sub(p.sent_epoch_ms)
+                        .to_string(),
                 );
                 json::field(&mut pending, "timeout_ms", &p.timeout_ms.to_string());
                 pending.push('}');
@@ -711,7 +822,12 @@ impl Shared {
             let mut st = self.lock();
             st.push_log(level, source, message, code)
         };
-        if let Some(session) = self.session.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        if let Some(session) = self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
             session.write(&entry);
         }
         self.events.log(&entry);
@@ -723,7 +839,10 @@ impl Shared {
             self.log(
                 Level::Warn,
                 Source::App,
-                format!("Could not save settings to {}: {e}", self.config_path.display()),
+                format!(
+                    "Could not save settings to {}: {e}",
+                    self.config_path.display()
+                ),
                 None,
             );
         }
@@ -777,10 +896,23 @@ mod tests {
         assert!(value.get("vehicle").is_some());
         assert!(value.get("actions").unwrap().get("fill_on").is_some());
         assert_eq!(
-            value.get("config").unwrap().get("fill_seconds").unwrap().as_u64(),
+            value
+                .get("config")
+                .unwrap()
+                .get("fill_seconds")
+                .unwrap()
+                .as_u64(),
             Some(60)
         );
-        assert_eq!(value.get("fill").unwrap().get("duration_s").unwrap().as_u64(), Some(60));
+        assert_eq!(
+            value
+                .get("fill")
+                .unwrap()
+                .get("duration_s")
+                .unwrap()
+                .as_u64(),
+            Some(60)
+        );
     }
 
     #[test]
@@ -833,6 +965,56 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn controls_start_off_and_safe() {
+        let mut st = state();
+        st.refresh();
+        let value = json::parse(&st.snapshot_json()).unwrap();
+        let ctl = value.get("controls").unwrap();
+        assert_eq!(ctl.get("fill").unwrap().as_str(), Some("OFF"));
+        assert_eq!(ctl.get("srv").unwrap().as_str(), Some("OFF"));
+        assert_eq!(ctl.get("ign").unwrap().as_str(), Some("SAFE"));
+        assert_eq!(ctl.get("safe").unwrap().as_bool(), Some(true));
+        assert_eq!(ctl.get("ready").unwrap().as_bool(), Some(false));
+        assert_eq!(ctl.get("target"), Some(&json::Value::Null));
+    }
+
+    #[test]
+    fn controls_follow_the_vehicle_only() {
+        let mut st = state();
+        st.vehicle.state = StateSnapshot {
+            flags: flags::SRV_ON | flags::FILL_SEQ_COMPLETE,
+            ..StateSnapshot::default()
+        };
+        st.controls.ready = true;
+        st.refresh();
+        assert_eq!(st.controls.state.srv.label(), "ON");
+        assert_eq!(st.controls.state.fill.label(), "OFF");
+        assert_eq!(st.controls.state.ign.label(), "SAFE");
+        let value = json::parse(&st.snapshot_json()).unwrap();
+        assert_eq!(
+            value
+                .get("controls")
+                .unwrap()
+                .get("summary")
+                .unwrap()
+                .as_str(),
+            Some("FILL=OFF SRV=ON IGN=SAFE")
+        );
+        // The operator's desired state never overwrites the confirmed one.
+        st.controls.target = Some(ControlState {
+            fill: gse_proto::FillState::On,
+            ..st.controls.state
+        });
+        st.refresh();
+        assert!(
+            st.controls.target.is_none(),
+            "target clears with no pending"
+        );
+        assert_eq!(st.controls.state.srv.label(), "ON");
+        assert!(!st.actions.fill_on.enabled);
     }
 
     #[test]

@@ -12,20 +12,20 @@ use crate::serial::SerialPort;
 pub trait ByteLink: Send {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
+    /// Human readable port description for logs and the console.
     fn name(&self) -> String;
-    fn is_tcp(&self) -> bool {
-        false
-    }
 }
 
 pub struct SerialLink {
     port: SerialPort,
+    path: String,
 }
 
 impl SerialLink {
     pub fn open(path: &str, baud: u32) -> io::Result<Self> {
         Ok(SerialLink {
             port: SerialPort::open(path, baud)?,
+            path: path.to_string(),
         })
     }
 }
@@ -40,7 +40,7 @@ impl ByteLink for SerialLink {
     }
 
     fn name(&self) -> String {
-        self.port.path().to_string()
+        self.path.clone()
     }
 }
 
@@ -67,7 +67,10 @@ impl TcpLink {
             }
         }
         Err(last_err.unwrap_or_else(|| {
-            io::Error::new(io::ErrorKind::AddrNotAvailable, format!("cannot resolve {addr}"))
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                format!("cannot resolve {addr}"),
+            )
         }))
     }
 }
@@ -112,10 +115,6 @@ impl ByteLink for TcpLink {
 
     fn name(&self) -> String {
         self.name.clone()
-    }
-
-    fn is_tcp(&self) -> bool {
-        true
     }
 }
 

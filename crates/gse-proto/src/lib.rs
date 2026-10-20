@@ -18,16 +18,18 @@ pub mod cobs;
 pub mod control;
 pub mod crc;
 pub mod frame;
+pub mod fsm;
 pub mod message;
 pub mod state;
 
+pub use control::cmd_flags;
 pub use control::{
     action_label, is_valid_action, AckResult, Control, Endpoint, EventCode, MsgType, Reason,
     ACTION_OFF, ACTION_ON, SYSTEM_ACTION_CLEAR_FAULTS, SYSTEM_ACTION_RESET_FILL,
     SYSTEM_ACTION_SAFE_ALL,
 };
-pub use control::cmd_flags;
 pub use frame::{DecodeError, DecodeStats, Frame, FrameDecoder};
+pub use fsm::{ControlEvent, ControlState, FillState, IgnState, Interlocks, SrvState, Transition};
 pub use message::{
     capabilities, Ack, Command, Event, FwVersion, Heartbeat, Hello, LinkStat, Message, Ping, Pong,
 };
@@ -53,6 +55,11 @@ pub const DEFAULT_FILL_SECONDS: u16 = 60;
 /// Hard limits accepted by the firmware for the fill duration.
 pub const MIN_FILL_SECONDS: u16 = 1;
 pub const MAX_FILL_SECONDS: u16 = 600;
+
+const _: () = {
+    assert!(MIN_FILL_SECONDS <= DEFAULT_FILL_SECONDS);
+    assert!(DEFAULT_FILL_SECONDS <= MAX_FILL_SECONDS);
+};
 
 /// USB CDC / ST-LINK virtual COM port baud rate. Both ends use 8N1.
 pub const USB_BAUD: u32 = 115_200;
@@ -107,8 +114,6 @@ mod tests {
 
     #[test]
     fn defaults_are_sane() {
-        assert!(MIN_FILL_SECONDS <= DEFAULT_FILL_SECONDS);
-        assert!(DEFAULT_FILL_SECONDS <= MAX_FILL_SECONDS);
         assert_eq!(USB_BAUD, 115_200);
     }
 }

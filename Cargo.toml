@@ -5,6 +5,7 @@ members = [
     "crates/gse-fw-core",
     "crates/gse-app",
     "crates/gse-sim",
+    "crates/gse-fw-check",
 ]
 exclude = ["firmware"]
 

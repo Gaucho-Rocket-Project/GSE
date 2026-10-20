@@ -1,0 +1,17 @@
+[package]
+name = "gse-fw-check"
+description = "Host-side compile and unit-test harness for the STM32 firmware board layer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "gse_fw_check"
+path = "src/lib.rs"
+
+[dependencies]
+gse-proto = { workspace = true }
+gse-fw-core = { workspace = true }

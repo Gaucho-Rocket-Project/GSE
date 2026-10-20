@@ -176,7 +176,10 @@ fn run(opts: Options) -> Result<(), String> {
     }
     config.sanitize();
     if let Err(e) = config.save(&config_path) {
-        eprintln!("[gse] warning: cannot save config to {}: {e}", config_path.display());
+        eprintln!(
+            "[gse] warning: cannot save config to {}: {e}",
+            config_path.display()
+        );
     }
 
     let started = clock::unix_ms();
@@ -254,13 +257,12 @@ fn run(opts: Options) -> Result<(), String> {
         })
         .map_err(|e| format!("cannot start the link engine: {e}"))?;
 
-    let http_shared = shared.clone();
-    let http_tx = tx.clone();
-    let http_token = token;
     let _http_thread = thread::Builder::new()
         .name("gse-http".to_string())
-        .spawn(move || {
-            http::serve(listener, http_shared, http_tx, http_token, verbose);
+        .spawn({
+            let shared = shared.clone();
+            let tx = tx.clone();
+            move || http::serve(listener, shared, tx)
         })
         .map_err(|e| format!("cannot start the console: {e}"))?;
 
@@ -268,7 +270,9 @@ fn run(opts: Options) -> Result<(), String> {
     println!("  console  {url}");
     println!(
         "  link     {} @ {} baud{}",
-        port_override.clone().unwrap_or_else(|| "auto-detect".to_string()),
+        port_override
+            .clone()
+            .unwrap_or_else(|| "auto-detect".to_string()),
         config.baud,
         if opts.sim { " (simulator)" } else { "" }
     );
@@ -314,8 +318,8 @@ fn should_open_browser(opts: &Options) -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        let has_display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let has_display =
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
         if !has_display {
             return false;
         }
@@ -326,9 +330,7 @@ fn should_open_browser(opts: &Options) -> bool {
 fn open_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
-        let mut child = Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()?;
+        let mut child = Command::new("cmd").args(["/C", "start", "", url]).spawn()?;
         thread::spawn(move || {
             let _ = child.wait();
         });
@@ -365,15 +367,12 @@ fn spawn_simulator(opts: &Options) {
     if std::net::TcpStream::connect(SIM_ADDR).is_ok() {
         return;
     }
-    let exe = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(_) => return,
+    let dir = paths::exe_dir();
+    let name = if cfg!(windows) {
+        "gse-sim.exe"
+    } else {
+        "gse-sim"
     };
-    let dir = match exe.parent() {
-        Some(dir) => dir.to_path_buf(),
-        None => return,
-    };
-    let name = if cfg!(windows) { "gse-sim.exe" } else { "gse-sim" };
     let candidate = dir.join(name);
     if !candidate.is_file() {
         if opts.verbose {
@@ -384,7 +383,10 @@ fn spawn_simulator(opts: &Options) {
         }
         return;
     }
-    match Command::new(&candidate).args(["--listen", SIM_ADDR]).spawn() {
+    match Command::new(&candidate)
+        .args(["--listen", SIM_ADDR])
+        .spawn()
+    {
         Ok(mut child) => {
             thread::spawn(move || {
                 let _ = child.wait();

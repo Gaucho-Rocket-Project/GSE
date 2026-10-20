@@ -57,12 +57,7 @@ impl Frame {
         Some(frame)
     }
 
-    pub fn from_message(
-        message: &Message,
-        src: Endpoint,
-        dst: Endpoint,
-        seq: u8,
-    ) -> Option<Self> {
+    pub fn from_message(message: &Message, src: Endpoint, dst: Endpoint, seq: u8) -> Option<Self> {
         let mut body = [0u8; MAX_BODY];
         let len = message.encode(&mut body)?;
         Self::new(message.msg_type(), src, dst, seq, &body[..len])
@@ -150,11 +145,7 @@ impl fmt::Debug for Frame {
         write!(
             f,
             "Frame {{ {} {}->{} seq={} len={} }}",
-            self.msg_type,
-            self.src,
-            self.dst,
-            self.seq,
-            self.body_len
+            self.msg_type, self.src, self.dst, self.seq, self.body_len
         )
     }
 }
@@ -277,7 +268,6 @@ impl FrameDecoder {
             None
         }
     }
-
 }
 
 #[cfg(test)]
@@ -296,13 +286,7 @@ mod tests {
             arg_s: 60,
             flags: 0,
         };
-        Frame::from_message(
-            &Message::Command(cmd),
-            Endpoint::Host,
-            Endpoint::Vehicle,
-            7,
-        )
-        .unwrap()
+        Frame::from_message(&Message::Command(cmd), Endpoint::Host, Endpoint::Vehicle, 7).unwrap()
     }
 
     #[test]
@@ -420,9 +404,13 @@ mod tests {
             device_id: 0xAABBCCDD,
             capabilities: capabilities::RADIO,
         };
-        let frame =
-            Frame::from_message(&Message::Hello(hello), Endpoint::Ground, Endpoint::Broadcast, 0)
-                .unwrap();
+        let frame = Frame::from_message(
+            &Message::Hello(hello),
+            Endpoint::Ground,
+            Endpoint::Broadcast,
+            0,
+        )
+        .unwrap();
         let mut buf = [0u8; MAX_ENCODED_LEN];
         let n = frame.encode(&mut buf).unwrap();
         let mut dec = FrameDecoder::new();
@@ -464,9 +452,6 @@ mod tests {
     fn bad_magic_is_malformed() {
         let mut payload = [0u8; 16];
         payload[0] = 0x00;
-        assert_eq!(
-            Frame::decode_payload(&payload),
-            Err(DecodeError::BadMagic)
-        );
+        assert_eq!(Frame::decode_payload(&payload), Err(DecodeError::BadMagic));
     }
 }

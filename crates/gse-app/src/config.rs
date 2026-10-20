@@ -12,6 +12,7 @@ pub const SHORTCUT_ACTIONS: &[(&str, &str)] = &[
     ("srv_toggle", "SRV ON / OFF"),
     ("ign_toggle", "IGN PWR / SAFE"),
     ("estop", "All safe (E-STOP)"),
+    ("reset_controls", "Reset all controls to OFF/SAFE"),
     ("reset_fill", "Reset fill sequence"),
     ("clear_faults", "Clear latched faults"),
 ];
@@ -21,6 +22,7 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
     ("srv_toggle", "S"),
     ("ign_toggle", "I"),
     ("estop", "E"),
+    ("reset_controls", "Shift+R"),
     ("reset_fill", "R"),
     ("clear_faults", "Shift+C"),
 ];
@@ -59,6 +61,7 @@ impl Default for Config {
 }
 
 impl Config {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn shortcut(&self, action: &str) -> String {
         self.shortcuts
             .iter()
@@ -102,9 +105,7 @@ impl Config {
 
     /// Clamp/repair values that came from disk or the browser.
     pub fn sanitize(&mut self) {
-        self.fill_seconds = self
-            .fill_seconds
-            .clamp(MIN_FILL_SECONDS, MAX_FILL_SECONDS);
+        self.fill_seconds = self.fill_seconds.clamp(MIN_FILL_SECONDS, MAX_FILL_SECONDS);
         if !BAUDS.contains(&self.baud) {
             self.baud = gse_proto::USB_BAUD;
         }
@@ -239,7 +240,11 @@ impl Config {
                 "    {}: {}{}\n",
                 json::quoted(action),
                 json::quoted(combo),
-                if i + 1 == self.shortcuts.len() { "" } else { "," }
+                if i + 1 == self.shortcuts.len() {
+                    ""
+                } else {
+                    ","
+                }
             ));
         }
         out.push_str("  }\n}\n");
@@ -253,10 +258,12 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        let mut cfg = Config::default();
-        cfg.fill_seconds = 42;
-        cfg.port = "/dev/ttyACM0".into();
-        cfg.confirm_ign = false;
+        let mut cfg = Config {
+            fill_seconds: 42,
+            port: "/dev/ttyACM0".into(),
+            confirm_ign: false,
+            ..Config::default()
+        };
         cfg.set_shortcut("fill_toggle", "Ctrl+Shift+F").unwrap();
         let text = cfg.to_json();
         let parsed = Config::from_json(&json::parse(&text).unwrap()).unwrap();
@@ -301,9 +308,6 @@ mod tests {
     fn pretty_json_is_valid() {
         let cfg = Config::default();
         let parsed = json::parse(&cfg.to_pretty_json()).unwrap();
-        assert_eq!(
-            parsed.get("fill_seconds").unwrap().as_u64(),
-            Some(60)
-        );
+        assert_eq!(parsed.get("fill_seconds").unwrap().as_u64(), Some(60));
     }
 }

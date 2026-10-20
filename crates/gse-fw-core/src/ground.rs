@@ -90,12 +90,7 @@ impl<H: GroundHal> Ground<H> {
         if !self.booted {
             self.booted = true;
             let state = StateSnapshot::all_safe();
-            self.send_event(
-                EventCode::BridgeReady,
-                0,
-                now,
-                state,
-            );
+            self.send_event(EventCode::BridgeReady, 0, now, state);
             self.send_hello(now);
         }
 
@@ -140,7 +135,8 @@ impl<H: GroundHal> Ground<H> {
 
         let usb_stats = self.usb.stats();
         let radio_stats = self.radio.stats();
-        self.crc_errors = (usb_stats.crc_errors + radio_stats.crc_errors).min(u16::MAX as u32) as u16;
+        self.crc_errors =
+            (usb_stats.crc_errors + radio_stats.crc_errors).min(u16::MAX as u32) as u16;
         self.uart_errors =
             (usb_stats.malformed + radio_stats.malformed).min(u16::MAX as u32) as u16;
 
@@ -318,8 +314,12 @@ mod tests {
         let mut ground = new_ground();
         ground.poll();
         let frames = ground.hal_mut().drain_usb_frames();
-        assert!(frames.iter().any(|f| matches!(f.message(), Some(Message::Hello(h)) if h.role == Endpoint::Ground)));
-        assert!(frames.iter().any(|f| matches!(f.message(), Some(Message::Event(e)) if e.code == EventCode::BridgeReady)));
+        assert!(frames
+            .iter()
+            .any(|f| matches!(f.message(), Some(Message::Hello(h)) if h.role == Endpoint::Ground)));
+        assert!(frames.iter().any(
+            |f| matches!(f.message(), Some(Message::Event(e)) if e.code == EventCode::BridgeReady)
+        ));
         assert!(ground.hal().watchdog_kicks > 0);
     }
 
@@ -335,9 +335,12 @@ mod tests {
             arg_s: 60,
             flags: 0,
         };
-        ground
-            .hal_mut()
-            .feed_usb_frame(&Message::Command(cmd), Endpoint::Host, Endpoint::Vehicle, 1);
+        ground.hal_mut().feed_usb_frame(
+            &Message::Command(cmd),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            1,
+        );
         ground.poll();
         let frames = ground.hal_mut().drain_radio_frames();
         assert_eq!(frames.len(), 1);
@@ -365,7 +368,9 @@ mod tests {
             .feed_radio_frame(&Message::Ack(ack), Endpoint::Vehicle, Endpoint::Host, 2);
         ground.poll();
         let frames = ground.hal_mut().drain_usb_frames();
-        assert!(frames.iter().any(|f| f.message() == Some(Message::Ack(ack))));
+        assert!(frames
+            .iter()
+            .any(|f| f.message() == Some(Message::Ack(ack))));
     }
 
     #[test]
@@ -389,7 +394,10 @@ mod tests {
             _ => None,
         });
         assert_eq!(pong.expect("pong").nonce, 0xDEAD);
-        assert!(ground.hal().radio_out.is_empty(), "ping must not be forwarded");
+        assert!(
+            ground.hal().radio_out.is_empty(),
+            "ping must not be forwarded"
+        );
     }
 
     #[test]
@@ -439,7 +447,9 @@ mod tests {
         ground.poll();
         ground.hal_mut().drain_radio_frames();
         ground.hal_mut().drain_usb_frames();
-        ground.hal_mut().feed_bytes_to_usb(&[0x00, 0x01, 0x02, 0x00]);
+        ground
+            .hal_mut()
+            .feed_bytes_to_usb(&[0x00, 0x01, 0x02, 0x00]);
         ground.poll();
         assert!(ground.hal_mut().drain_radio_frames().is_empty());
         assert!(ground.hal_mut().drain_usb_frames().is_empty());
@@ -458,9 +468,12 @@ mod tests {
             arg_s: 60,
             flags: 0,
         };
-        ground
-            .hal_mut()
-            .feed_usb_frame(&Message::Command(cmd), Endpoint::Host, Endpoint::Vehicle, 1);
+        ground.hal_mut().feed_usb_frame(
+            &Message::Command(cmd),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            1,
+        );
         ground.poll();
         assert!(ground.hal_mut().drain_radio_frames().is_empty());
         assert_eq!(ground.drops, 1);

@@ -118,6 +118,11 @@ pub struct Port {
     handle: Handle,
 }
 
+// A Win32 `HANDLE` is a plain value and the comm API allows reads and writes
+// from any single thread at a time. `Port` owns the handle (closed in `Drop`)
+// and is only ever used from one thread, so moving it across threads is sound.
+unsafe impl Send for Port {}
+
 impl Port {
     pub fn open(path: &str, baud: u32) -> io::Result<Self> {
         let full = if path.starts_with("\\\\.\\") {
@@ -153,8 +158,8 @@ impl Port {
             // fBinary, DTR_CONTROL_ENABLE, TX_CONTINUE_ON_XOFF, RTS_CONTROL_ENABLE
             flags: 1 | (1 << 4) | (1 << 7) | (1 << 12),
             byte_size: 8,
-            parity: 0,        // NOPARITY
-            stop_bits: 0,     // ONESTOPBIT
+            parity: 0,    // NOPARITY
+            stop_bits: 0, // ONESTOPBIT
             ..Default::default()
         };
         unsafe {

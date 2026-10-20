@@ -158,6 +158,27 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 }
 .hint { color: var(--dim); font-size: 11px; margin: 0; }
 
+.machine-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 12px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 11px;
+}
+.machine-line .machine-k {
+  color: var(--dim);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+.machine-line .machine-v { color: var(--text); font-variant-numeric: tabular-nums; }
+.machine-line .machine-v .target { color: var(--warn, #e8b04b); }
+
 /* ---------- control buttons ---------- */
 
 .control-grid {

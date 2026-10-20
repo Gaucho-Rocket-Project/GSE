@@ -32,26 +32,13 @@ pub struct PortInfo {
 
 pub struct SerialPort {
     inner: imp::Port,
-    path: String,
-    baud: u32,
 }
 
 impl SerialPort {
     pub fn open(path: &str, baud: u32) -> io::Result<Self> {
-        let inner = imp::Port::open(path, baud)?;
         Ok(SerialPort {
-            inner,
-            path: path.to_string(),
-            baud,
+            inner: imp::Port::open(path, baud)?,
         })
-    }
-
-    pub fn path(&self) -> &str {
-        &self.path
-    }
-
-    pub fn baud(&self) -> u32 {
-        self.baud
     }
 
     pub fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -69,6 +56,10 @@ pub fn list_ports() -> Vec<PortInfo> {
 }
 
 /// True if the path looks like a serial device path for the current OS.
+///
+/// Used by the platform scanners and kept public for callers that accept a
+/// user-supplied path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn looks_like_serial_path(path: &str) -> bool {
     if path.starts_with("tcp://") || path.starts_with("tcp:") {
         return false;

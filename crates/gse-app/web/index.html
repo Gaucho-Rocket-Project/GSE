@@ -60,10 +60,15 @@
       <span class="hint" id="pending-text">No command in flight</span>
     </div>
 
+    <div class="machine-line" id="machine-line" aria-live="polite">
+      <span class="machine-k">Control state</span>
+      <span class="machine-v" id="machine-text">INIT · FILL OFF · SRV OFF · IGN SAFE</span>
+    </div>
+
     <div class="control-grid">
       <button class="control" id="btn-fill_on" data-action="fill_on">
         <span class="ctl-name">FILL</span>
-        <span class="ctl-state" id="led-fill">CLOSED</span>
+        <span class="ctl-state" id="led-fill">OFF</span>
         <span class="ctl-desc">Fill valve ON</span>
         <span class="ctl-key" data-key-for="fill_on">F</span>
         <span class="ctl-why"></span>
@@ -120,6 +125,10 @@
     </div>
 
     <div class="secondary-row">
+      <button class="btn ghost" id="btn-reset_controls" data-action="reset_controls"
+              title="Force FILL OFF, SRV OFF and IGN SAFE, then clear latches">
+        Reset controls <span class="ctl-key" data-key-for="reset_controls">Shift+R</span>
+      </button>
       <button class="btn ghost" id="btn-reset_fill" data-action="reset_fill">
         Reset fill sequence <span class="ctl-key" data-key-for="reset_fill">R</span>
       </button>

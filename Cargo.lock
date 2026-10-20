@@ -10,6 +10,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gse-fw-check"
+version = "1.0.0"
+dependencies = [
+ "gse-fw-core",
+ "gse-proto",
+]
+
+[[package]]
 name = "gse-fw-core"
 version = "1.0.0"
 dependencies = [

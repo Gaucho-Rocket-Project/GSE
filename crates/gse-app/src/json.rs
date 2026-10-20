@@ -49,6 +49,7 @@ impl Value {
         self.as_f64().map(|n| n as i64)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn as_u64(&self) -> Option<u64> {
         self.as_f64().and_then(|n| {
             if n >= 0.0 && n <= u64::MAX as f64 {
@@ -364,21 +365,24 @@ mod tests {
     fn parses_objects() {
         let value = parse(r#"{"a":1,"b":[true,null,"x"],"c":{"d":-2.5e2}}"#).unwrap();
         assert_eq!(value.get("a").unwrap().as_u64(), Some(1));
-        assert_eq!(value.get("b").unwrap(), &Value::Array(vec![
-            Value::Bool(true),
-            Value::Null,
-            Value::String("x".into())
-        ]));
-        assert_eq!(value.get("c").unwrap().get("d").unwrap().as_f64(), Some(-250.0));
+        assert_eq!(
+            value.get("b").unwrap(),
+            &Value::Array(vec![
+                Value::Bool(true),
+                Value::Null,
+                Value::String("x".into())
+            ])
+        );
+        assert_eq!(
+            value.get("c").unwrap().get("d").unwrap().as_f64(),
+            Some(-250.0)
+        );
     }
 
     #[test]
     fn parses_escapes() {
         let value = parse(r#"{"s":"a\"b\\c\nd\u00e9\ud83d\ude80"}"#).unwrap();
-        assert_eq!(
-            value.get("s").unwrap().as_str().unwrap(),
-            "a\"b\\c\ndé🚀"
-        );
+        assert_eq!(value.get("s").unwrap().as_str().unwrap(), "a\"b\\c\ndé🚀");
     }
 
     #[test]
@@ -393,7 +397,10 @@ mod tests {
     fn escapes_output() {
         let mut out = String::new();
         escape_into(&mut out, "quote\" backslash\\ newline\n tab\t bell\u{7}");
-        assert_eq!(out, "\"quote\\\" backslash\\\\ newline\\n tab\\t bell\\u0007\"");
+        assert_eq!(
+            out,
+            "\"quote\\\" backslash\\\\ newline\\n tab\\t bell\\u0007\""
+        );
         assert_eq!(quoted("hello"), "\"hello\"");
         assert_eq!(opt_str_json(None), "null");
         assert_eq!(opt_str_json(Some("x")), "\"x\"");

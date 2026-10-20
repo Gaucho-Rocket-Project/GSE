@@ -45,10 +45,7 @@ mod imp {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn SetConsoleCtrlHandler(
-            handler: Option<extern "system" fn(u32) -> i32>,
-            add: i32,
-        ) -> i32;
+        fn SetConsoleCtrlHandler(handler: Option<extern "system" fn(u32) -> i32>, add: i32) -> i32;
     }
 
     extern "system" fn on_ctrl(_ctrl_type: u32) -> i32 {

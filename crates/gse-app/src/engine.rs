@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gse_proto::fsm::{ControlEvent, ControlState, Interlocks, Transition};
 use gse_proto::{
     cmd_flags, encode_message, Ack, Command, Control, DecodeStats, Endpoint, Event, EventCode,
     Frame, FrameDecoder, Heartbeat, Hello, LinkStat, Message, Ping, Pong, Reason, StateSnapshot,
@@ -35,6 +36,10 @@ const RECONNECT_DELAY_MS: u64 = 1_500;
 const SCAN_RETRY_MS: u64 = 2_500;
 const PUBLISH_MS: u64 = 100;
 const PROBE_TIMEOUT_MS: u64 = 700;
+/// How long the shutdown sequence waits for the ALL SAFE acknowledgement.
+const SHUTDOWN_TIMEOUT_MS: u64 = 2_500;
+/// How long a pending command may finish before shutdown cancels it.
+const SHUTDOWN_CANCEL_AFTER_MS: u64 = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserAction {
@@ -44,6 +49,7 @@ pub enum UserAction {
     SrvOff,
     IgnPwr,
     IgnSafe,
+    ResetControls,
     ResetFill,
     ClearFaults,
     Estop,
@@ -58,6 +64,7 @@ impl UserAction {
             "srv_off" => UserAction::SrvOff,
             "ign_pwr" => UserAction::IgnPwr,
             "ign_safe" => UserAction::IgnSafe,
+            "reset_controls" => UserAction::ResetControls,
             "reset_fill" => UserAction::ResetFill,
             "clear_faults" => UserAction::ClearFaults,
             "estop" => UserAction::Estop,
@@ -73,6 +80,7 @@ impl UserAction {
             UserAction::SrvOff => "srv_off",
             UserAction::IgnPwr => "ign_pwr",
             UserAction::IgnSafe => "ign_safe",
+            UserAction::ResetControls => "reset_controls",
             UserAction::ResetFill => "reset_fill",
             UserAction::ClearFaults => "clear_faults",
             UserAction::Estop => "estop",
@@ -87,6 +95,7 @@ impl UserAction {
             UserAction::SrvOff => "SRV OFF",
             UserAction::IgnPwr => "IGN PWR",
             UserAction::IgnSafe => "IGN SAFE",
+            UserAction::ResetControls => "RESET CONTROLS",
             UserAction::ResetFill => "RESET FILL SEQ",
             UserAction::ClearFaults => "CLEAR FAULTS",
             UserAction::Estop => "EMERGENCY STOP",
@@ -137,6 +146,13 @@ impl UserAction {
                 arg_s: 0,
                 flags,
             },
+            UserAction::ResetControls => Command {
+                cmd_id,
+                control: Control::System,
+                action: gse_proto::SYSTEM_ACTION_SAFE_ALL,
+                arg_s: 0,
+                flags,
+            },
             UserAction::ResetFill => Command {
                 cmd_id,
                 control: Control::System,
@@ -159,6 +175,45 @@ impl UserAction {
                 flags: flags | cmd_flags::ESTOP,
             },
         }
+    }
+
+    /// Event this action pushes into the shared control-state machine.
+    ///
+    /// `RESET FILL SEQ` and `CLEAR FAULTS` only clear latches; they never move
+    /// an output, so they are not machine events.
+    fn event(self) -> Option<ControlEvent> {
+        match self {
+            UserAction::FillOn => Some(ControlEvent::FillOn),
+            UserAction::FillOff => Some(ControlEvent::FillOff),
+            UserAction::SrvOn => Some(ControlEvent::SrvOn),
+            UserAction::SrvOff => Some(ControlEvent::SrvOff),
+            UserAction::IgnPwr => Some(ControlEvent::IgnPwr),
+            UserAction::IgnSafe => Some(ControlEvent::IgnSafe),
+            UserAction::ResetControls => Some(ControlEvent::Reset),
+            UserAction::Estop => Some(ControlEvent::SafeAll),
+            UserAction::ResetFill | UserAction::ClearFaults => None,
+        }
+    }
+}
+
+/// Why a command is on the wire. Drives logging, label text and the
+/// post-acknowledgement handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    Operator,
+    /// Automatic FILL OFF at the configured deadline.
+    AutoFill,
+    /// Startup handshake: force everything OFF/SAFE before enabling controls.
+    StartupSafe,
+    /// Pre-shutdown ALL SAFE.
+    ShutdownSafe,
+    /// Automatic `RESET FILL SEQ` that follows RESET CONTROLS.
+    ResetFollowUp,
+}
+
+impl Origin {
+    fn is_operator(self) -> bool {
+        matches!(self, Origin::Operator)
     }
 }
 
@@ -189,6 +244,16 @@ struct PendingCmd {
     command: Command,
     due: Instant,
     auto: bool,
+    origin: Origin,
+}
+
+/// State of the safe-shutdown sequence.
+struct ShutdownSeq {
+    started: Instant,
+    deadline: Instant,
+    safe_sent: bool,
+    acked: bool,
+    failed: bool,
 }
 
 pub struct Engine {
@@ -222,6 +287,12 @@ pub struct Engine {
     port_override: Option<String>,
     verbose: bool,
     shutting_down: bool,
+    shutdown: Option<ShutdownSeq>,
+    /// Startup handshake complete: every output confirmed OFF/SAFE.
+    controls_ready: bool,
+    startup_safe_sent: bool,
+    /// Operator pressed Disconnect: stay offline until Connect.
+    manual_disconnect: bool,
 }
 
 impl Engine {
@@ -263,6 +334,10 @@ impl Engine {
             port_override,
             verbose,
             shutting_down: false,
+            shutdown: None,
+            controls_ready: false,
+            startup_safe_sent: false,
+            manual_disconnect: false,
         }
     }
 
@@ -279,9 +354,10 @@ impl Engine {
                 self.handle_request(request);
             }
             if self.shutting_down {
-                break;
-            }
-            if self.link.is_none() {
+                if self.step_shutdown(tick_start) {
+                    break;
+                }
+            } else if self.link.is_none() {
                 self.maybe_connect(tick_start);
             } else {
                 self.service_link(tick_start);
@@ -293,9 +369,7 @@ impl Engine {
                 thread::sleep(Duration::from_millis(TICK_MS) - elapsed);
             }
         }
-        if let Some(link) = self.link.as_mut() {
-            let _ = link.write_all(&[]);
-        }
+        self.flush_link();
     }
 
     // ---------------------------------------------------------------------
@@ -321,6 +395,7 @@ impl Engine {
                 );
             }
             Request::Connect => {
+                self.manual_disconnect = false;
                 self.last_connect_attempt = None;
                 self.shared.log(
                     Level::Info,
@@ -330,6 +405,9 @@ impl Engine {
                 );
             }
             Request::Disconnect => {
+                // A deliberate disconnect must stay disconnected; only the
+                // Connect request (or a restart) brings the link back.
+                self.manual_disconnect = true;
                 self.disconnect("Disconnected by operator", Level::Warn);
             }
             Request::ClearLog => {
@@ -344,9 +422,7 @@ impl Engine {
                     None,
                 );
             }
-            Request::Shutdown => {
-                self.shutting_down = true;
-            }
+            Request::Shutdown => self.begin_shutdown(Instant::now()),
         }
     }
 
@@ -433,26 +509,34 @@ impl Engine {
             }
             Err(e) => {
                 drop(st);
-                self.shared.log(Level::Warn, Source::Operator, e, Some("shortcut"));
+                self.shared
+                    .log(Level::Warn, Source::Operator, e, Some("shortcut"));
             }
         }
     }
 
     fn user_action(&mut self, action: UserAction) {
+        if self.shutting_down {
+            self.shared.log(
+                Level::Warn,
+                Source::Operator,
+                format!("{} ignored - shutdown in progress", action.label()),
+                Some("shutdown"),
+            );
+            return;
+        }
         let (gate, fill_seconds) = {
             let st = self.shared.lock();
             let inputs = safety::Inputs {
                 ground_online: st.ground.status == GroundStatus::Online,
-                vehicle_online: st.vehicle.status == VehicleStatus::Online,
+                vehicle_online: st.vehicle_online(),
                 pending: st.pending.is_some(),
+                controls_ready: st.controls.ready,
                 state: st.vehicle.state,
             };
             let gates = safety::evaluate(&inputs);
             (
-                gates
-                    .get(action.id())
-                    .cloned()
-                    .unwrap_or_default(),
+                gates.get(action.id()).cloned().unwrap_or_default(),
                 st.config.fill_seconds,
             )
         };
@@ -489,7 +573,7 @@ impl Engine {
             self.fill_deadline = None;
             self.fill_started = None;
             self.auto_off_sent = false;
-            self.send_action(action, fill_seconds, cmd_flags::ESTOP, false);
+            self.send_action(action, fill_seconds, cmd_flags::ESTOP, Origin::Operator);
             return;
         }
 
@@ -511,18 +595,31 @@ impl Engine {
             );
             return;
         }
-        self.send_action(action, fill_seconds, 0, false);
+        self.send_action(action, fill_seconds, 0, Origin::Operator);
     }
 
-    fn send_action(&mut self, action: UserAction, fill_seconds: u16, flags: u8, auto: bool) {
+    /// Transmit one command and arm the ACK/retry machinery.
+    ///
+    /// The control machine's *target* is recorded here, but the confirmed
+    /// state only moves when the vehicle acknowledges (see `handle_ack`).
+    fn send_action(
+        &mut self,
+        action: UserAction,
+        fill_seconds: u16,
+        flags: u8,
+        origin: Origin,
+    ) -> bool {
         let cmd_id = self.next_cmd_id;
         self.next_cmd_id = self.next_cmd_id.wrapping_add(1);
         let command = action.command(cmd_id, fill_seconds, flags);
         let now = Instant::now();
-        let label = if auto {
-            format!("{} (auto)", action.label())
-        } else {
-            action.label().to_string()
+        let auto = origin == Origin::AutoFill;
+        let label = match origin {
+            Origin::AutoFill => format!("{} (auto)", action.label()),
+            Origin::StartupSafe => "STARTUP ALL SAFE".to_string(),
+            Origin::ShutdownSafe => "SHUTDOWN ALL SAFE".to_string(),
+            Origin::ResetFollowUp => "RESET FILL SEQ (auto)".to_string(),
+            Origin::Operator => action.label().to_string(),
         };
         if !self.send(Message::Command(command), Endpoint::Vehicle) {
             self.shared.log(
@@ -531,7 +628,7 @@ impl Engine {
                 "Could not send command - link is down".to_string(),
                 Some("send_failed"),
             );
-            return;
+            return false;
         }
         let info = PendingInfo {
             cmd_id,
@@ -548,27 +645,54 @@ impl Engine {
             if action == UserAction::FillOff && auto {
                 st.fill.auto_off_pending = true;
             }
+            if let Some(event) = action.event() {
+                let state = ControlState::from_snapshot(&st.vehicle.state);
+                let interlocks = Interlocks::from_snapshot(&st.vehicle.state);
+                let transition = state.transition(event, interlocks);
+                st.controls.target = match transition {
+                    Transition::Allowed(next) => Some(next),
+                    _ => None,
+                };
+                st.controls.last_event = Some(event.id());
+                // Lifecycle of the command; the ACK or the timeout replaces
+                // this with the final outcome. The confirmed state itself only
+                // moves when the vehicle acknowledges.
+                st.controls.last_result = Some("pending");
+                st.revision = st.revision.wrapping_add(1);
+            }
         }
         self.pending = Some(PendingCmd {
             info,
             command,
             due: now + Duration::from_millis(ACK_RETRY_MS),
             auto,
+            origin,
         });
-        let message = match action {
-            UserAction::FillOn => {
+        let message = match (action, origin) {
+            (UserAction::FillOn, _) => {
                 format!("{} requested ({} s fill)", label, fill_seconds)
             }
-            UserAction::Estop => "EMERGENCY STOP - all outputs SAFE".to_string(),
+            (UserAction::Estop, _) => "EMERGENCY STOP - all outputs SAFE".to_string(),
+            (_, Origin::StartupSafe) => {
+                "Controls not all OFF/SAFE at initialisation - commanding ALL SAFE".to_string()
+            }
+            (_, Origin::ShutdownSafe) => {
+                "Shutdown requested - commanding ALL SAFE before exit".to_string()
+            }
+            (_, Origin::ResetFollowUp) => "Resetting latched fill sequence".to_string(),
             _ => format!("{label} requested"),
         };
-        let level = if action == UserAction::Estop {
-            Level::Warn
-        } else {
-            Level::Info
+        let level = match (action, origin) {
+            (UserAction::Estop, _) | (_, Origin::StartupSafe) => Level::Warn,
+            (_, Origin::ShutdownSafe) => Level::Info,
+            _ => Level::Info,
         };
-        self.shared
-            .log(level, Source::Operator, message, Some(action.id()));
+        let source = if origin.is_operator() {
+            Source::Operator
+        } else {
+            Source::App
+        };
+        self.shared.log(level, source, message, Some(action.id()));
         if action == UserAction::FillOff && auto {
             self.shared.log(
                 Level::Warn,
@@ -577,6 +701,7 @@ impl Engine {
                 Some("fill_auto_off"),
             );
         }
+        true
     }
 
     // ---------------------------------------------------------------------
@@ -591,13 +716,20 @@ impl Engine {
     }
 
     fn maybe_connect(&mut self, now: Instant) {
+        if self.manual_disconnect {
+            return;
+        }
         let last = match self.last_connect_attempt {
             Some(t) => t,
             None => self.started - Duration::from_secs(10),
         };
         let target = self.connection_target();
         let auto = target == "auto";
-        let delay = if auto { SCAN_RETRY_MS } else { RECONNECT_DELAY_MS };
+        let delay = if auto {
+            SCAN_RETRY_MS
+        } else {
+            RECONNECT_DELAY_MS
+        };
         if now.duration_since(last) < Duration::from_millis(delay) {
             return;
         }
@@ -619,7 +751,9 @@ impl Engine {
         if auto {
             let ports = serial::list_ports();
             if ports.is_empty() {
-                self.scan_failed("No serial ports found. Connect the ground board with a USB data cable.");
+                self.scan_failed(
+                    "No serial ports found. Connect the ground board with a USB data cable.",
+                );
                 return;
             }
             let mut tried = Vec::new();
@@ -677,7 +811,9 @@ impl Engine {
     }
 
     fn on_connected(&mut self, link: Box<dyn ByteLink>, port: &str) {
+        let link_name = link.name();
         self.link = Some(link);
+        self.manual_disconnect = false;
         self.decoder = FrameDecoder::new();
         self.last_decoder_stats = DecodeStats::default();
         self.tx_seq = 0;
@@ -692,8 +828,15 @@ impl Engine {
         self.auto_off_sent = false;
         self.prev_state = StateSnapshot::default();
         self.prev_vehicle_uptime = None;
+        // A new link starts a new session: the machine goes back to INIT and
+        // must re-confirm OFF/SAFE before any control is enabled.
+        self.controls_ready = false;
+        self.startup_safe_sent = false;
         {
             let mut st = self.shared.lock();
+            st.controls.ready = false;
+            st.controls.target = None;
+            st.controls.state = ControlState::SAFE;
             st.ground.status = GroundStatus::Connecting;
             st.ground.port = port.to_string();
             st.ground.error = None;
@@ -711,7 +854,7 @@ impl Engine {
         self.shared.log(
             Level::Ok,
             Source::App,
-            format!("Port {port} opened - detecting ground board"),
+            format!("Link {link_name} opened - detecting ground board"),
             Some("port_open"),
         );
         self.shared.publish();
@@ -733,10 +876,18 @@ impl Engine {
         self.fill_deadline = None;
         self.auto_off_sent = false;
         self.fill_started = None;
+        self.controls_ready = false;
+        self.startup_safe_sent = false;
         self.decoder.reset();
         {
             let mut st = self.shared.lock();
-            st.ground.status = GroundStatus::Disconnected;
+            st.controls.ready = false;
+            st.controls.target = None;
+            st.ground.status = if level == Level::Error {
+                GroundStatus::Error
+            } else {
+                GroundStatus::Disconnected
+            };
             st.ground.error = Some(reason.to_string());
             st.vehicle.status = VehicleStatus::Offline;
             st.pending = None;
@@ -802,7 +953,9 @@ impl Engine {
         }
 
         let stats = self.decoder.stats();
-        let crc_delta = stats.crc_errors.wrapping_sub(self.last_decoder_stats.crc_errors);
+        let crc_delta = stats
+            .crc_errors
+            .wrapping_sub(self.last_decoder_stats.crc_errors);
         let malformed_delta = stats
             .malformed
             .wrapping_sub(self.last_decoder_stats.malformed);
@@ -812,6 +965,10 @@ impl Engine {
             st.stats.crc_errors = st.stats.crc_errors.wrapping_add(crc_delta as u64);
             st.stats.malformed = st.stats.malformed.wrapping_add(malformed_delta as u64);
         }
+
+        // Initialisation handshake: every session starts with the machine in
+        // INIT and only leaves it once the vehicle reports all outputs safe.
+        self.check_startup_safe();
 
         // Heartbeat keeps the vehicle's 5 s link-loss failsafe quiet.
         if self
@@ -860,12 +1017,19 @@ impl Engine {
                     st.pending = None;
                     st.revision = st.revision.wrapping_add(1);
                 }
+                {
+                    let mut st = self.shared.lock();
+                    st.controls.last_result = Some("timeout");
+                }
                 self.shared.log(
                     Level::Error,
                     Source::App,
                     format!("No ACK from vehicle for {label} after {ACK_MAX_ATTEMPTS} attempts - command state unknown"),
                     Some("ack_timeout"),
                 );
+                if self.startup_safe_sent && !self.controls_ready {
+                    self.startup_safe_sent = false;
+                }
             } else if let Some(pending) = self.pending.as_mut() {
                 pending.info.attempts += 1;
                 pending.info.sent_epoch_ms = clock::unix_ms();
@@ -938,7 +1102,10 @@ impl Engine {
                 self.shared.log(
                     Level::Warn,
                     Source::Ground,
-                    format!("Radio link quiet for {:.1} s - check the SX1281 modules", age as f64 / 1000.0),
+                    format!(
+                        "Radio link quiet for {:.1} s - check the SX1281 modules",
+                        age as f64 / 1000.0
+                    ),
                     Some("radio_warn"),
                 );
             } else if age < 1_000 {
@@ -948,6 +1115,11 @@ impl Engine {
     }
 
     fn service_fill_auto_off(&mut self, now: Instant) {
+        // During shutdown the ALL SAFE command closes the valve; do not race
+        // it with an automatic FILL OFF.
+        if self.shutting_down {
+            return;
+        }
         let (fill_open, timer_active, remaining, vehicle_online, pending, auto_off_sent) = {
             let st = self.shared.lock();
             (
@@ -962,11 +1134,8 @@ impl Engine {
         if !fill_open || !vehicle_online || pending || auto_off_sent || !timer_active {
             return;
         }
-        let deadline_reached = self
-            .fill_deadline
-            .map(|d| now >= d)
-            .unwrap_or(false)
-            || remaining == 0;
+        let deadline_reached =
+            self.fill_deadline.map(|d| now >= d).unwrap_or(false) || remaining == 0;
         if !deadline_reached {
             return;
         }
@@ -977,7 +1146,7 @@ impl Engine {
         st.revision = st.revision.wrapping_add(1);
         drop(st);
         let _ = fill_seconds;
-        self.send_action(UserAction::FillOff, 0, cmd_flags::AUTO, true);
+        self.send_action(UserAction::FillOff, 0, cmd_flags::AUTO, Origin::AutoFill);
     }
 
     fn send_ping(&mut self, dst: Endpoint) {
@@ -1191,7 +1360,8 @@ impl Engine {
                 Source::Vehicle,
                 format!(
                     "Vehicle online - PONG received{}",
-                    rtt.map(|r| format!(" ({r} ms round trip)")).unwrap_or_default()
+                    rtt.map(|r| format!(" ({r} ms round trip)"))
+                        .unwrap_or_default()
                 ),
                 Some("vehicle_online"),
             );
@@ -1274,10 +1444,20 @@ impl Engine {
                 self.fill_deadline = None;
                 self.fill_started = None;
                 self.auto_off_sent = false;
+                self.controls_ready = false;
+                self.startup_safe_sent = false;
+                let mut st = self.shared.lock();
+                st.controls.ready = false;
+                st.controls.target = None;
             }
         }
         self.prev_vehicle_uptime = Some(state.uptime_ms);
         self.prev_state = state;
+        // Startup handshake: the machine only leaves INIT once the vehicle
+        // itself reports every output OFF/SAFE.
+        if !self.controls_ready && state.outputs_safe() && self.pending.is_none() {
+            self.mark_controls_ready();
+        }
     }
 
     fn handle_ack(&mut self, ack: Ack) {
@@ -1303,6 +1483,10 @@ impl Engine {
         }
         let pending = self.pending.take();
         let auto = pending.as_ref().map(|p| p.auto).unwrap_or(false);
+        let origin = pending
+            .as_ref()
+            .map(|p| p.origin)
+            .unwrap_or(Origin::Operator);
         let action = pending
             .as_ref()
             .and_then(|p| UserAction::from_id(&p.info.action));
@@ -1313,6 +1497,12 @@ impl Engine {
         {
             let mut st = self.shared.lock();
             st.pending = None;
+            st.controls.target = None;
+            st.controls.last_result = Some(if ack.result.is_ok() {
+                "acknowledged"
+            } else {
+                "rejected"
+            });
             st.revision = st.revision.wrapping_add(1);
             if ack.result.is_ok() {
                 st.stats.acks_ok = st.stats.acks_ok.wrapping_add(1);
@@ -1363,6 +1553,33 @@ impl Engine {
                     self.fill_started = None;
                     self.auto_off_sent = false;
                 }
+                Some(UserAction::ResetControls) => {
+                    self.fill_deadline = None;
+                    self.fill_started = None;
+                    self.auto_off_sent = false;
+                    if origin == Origin::Operator {
+                        self.shared.log(
+                            Level::Ok,
+                            Source::Vehicle,
+                            "All outputs confirmed OFF/SAFE".to_string(),
+                            Some("controls_reset"),
+                        );
+                    }
+                    // SAFE ALL closes the fill valve, which latches the fill
+                    // sequence as aborted/complete. A reset must also clear
+                    // those latches so the machine is truly at its initial
+                    // state. Only one command may be in flight, so it follows
+                    // this ACK.
+                    let latched = ack.state.fill_seq_complete()
+                        || ack.state.fill_seq_aborted()
+                        || ack.state.inhibited()
+                        || ack.state.estop();
+                    if latched && origin != Origin::ShutdownSafe {
+                        self.send_action(UserAction::ResetFill, 0, 0, Origin::ResetFollowUp);
+                    } else if origin == Origin::StartupSafe {
+                        self.mark_controls_ready();
+                    }
+                }
                 _ => {}
             }
         } else {
@@ -1384,6 +1601,38 @@ impl Engine {
             if action == Some(UserAction::FillOff) && auto {
                 self.auto_off_sent = false;
             }
+            if let Some(seq) = self.shutdown.as_mut() {
+                if origin == Origin::ShutdownSafe {
+                    seq.failed = true;
+                }
+            }
+            if origin == Origin::StartupSafe {
+                self.startup_safe_sent = false;
+            }
+        }
+        if origin == Origin::ShutdownSafe {
+            if let Some(seq) = self.shutdown.as_mut() {
+                if ack.result.is_ok() {
+                    seq.acked = true;
+                }
+            }
+            self.shared.log(
+                if ack.result.is_ok() {
+                    Level::Ok
+                } else {
+                    Level::Error
+                },
+                Source::App,
+                if ack.result.is_ok() {
+                    "ALL SAFE acknowledged - every control is OFF/SAFE".to_string()
+                } else {
+                    format!(
+                        "Vehicle rejected ALL SAFE during shutdown: {}",
+                        ack.reason.label()
+                    )
+                },
+                Some("shutdown_safe"),
+            );
         }
         self.apply_state(ack.state);
     }
@@ -1441,28 +1690,59 @@ impl Engine {
                 );
             }
             EventCode::FillOn => {
-                self.shared.log(Level::Info, Source::Vehicle, "FILL valve open".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Info,
+                    Source::Vehicle,
+                    "FILL valve open".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::FillOff => {
-                self.shared.log(Level::Info, Source::Vehicle, "FILL valve closed".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Info,
+                    Source::Vehicle,
+                    "FILL valve closed".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::SrvOn => {
-                self.shared.log(Level::Info, Source::Vehicle, "SRV power ON".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Info,
+                    Source::Vehicle,
+                    "SRV power ON".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::SrvOff => {
-                self.shared.log(Level::Info, Source::Vehicle, "SRV power OFF".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Info,
+                    Source::Vehicle,
+                    "SRV power OFF".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::IgnPwr => {
-                self.shared.log(Level::Warn, Source::Vehicle, "IGN PWR asserted".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Warn,
+                    Source::Vehicle,
+                    "IGN PWR asserted".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::IgnSafe => {
-                self.shared.log(Level::Ok, Source::Vehicle, "IGN SAFE".to_string(), Some(code.code()));
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    "IGN SAFE".to_string(),
+                    Some(code.code()),
+                );
             }
             EventCode::LinkTimeoutSafe => {
                 self.shared.log(
                     Level::Error,
                     Source::Vehicle,
-                    "VEHICLE LINK TIMEOUT - all outputs forced SAFE, ignition inhibited".to_string(),
+                    "VEHICLE LINK TIMEOUT - all outputs forced SAFE, ignition inhibited"
+                        .to_string(),
                     Some(code.code()),
                 );
                 self.fill_deadline = None;
@@ -1549,6 +1829,204 @@ impl Engine {
     }
 
     // ---------------------------------------------------------------------
+    // Control-state machine, startup handshake and shutdown
+    // ---------------------------------------------------------------------
+
+    /// Transition the machine to READY once the vehicle itself confirms that
+    /// FILL, SRV and IGN are all OFF/SAFE.
+    fn mark_controls_ready(&mut self) {
+        if self.controls_ready {
+            return;
+        }
+        let (safe, state) = {
+            let st = self.shared.lock();
+            (st.vehicle.state.outputs_safe(), st.vehicle.state)
+        };
+        if !safe {
+            return;
+        }
+        self.controls_ready = true;
+        let machine = ControlState::from_snapshot(&state);
+        {
+            let mut st = self.shared.lock();
+            st.controls.ready = true;
+            st.controls.state = machine;
+            st.controls.target = None;
+            st.revision = st.revision.wrapping_add(1);
+        }
+        self.shared.log(
+            Level::Ok,
+            Source::App,
+            format!(
+                "Control state machine initialised: FILL {} · SRV {} · IGN {} (all controls OFF/SAFE)",
+                machine.fill.label(),
+                machine.srv.label(),
+                machine.ign.label()
+            ),
+            Some("controls_ready"),
+        );
+    }
+
+    /// Startup handshake. Runs once per link, before any control is enabled.
+    fn check_startup_safe(&mut self) {
+        if self.controls_ready || self.startup_safe_sent || self.shutting_down {
+            return;
+        }
+        let (online, state) = {
+            let st = self.shared.lock();
+            (st.vehicle_online(), st.vehicle.state)
+        };
+        if !online || self.pending.is_some() {
+            return;
+        }
+        if state.outputs_safe() {
+            self.mark_controls_ready();
+            return;
+        }
+        // The vehicle came up (or was left) with an output active. Initialise
+        // the machine deterministically: force ALL SAFE before enabling the UI.
+        self.startup_safe_sent = true;
+        self.send_action(
+            UserAction::ResetControls,
+            0,
+            cmd_flags::IMMEDIATE,
+            Origin::StartupSafe,
+        );
+    }
+
+    /// Start the pre-shutdown sequence. Idempotent.
+    fn begin_shutdown(&mut self, now: Instant) {
+        if self.shutting_down {
+            return;
+        }
+        self.shutting_down = true;
+        self.shutdown = Some(ShutdownSeq {
+            started: now,
+            deadline: now + Duration::from_millis(SHUTDOWN_TIMEOUT_MS),
+            safe_sent: false,
+            acked: false,
+            failed: false,
+        });
+        self.shared.log(
+            Level::Info,
+            Source::App,
+            "Shutdown requested - every control must be OFF/SAFE before exit".to_string(),
+            Some("shutdown"),
+        );
+    }
+
+    /// Drive the shutdown sequence. Returns `true` when the process may exit.
+    fn step_shutdown(&mut self, now: Instant) -> bool {
+        if self.shutdown.is_none() {
+            return true;
+        }
+        if self.link.is_none() {
+            let acked = self.shutdown.as_ref().map(|s| s.acked).unwrap_or(false);
+            if !acked {
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    "No link to the vehicle - OFF/SAFE could not be confirmed before shutdown"
+                        .to_string(),
+                    Some("shutdown_unsafe"),
+                );
+            }
+            return true;
+        }
+        // Keep the link serviced so the acknowledgement can arrive and the
+        // command retry machinery keeps running.
+        self.service_link(now);
+
+        let (safe_sent, acked, failed, started, deadline) = match self.shutdown.as_ref() {
+            Some(seq) => (
+                seq.safe_sent,
+                seq.acked,
+                seq.failed,
+                seq.started,
+                seq.deadline,
+            ),
+            None => return true,
+        };
+        if acked {
+            return true;
+        }
+        if failed {
+            self.shared.log(
+                Level::Error,
+                Source::App,
+                "Vehicle rejected ALL SAFE - power the vehicle down manually".to_string(),
+                Some("shutdown_unsafe"),
+            );
+            return true;
+        }
+        if !safe_sent {
+            // Let a command that is already settling finish briefly; then
+            // cancel it and force the machine to SAFE.
+            if self.pending.is_some()
+                && now.duration_since(started) < Duration::from_millis(SHUTDOWN_CANCEL_AFTER_MS)
+            {
+                return false;
+            }
+            if let Some(pending) = self.pending.take() {
+                {
+                    let mut st = self.shared.lock();
+                    st.pending = None;
+                    st.revision = st.revision.wrapping_add(1);
+                }
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    format!("{} cancelled for shutdown", pending.info.label),
+                    Some("shutdown_cancel"),
+                );
+            }
+            self.fill_deadline = None;
+            self.fill_started = None;
+            self.auto_off_sent = true;
+            let sent = self.send_action(
+                UserAction::ResetControls,
+                0,
+                cmd_flags::IMMEDIATE,
+                Origin::ShutdownSafe,
+            );
+            if let Some(seq) = self.shutdown.as_mut() {
+                seq.safe_sent = sent;
+            }
+            if !sent {
+                self.shared.log(
+                    Level::Error,
+                    Source::App,
+                    "Could not transmit ALL SAFE before shutdown".to_string(),
+                    Some("shutdown_unsafe"),
+                );
+                return true;
+            }
+        }
+        if now >= deadline {
+            self.pending = None;
+            {
+                let mut st = self.shared.lock();
+                st.pending = None;
+                st.revision = st.revision.wrapping_add(1);
+            }
+            self.shared.log(
+                Level::Error,
+                Source::App,
+                "Vehicle did not acknowledge ALL SAFE before the shutdown timeout - outputs may still be active".to_string(),
+                Some("shutdown_unsafe"),
+            );
+            return true;
+        }
+        false
+    }
+
+    fn flush_link(&mut self) {
+        if let Some(link) = self.link.as_mut() {
+            let _ = link.write_all(&[]);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // UI
     // ---------------------------------------------------------------------
 
@@ -1571,7 +2049,8 @@ impl Engine {
             if self.link.is_some() {
                 match self.last_vehicle_rx {
                     Some(last)
-                        if now.duration_since(last) <= Duration::from_millis(VEHICLE_TIMEOUT_MS) =>
+                        if now.duration_since(last)
+                            <= Duration::from_millis(VEHICLE_TIMEOUT_MS) =>
                     {
                         st.vehicle.status = VehicleStatus::Online;
                         st.vehicle.last_seen_epoch_ms = clock::unix_ms();
@@ -1607,12 +2086,7 @@ impl Engine {
 
 /// Probe a freshly opened port by sending a PING to `target` and waiting for a
 /// valid frame from that endpoint. Returns the link if the board answered.
-fn probe_port(
-    path: &str,
-    baud: u32,
-    target: Endpoint,
-    verbose: bool,
-) -> Option<Box<dyn ByteLink>> {
+fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<Box<dyn ByteLink>> {
     let mut link = match open_link(path, baud) {
         Ok(link) => link,
         Err(e) => {
@@ -1633,10 +2107,7 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
     let mut buf = [0u8; Frame::MAX_ENCODED];
     let nonce = clock::unix_ms() as u32;
     let n = match encode_message(
-        &Message::Ping(Ping {
-            nonce,
-            host_ms: 0,
-        }),
+        &Message::Ping(Ping { nonce, host_ms: 0 }),
         Endpoint::Host,
         target,
         0,
@@ -1669,4 +2140,62 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_commands_map_to_the_expected_events() {
+        assert_eq!(UserAction::FillOn.event(), Some(ControlEvent::FillOn));
+        assert_eq!(UserAction::FillOff.event(), Some(ControlEvent::FillOff));
+        assert_eq!(UserAction::SrvOn.event(), Some(ControlEvent::SrvOn));
+        assert_eq!(UserAction::SrvOff.event(), Some(ControlEvent::SrvOff));
+        assert_eq!(UserAction::IgnPwr.event(), Some(ControlEvent::IgnPwr));
+        assert_eq!(UserAction::IgnSafe.event(), Some(ControlEvent::IgnSafe));
+        assert_eq!(UserAction::ResetControls.event(), Some(ControlEvent::Reset));
+        assert_eq!(UserAction::Estop.event(), Some(ControlEvent::SafeAll));
+        // Latch-only commands must never move an output.
+        assert_eq!(UserAction::ResetFill.event(), None);
+        assert_eq!(UserAction::ClearFaults.event(), None);
+    }
+
+    #[test]
+    fn reset_controls_sends_plain_safe_all() {
+        let cmd = UserAction::ResetControls.command(9, 0, 0);
+        assert_eq!(cmd.control, Control::System);
+        assert_eq!(cmd.action, gse_proto::SYSTEM_ACTION_SAFE_ALL);
+        assert_eq!(cmd.flags & cmd_flags::ESTOP, 0);
+
+        let estop = UserAction::Estop.command(10, 0, 0);
+        assert_eq!(estop.control, Control::System);
+        assert_eq!(estop.action, gse_proto::SYSTEM_ACTION_SAFE_ALL);
+        assert_ne!(estop.flags & cmd_flags::ESTOP, 0);
+
+        let fill = UserAction::FillOn.command(11, 42, 0);
+        assert_eq!(fill.control, Control::Fill);
+        assert_eq!(fill.action, ACTION_ON);
+        assert_eq!(fill.arg_s, 42);
+    }
+
+    #[test]
+    fn action_ids_round_trip() {
+        for id in [
+            "fill_on",
+            "fill_off",
+            "srv_on",
+            "srv_off",
+            "ign_pwr",
+            "ign_safe",
+            "reset_controls",
+            "reset_fill",
+            "clear_faults",
+            "estop",
+        ] {
+            let action = UserAction::from_id(id).expect(id);
+            assert_eq!(action.id(), id);
+        }
+        assert_eq!(UserAction::from_id("nope"), None);
+    }
 }

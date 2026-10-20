@@ -13,6 +13,7 @@ pub fn unix_ms() -> u64 {
     }
 }
 
+#[allow(dead_code)]
 pub fn elapsed_ms(start: Instant) -> u64 {
     Instant::now().saturating_duration_since(start).as_millis() as u64
 }
@@ -45,6 +46,7 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
 }
 
 /// Human-friendly duration, e.g. `1h 02m`, `3m 07s`, `42.3s`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn short_duration(ms: u64) -> String {
     let total_s = ms / 1000;
     if total_s >= 3600 {
@@ -58,6 +60,7 @@ pub fn short_duration(ms: u64) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn duration_from_ms(ms: u64) -> Duration {
     Duration::from_millis(ms)
 }

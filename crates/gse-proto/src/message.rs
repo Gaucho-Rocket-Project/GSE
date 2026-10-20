@@ -445,7 +445,9 @@ impl Message {
                 crc_errors: l.crc_errors,
                 last_radio_age_ms: l.last_radio_age_ms,
             },
-            Message::Heartbeat(h) => MessageDescription::Heartbeat { uptime_ms: h.uptime_ms },
+            Message::Heartbeat(h) => MessageDescription::Heartbeat {
+                uptime_ms: h.uptime_ms,
+            },
         }
     }
 }
