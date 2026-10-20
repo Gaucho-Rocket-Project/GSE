@@ -318,3 +318,65 @@ pub fn list_ports() -> Vec<PortInfo> {
 pub fn path_exists(path: &str) -> bool {
     Path::new(path).exists()
 }
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod tests {
+    use std::ffi::CStr;
+    use std::os::raw::c_char;
+
+    use super::*;
+
+    /// `posix_openpt` requires the master to be opened read/write.
+    const O_RDWR: c_int = 2;
+
+    extern "C" {
+        fn posix_openpt(flags: c_int) -> c_int;
+        fn grantpt(fd: c_int) -> c_int;
+        fn unlockpt(fd: c_int) -> c_int;
+        fn ptsname(fd: c_int) -> *mut c_char;
+    }
+
+    #[test]
+    fn opens_and_configures_a_real_tty() {
+        // The device node is opened through `std::fs`, so exercise that path on
+        // a real terminal rather than only on the error path. A pseudo-terminal
+        // behaves like the CDC-ACM port: tty semantics, `termios` supported.
+        let master = unsafe { posix_openpt(O_RDWR | plat::O_NOCTTY | plat::O_NONBLOCK) };
+        assert!(master >= 0, "posix_openpt failed");
+        let master = Master(master);
+        assert_eq!(unsafe { grantpt(master.0) }, 0);
+        assert_eq!(unsafe { unlockpt(master.0) }, 0);
+        let name = unsafe { CStr::from_ptr(ptsname(master.0)) }
+            .to_str()
+            .expect("pt name")
+            .to_string();
+
+        let mut port = Port::open(&name, 115_200).expect("open pseudo-terminal");
+        // O_NONBLOCK: no data buffered yet, so a read must not block or fail.
+        assert_eq!(port.read(&mut [0u8; 8]).expect("read idle port"), 0);
+        port.write_all(b"hi").expect("write to pseudo-terminal");
+
+        let mut buf = [0u8; 8];
+        let mut got = 0;
+        for _ in 0..50 {
+            let n = unsafe { read(master.0, buf.as_mut_ptr() as *mut c_void, buf.len()) };
+            if n > 0 {
+                got = n as usize;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(got, 2, "the bytes written to the port reached the peer");
+        assert_eq!(&buf[..2], b"hi");
+    }
+
+    struct Master(c_int);
+
+    impl Drop for Master {
+        fn drop(&mut self) {
+            unsafe {
+                close(self.0);
+            }
+        }
+    }
+}
