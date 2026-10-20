@@ -1,0 +1,16 @@
+[package]
+name = "gse-sim"
+description = "Desktop simulator for both GSE NUCLEO-H753ZI boards (PTY or TCP)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "gse-sim"
+path = "src/main.rs"
+
+[dependencies]
+gse-proto = { workspace = true }
+gse-fw-core = { workspace = true, features = ["mock"] }
