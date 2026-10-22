@@ -9,6 +9,7 @@
 
 pub mod ground;
 pub mod hal;
+pub mod radio;
 pub mod vehicle;
 
 #[cfg(any(test, feature = "mock"))]
@@ -16,4 +17,5 @@ pub mod mock;
 
 pub use ground::Ground;
 pub use hal::{GroundHal, Leds, VehicleHal};
+pub use radio::{DxLr42Receiver, DxLr42Stats};
 pub use vehicle::{Vehicle, VehicleState};

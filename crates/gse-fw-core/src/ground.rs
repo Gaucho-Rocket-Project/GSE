@@ -17,6 +17,7 @@ use gse_proto::{
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, GroundHal, Leds};
+use crate::radio::{DxLr42Receiver, DxLr42Stats};
 
 /// HELLO rate towards the PC.
 pub const HELLO_PERIOD_MS: u32 = 1_000;
@@ -32,7 +33,7 @@ const RX_CHUNK: usize = 128;
 pub struct Ground<H: GroundHal> {
     hal: H,
     usb: FrameDecoder,
-    radio: FrameDecoder,
+    radio: DxLr42Receiver,
     tx_seq: u8,
     boot_ms: u32,
     booted: bool,
@@ -55,7 +56,7 @@ impl<H: GroundHal> Ground<H> {
         Ground {
             hal,
             usb: FrameDecoder::new(),
-            radio: FrameDecoder::new(),
+            radio: DxLr42Receiver::new(),
             tx_seq: 0,
             boot_ms: now,
             booted: false,
@@ -85,16 +86,42 @@ impl<H: GroundHal> Ground<H> {
         (self.usb.stats(), self.radio.stats())
     }
 
+    pub fn radio_driver_stats(&self) -> DxLr42Stats {
+        self.radio.radio_stats()
+    }
+
     pub fn poll(&mut self) {
         let now = self.hal.now_ms();
         if !self.booted {
             self.booted = true;
+            self.hal.set_radio_transparent();
             let state = StateSnapshot::all_safe();
             self.send_event(EventCode::BridgeReady, 0, now, state);
             self.send_hello(now);
         }
 
         let mut buf = [0u8; RX_CHUNK];
+
+        // Radio -> USB first so local AT-mode banners (`ERROR=104\r\n`) are caught
+        // before queuing additional outbound frames.
+        for _ in 0..8 {
+            let n = self.hal.read_radio(&mut buf);
+            if n == 0 {
+                break;
+            }
+            for &byte in &buf[..n] {
+                if let Some(frame) = self.radio.push(byte, now) {
+                    self.last_radio_activity = now;
+                    self.have_radio = true;
+                    self.handle_radio_frame(frame, now);
+                }
+            }
+        }
+
+        if let Some(escape) = self.radio.poll_recovery_tx(now) {
+            self.hal.set_radio_transparent();
+            self.hal.write_radio(escape);
+        }
 
         // USB (PC) -> radio.
         for _ in 0..8 {
@@ -107,21 +134,6 @@ impl<H: GroundHal> Ground<H> {
             for &byte in &buf[..n] {
                 if let Some(frame) = self.usb.push(byte) {
                     self.handle_usb_frame(frame, now);
-                }
-            }
-        }
-
-        // Radio -> USB.
-        for _ in 0..8 {
-            let n = self.hal.read_radio(&mut buf);
-            if n == 0 {
-                break;
-            }
-            self.last_radio_activity = now;
-            self.have_radio = true;
-            for &byte in &buf[..n] {
-                if let Some(frame) = self.radio.push(byte) {
-                    self.handle_radio_frame(frame, now);
                 }
             }
         }
@@ -159,7 +171,7 @@ impl<H: GroundHal> Ground<H> {
         if frame.dst == Endpoint::Host {
             return;
         }
-        if self.hal.radio_ready() {
+        if !self.radio.tx_inhibited(now) && self.hal.radio_ready() {
             let mut buf = [0u8; Frame::MAX_ENCODED];
             if let Some(n) = frame.encode(&mut buf) {
                 self.hal.write_radio(&buf[..n]);
@@ -278,11 +290,12 @@ impl<H: GroundHal> Ground<H> {
     }
 
     fn send_radio(&mut self, message: &Message, dst: Endpoint) -> bool {
+        let now = self.hal.now_ms();
         let mut buf = [0u8; Frame::MAX_ENCODED];
         let seq = self.tx_seq;
         match encode_message(message, Endpoint::Ground, dst, seq, &mut buf) {
             Some(n) => {
-                if !self.hal.radio_ready() {
+                if self.radio.tx_inhibited(now) || !self.hal.radio_ready() {
                     return false;
                 }
                 self.hal.write_radio(&buf[..n]);
@@ -477,5 +490,68 @@ mod tests {
         ground.poll();
         assert!(ground.hal_mut().drain_radio_frames().is_empty());
         assert_eq!(ground.drops, 1);
+    }
+
+    #[test]
+    fn local_dx_lr42_power_on_banner_does_not_fake_remote_link_or_uart_error() {
+        let mut ground = new_ground();
+        ground
+            .hal_mut()
+            .radio_in
+            .extend(b"Power On\r\n".iter().copied());
+        ground.hal_mut().feed_usb_frame(
+            &Message::Ping(Ping {
+                nonce: 1,
+                host_ms: 10,
+            }),
+            Endpoint::Host,
+            Endpoint::Ground,
+            1,
+        );
+        ground.poll();
+        assert_eq!(ground.radio_driver_stats().power_on_banners, 1);
+        assert_eq!(ground.uart_errors, 0);
+        // Host link is up, no vehicle frame has ever arrived: fault LED stays active.
+        assert!(ground.hal().leds.fault);
+    }
+
+    #[test]
+    fn local_dx_lr42_at_mode_self_heals_back_to_transparent_mode() {
+        let mut ground = new_ground();
+        ground.poll();
+        ground.hal_mut().drain_radio_frames();
+
+        ground
+            .hal_mut()
+            .radio_in
+            .extend(b"ERROR=104\r\n".iter().copied());
+        ground.poll();
+        assert_eq!(ground.radio_driver_stats().at_recoveries, 1);
+
+        // Advance past quiet guard so bridge writes bare "+++" escape sequence.
+        ground.hal_mut().advance(crate::radio::AT_PRE_GUARD_MS);
+        ground.poll();
+        assert_eq!(&ground.hal().radio_out[..], b"+++");
+        ground.hal_mut().radio_out.clear();
+
+        // Advance past settle window; normal host->radio forwarding works again cleanly.
+        ground.hal_mut().advance(crate::radio::AT_POST_SETTLE_MS);
+        let cmd = Command {
+            cmd_id: 9,
+            control: Control::Fill,
+            action: 1,
+            arg_s: 60,
+            flags: 0,
+        };
+        ground.hal_mut().feed_usb_frame(
+            &Message::Command(cmd),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            2,
+        );
+        ground.poll();
+        let frames = ground.hal_mut().drain_radio_frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].message(), Some(Message::Command(cmd)));
     }
 }

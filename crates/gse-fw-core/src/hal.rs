@@ -27,16 +27,19 @@ pub trait VehicleHal {
     /// Drive the ignition output (true = PWR).
     fn set_ign(&mut self, on: bool);
 
-    /// Non-blocking read of bytes received from the SX1281 module.
+    /// Non-blocking read of bytes received from the `DX-LR42-24T12D` (SX1281) module.
     /// Returns the number of bytes written into `buf` (0 when nothing pending).
     fn read_radio(&mut self, buf: &mut [u8]) -> usize;
-    /// Write bytes to the SX1281 module. May block for airtime/flow control.
+    /// Write bytes to the `DX-LR42-24T12D` module (`USART6`).
     fn write_radio(&mut self, data: &[u8]);
-    /// Ensure the module can accept at least `len` bytes (AUX flow control).
-    /// Returns false if the module is not ready; the caller will retry.
+    /// True when the TX queue has space and `AUX` (`PG10`) is not asserting busy.
+    /// Returns false if the module is busy; the caller retries on the next poll.
     fn radio_ready(&mut self) -> bool {
         true
     }
+    /// Drive the `DX-LR42-24T12D` hardware mode pins (`PG12` `M0`, `PG13` `M1`)
+    /// to `(0, 0)` (high-efficiency continuous transparent mode).
+    fn set_radio_transparent(&mut self) {}
 
     fn set_leds(&mut self, leds: Leds);
     fn kick_watchdog(&mut self);
@@ -60,6 +63,7 @@ pub trait GroundHal {
     fn radio_ready(&mut self) -> bool {
         true
     }
+    fn set_radio_transparent(&mut self) {}
 
     fn set_leds(&mut self, leds: Leds);
     fn kick_watchdog(&mut self);

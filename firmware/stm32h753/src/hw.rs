@@ -10,26 +10,33 @@
 //! reset (PLL bypassed, all prescalers /1). That is ample for two 115200/9600
 //! baud UARTs and keeps the bring-up short enough to audit.
 //!
-//! Pin map (NUCLEO-H753ZI):
+//! Pin map (NUCLEO-H753ZI `MB1364` + DX-SMART `DX-LR42-24T12D` SX1281 module):
 //!
-//! | Signal                | Pin            | Mode                       |
-//! |-----------------------|----------------|----------------------------|
-//! | USB VCP TX (ground)   | PD8            | USART3_TX, AF7             |
-//! | USB VCP RX (ground)   | PD9            | USART3_RX, AF7             |
-//! | Radio TX              | PG14           | USART6_TX, AF7             |
-//! | Radio RX              | PG9            | USART6_RX, AF7             |
-//! | LED green             | PB0            | push-pull output           |
-//! | LED yellow            | PE1            | push-pull output           |
-//! | LED red               | PB14           | push-pull output           |
-//! | FILL servo            | PE9            | TIM1_CH1, 50 Hz PWM        |
-//! | SRV servo             | PE11           | TIM1_CH2, 50 Hz PWM        |
-//! | IGN output            | PE13           | push-pull output           |
+//! | Signal                        | Pin            | Header      | Mode                                    |
+//! |-------------------------------|----------------|-------------|-----------------------------------------|
+//! | USB VCP TX (ground)           | PD8            | ST-LINK VCP | USART3_TX, AF7                          |
+//! | USB VCP RX (ground)           | PD9            | ST-LINK VCP | USART3_RX, AF7, internal pull-up        |
+//! | DX-LR42 Pin 3 (`RX`) <- TX    | PG14           | CN10 pin 12 | USART6_TX, AF7 (`3.3 V` CMOS, `9600 Bd`)|
+//! | DX-LR42 Pin 4 (`TX`) -> RX    | PG9            | CN9 pin 63  | USART6_RX, AF7, internal pull-up        |
+//! | DX-LR42 Pin 5 (`AUX`) -> busy | PG10           | CN9 pin 66  | GPIO input, internal pull-down          |
+//! | DX-LR42 Pin 1 (`M0`) <- mode0 | PG12           | CN9 pin 65  | open-drain output + pull-up, driven LOW |
+//! | DX-LR42 Pin 2 (`M1`) <- mode1 | PG13           | CN9 pin 68  | open-drain output + pull-up, driven LOW |
+//! | DX-LR42 Pin 6 (`VCC`)         | 5V             | CN8 pin 9   | `5.0 V` rail (`3.3–5.5 V`, `+13 dBm`)   |
+//! | DX-LR42 Pin 7 (`GND`)         | GND            | CN8 pin 11  | common ground                           |
+//! | LED green                     | PB0            | onboard LD1 | push-pull output                        |
+//! | LED yellow                    | PE1            | onboard LD2 | push-pull output                        |
+//! | LED red                       | PB14           | onboard LD3 | push-pull output                        |
+//! | FILL servo                    | PE9            | CN10 pin 4  | TIM1_CH1, 50 Hz PWM                     |
+//! | SRV servo                     | PE11           | CN10 pin 6  | TIM1_CH2, 50 Hz PWM                     |
+//! | IGN output                    | PE13           | CN10 pin 10 | push-pull output                        |
 
 #![allow(clippy::missing_safety_doc)]
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use gse_fw_core::hal::{GroundHal, Leds, VehicleHal};
+use gse_fw_core::hal::{elapsed_ms, GroundHal, Leds, VehicleHal};
+use gse_proto::radio::AUX_MAX_WAIT_MS;
+use gse_proto::{RADIO_BAUD, USB_BAUD};
 
 // ---------------------------------------------------------------------------
 // Register map
@@ -46,7 +53,10 @@ pub const GPIOE: usize = 0x5802_1000;
 pub const GPIOG: usize = 0x5802_1800;
 
 const GPIO_MODER: usize = 0x00;
+const GPIO_OTYPER: usize = 0x04;
 const GPIO_OSPEEDR: usize = 0x08;
+const GPIO_PUPDR: usize = 0x0C;
+const GPIO_IDR: usize = 0x10;
 const GPIO_BSRR: usize = 0x18;
 const GPIO_AFR0: usize = 0x20;
 const GPIO_AFR1: usize = 0x24;
@@ -157,6 +167,14 @@ pub extern "C" fn SysTick() {
 // GPIO
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Pull {
+    None = 0b00,
+    Up = 0b01,
+    Down = 0b10,
+}
+
 #[derive(Clone, Copy)]
 pub struct Pin {
     pub port: usize,
@@ -178,6 +196,28 @@ impl Pin {
         unsafe { modify(self.port + reg, mask, mode << ((self.pin as u32) * 2)) }
     }
 
+    fn set_open_drain(&self, open_drain: bool) {
+        let bit = 1u32 << self.pin;
+        unsafe {
+            modify(
+                self.port + GPIO_OTYPER,
+                bit,
+                if open_drain { bit } else { 0 },
+            )
+        }
+    }
+
+    pub fn set_pull(&self, pull: Pull) {
+        let shift = (self.pin as u32) * 2;
+        unsafe {
+            modify(
+                self.port + GPIO_PUPDR,
+                0b11 << shift,
+                (pull as u32) << shift,
+            )
+        }
+    }
+
     fn set_speed_high(&self) {
         let shift = (self.pin as u32) * 2;
         unsafe {
@@ -189,20 +229,50 @@ impl Pin {
         }
     }
 
+    pub fn as_input(&self, pull: Pull) {
+        self.set_pull(pull);
+        self.set_mode(0b00);
+    }
+
     pub fn as_output(&self) {
+        self.set_open_drain(false);
+        self.set_speed_high();
+        self.set_mode(0b01);
+    }
+
+    /// Configure as open-drain output with preloaded state so no transition glitch occurs.
+    ///
+    /// Used on `DX-LR42-24T12D` `M0`/`M1`: when `AT+SWITCH=0` (factory default) the module
+    /// drives `M0`/`M1` low itself, whereas when `AT+SWITCH=1` they become weak-pull-up
+    /// inputs. Open-drain + pull-up avoids bus contention in every configuration while
+    /// solidly sinking `(0, 0)` to select continuous transparent mode.
+    pub fn as_open_drain_output(&self, pull: Pull, initial_high: bool) {
+        self.set(initial_high);
+        self.set_open_drain(true);
+        self.set_pull(pull);
         self.set_speed_high();
         self.set_mode(0b01);
     }
 
     pub fn as_alternate(&self, af: u32) {
+        self.as_alternate_pull(af, Pull::None);
+    }
+
+    pub fn as_alternate_pull(&self, af: u32, pull: Pull) {
+        self.set_open_drain(false);
+        self.set_pull(pull);
         self.set_speed_high();
-        self.set_mode(0b10);
         let (reg, shift) = if self.pin < 8 {
             (GPIO_AFR0, (self.pin as u32) * 4)
         } else {
             (GPIO_AFR1, ((self.pin as u32) - 8) * 4)
         };
-        unsafe { modify(self.port + reg, 0xF << shift, (af & 0xF) << shift) }
+        unsafe { modify(self.port + reg, 0xF << shift, (af & 0xF) << shift) };
+        self.set_mode(0b10);
+    }
+
+    pub fn is_high(&self) -> bool {
+        unsafe { rd(self.port + GPIO_IDR) & (1u32 << self.pin) != 0 }
     }
 
     pub fn set(&self, high: bool) {
@@ -271,6 +341,14 @@ impl TxRing {
             self.head = self.head.wrapping_add(1);
         }
         true
+    }
+
+    pub fn peek(&self) -> Option<u8> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(self.buf[self.tail % TX_CAPACITY])
+        }
     }
 
     pub fn pop(&mut self) -> Option<u8> {
@@ -363,6 +441,146 @@ impl Uart {
 
     pub fn has_space(&self, count: usize) -> bool {
         self.tx.has_space(count)
+    }
+
+    /// Pump TX FIFO while honouring inter-frame half-duplex pacing (`AUX`).
+    ///
+    /// Once a non-zero COBS body has begun (`in_frame == true`), all remaining bytes
+    /// up to and including the closing `0x00` delimiter are pushed continuously so a
+    /// frame is never split across a `DX-LR42-24T12D` UART idle timeout. Between
+    /// complete frames (`in_frame == false`), pumping pauses while `can_start_frame`
+    /// reports the transceiver is busy on air.
+    pub fn pump_framed(&mut self, in_frame: &mut bool, can_start_frame: bool) {
+        unsafe {
+            while !self.tx.is_empty() {
+                if !*in_frame && !can_start_frame {
+                    break;
+                }
+                if rd(self.base + USART_ISR) & USART_ISR_TXE == 0 {
+                    break;
+                }
+                if let Some(byte) = self.tx.pop() {
+                    if byte != 0 {
+                        *in_frame = true;
+                    } else if *in_frame {
+                        *in_frame = false;
+                    }
+                    wr(self.base + USART_TDR, byte as u32);
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DX-LR42-24T12D (Semtech SX1281) 7-pin radio interface
+// ---------------------------------------------------------------------------
+
+pub const RADIO_TX_PIN: Pin = Pin::new(GPIOG, 14); // CN10 pin 12 -> DX-LR42 Pin 3 (RX)
+pub const RADIO_RX_PIN: Pin = Pin::new(GPIOG, 9); // CN9 pin 63  <- DX-LR42 Pin 4 (TX)
+pub const RADIO_AUX_PIN: Pin = Pin::new(GPIOG, 10); // CN9 pin 66  <- DX-LR42 Pin 5 (AUX)
+pub const RADIO_M0_PIN: Pin = Pin::new(GPIOG, 12); // CN9 pin 65  -> DX-LR42 Pin 1 (M0)
+pub const RADIO_M1_PIN: Pin = Pin::new(GPIOG, 13); // CN9 pin 68  -> DX-LR42 Pin 2 (M1)
+
+/// Non-blocking flow-control gate for `DX-LR42-24T12D` `AUX` (`HIGH` = busy, `LOW` = ready)
+/// with a `AUX_MAX_WAIT_MS` stuck-high bypass so a miswired/shorted `AUX` jumper can never
+/// stall safety commands or `STATE` telemetry.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AuxTracker {
+    busy_since_ms: Option<u32>,
+}
+
+impl AuxTracker {
+    pub const fn new() -> Self {
+        AuxTracker {
+            busy_since_ms: None,
+        }
+    }
+
+    pub fn can_transmit(&mut self, aux_high: bool, now_ms: u32) -> bool {
+        if !aux_high {
+            self.busy_since_ms = None;
+            return true;
+        }
+        match self.busy_since_ms {
+            None => {
+                self.busy_since_ms = Some(now_ms);
+                false
+            }
+            Some(since) => elapsed_ms(now_ms, since) >= AUX_MAX_WAIT_MS,
+        }
+    }
+}
+
+/// Shared hardware port driving the `DX-LR42-24T12D` transceiver on `USART6` + `GPIOG`.
+pub struct DxLr42Port {
+    uart: Uart,
+    aux: Pin,
+    m0: Pin,
+    m1: Pin,
+    tracker: AuxTracker,
+    in_frame: bool,
+}
+
+impl DxLr42Port {
+    /// Initialise `GPIOG` pins (`PG9`, `PG10`, `PG12`, `PG13`, `PG14`) and `USART6` (`9600 8N1`).
+    pub fn init() -> Self {
+        enable_gpio(6); // GPIOG
+        unsafe { set_bits(RCC_APB2ENR, 1 << 5) }; // USART6EN
+
+        // Hold `(M0=0, M1=0)` via open-drain + pull-up before enabling UART traffic:
+        // * When `AT+SWITCH=1`: selects high-efficiency continuous transparent mode `(0, 0)`
+        //   and prevents floating weak pull-ups from putting the module into `(1, 1)` sleep.
+        // * When `AT+SWITCH=0` (factory default): module drives `M0`/`M1` low itself, so
+        //   open-drain avoids any push-pull contention.
+        RADIO_M0_PIN.as_open_drain_output(Pull::Up, false);
+        RADIO_M1_PIN.as_open_drain_output(Pull::Up, false);
+
+        // `AUX` is HIGH during RF TX/RX/reset and LOW when idle; internal pull-down means a
+        // minimal 4-wire hookup (`VCC`, `GND`, `RX`, `TX`) reads `LOW = ready` automatically.
+        RADIO_AUX_PIN.as_input(Pull::Down);
+
+        RADIO_TX_PIN.as_alternate(7);
+        RADIO_RX_PIN.as_alternate_pull(7, Pull::Up);
+
+        let mut uart = Uart::new(USART6);
+        uart.init(RADIO_BAUD);
+
+        DxLr42Port {
+            uart,
+            aux: RADIO_AUX_PIN,
+            m0: RADIO_M0_PIN,
+            m1: RADIO_M1_PIN,
+            tracker: AuxTracker::new(),
+            in_frame: false,
+        }
+    }
+
+    pub fn set_transparent_mode(&self) {
+        self.m0.set(false);
+        self.m1.set(false);
+    }
+
+    pub fn set_at_pin_mode(&self, at_mode: bool) {
+        self.m0.set(at_mode);
+        self.m1.set(false);
+    }
+
+    pub fn read(&mut self, buf: &mut [u8]) -> usize {
+        self.uart.read(buf)
+    }
+
+    pub fn write(&mut self, data: &[u8]) -> bool {
+        self.uart.write(data)
+    }
+
+    pub fn ready(&mut self, now_ms: u32) -> bool {
+        self.uart.has_space(256) && self.tracker.can_transmit(self.aux.is_high(), now_ms)
+    }
+
+    pub fn pump(&mut self, now_ms: u32) {
+        let can_start = self.tracker.can_transmit(self.aux.is_high(), now_ms);
+        self.uart.pump_framed(&mut self.in_frame, can_start);
     }
 }
 
@@ -552,37 +770,33 @@ fn device_id(role_salt: u32) -> u32 {
 
 pub struct GroundBoard {
     usb: Uart,
-    radio: Uart,
+    radio: DxLr42Port,
     leds: LedBank,
     device: u32,
 }
 
 impl GroundBoard {
-    /// Bring up the bridge board: USART3 on the ST-LINK VCP, USART6 to the
-    /// SX1281 module, LEDs, watchdog.
+    /// Bring up the bridge board: `USART3` on the ST-LINK VCP, `DxLr42Port` on
+    /// `USART6` (`DX-LR42-24T12D`), LEDs, watchdog.
     pub fn init() -> Self {
-        // GPIO clocks: B (LEDs), D (VCP), G (radio).
+        // GPIO clocks: B/E (LEDs + safe IGN pin), D (VCP).
         enable_gpio(1);
         enable_gpio(3);
-        enable_gpio(6);
+        enable_gpio(4);
         unsafe {
             set_bits(RCC_APB1LENR, 1 << 18); // USART3EN
-            set_bits(RCC_APB2ENR, 1 << 5); // USART6EN
         }
 
         Pin::new(GPIOD, 8).as_alternate(7);
-        Pin::new(GPIOD, 9).as_alternate(7);
-        Pin::new(GPIOG, 14).as_alternate(7);
-        Pin::new(GPIOG, 9).as_alternate(7);
+        Pin::new(GPIOD, 9).as_alternate_pull(7, Pull::Up);
 
         let leds = LedBank::nucleo();
         leds.init();
         IGN_PIN.set(false);
 
         let mut usb = Uart::new(USART3);
-        usb.init(115_200);
-        let mut radio = Uart::new(USART6);
-        radio.init(9_600);
+        usb.init(USB_BAUD);
+        let radio = DxLr42Port::init();
 
         timebase_init();
         watchdog_init();
@@ -597,7 +811,7 @@ impl GroundBoard {
 
     pub fn pump(&mut self) {
         self.usb.pump();
-        self.radio.pump();
+        self.radio.pump(now_ms());
     }
 }
 
@@ -627,7 +841,11 @@ impl GroundHal for GroundBoard {
     }
 
     fn radio_ready(&mut self) -> bool {
-        self.radio.has_space(256)
+        self.radio.ready(now_ms())
+    }
+
+    fn set_radio_transparent(&mut self) {
+        self.radio.set_transparent_mode();
     }
 
     fn set_leds(&mut self, leds: Leds) {
@@ -648,7 +866,7 @@ impl GroundHal for GroundBoard {
 // ---------------------------------------------------------------------------
 
 pub struct VehicleBoard {
-    radio: Uart,
+    radio: DxLr42Port,
     servos: ServoPair,
     ignition: Pin,
     leds: LedBank,
@@ -661,12 +879,7 @@ pub struct VehicleBoard {
 impl VehicleBoard {
     pub fn init() -> Self {
         enable_gpio(1); // LEDs
-        enable_gpio(4); // LEDs + ignition
-        enable_gpio(6); // radio
-        unsafe { set_bits(RCC_APB2ENR, 1 << 5) }; // USART6EN
-
-        Pin::new(GPIOG, 14).as_alternate(7);
-        Pin::new(GPIOG, 9).as_alternate(7);
+        enable_gpio(4); // LEDs + servos + ignition
 
         // Servo outputs on TIM1 CH1/CH2.
         Pin::new(GPIOE, 9).as_alternate(1);
@@ -681,8 +894,7 @@ impl VehicleBoard {
         let leds = LedBank::nucleo();
         leds.init();
 
-        let mut radio = Uart::new(USART6);
-        radio.init(9_600);
+        let radio = DxLr42Port::init();
 
         timebase_init();
         watchdog_init();
@@ -700,7 +912,7 @@ impl VehicleBoard {
     }
 
     pub fn pump(&mut self) {
-        self.radio.pump();
+        self.radio.pump(now_ms());
     }
 
     fn apply_outputs(&mut self) {
@@ -739,7 +951,11 @@ impl VehicleHal for VehicleBoard {
     }
 
     fn radio_ready(&mut self) -> bool {
-        self.radio.has_space(256)
+        self.radio.ready(now_ms())
+    }
+
+    fn set_radio_transparent(&mut self) {
+        self.radio.set_transparent_mode();
     }
 
     fn set_leds(&mut self, leds: Leds) {
@@ -811,5 +1027,24 @@ mod tests {
     fn timebase_constant_is_one_kilohertz() {
         // SysTick reload value used by `timebase_init`.
         assert_eq!(CORE_HZ / 1000 - 1, 63_999);
+    }
+
+    #[test]
+    fn aux_tracker_holds_off_while_busy_and_releases_on_failsafe_or_low() {
+        let mut aux = AuxTracker::new();
+        assert!(aux.can_transmit(false, 1_000));
+
+        // Asserting AUX high blocks new transmissions across normal LoRa airtime.
+        assert!(!aux.can_transmit(true, 1_000));
+        assert!(!aux.can_transmit(true, 1_000 + AUX_MAX_WAIT_MS - 1));
+
+        // If AUX stays stuck high past AUX_MAX_WAIT_MS, failsafe unblocks transmission.
+        assert!(aux.can_transmit(true, 1_000 + AUX_MAX_WAIT_MS));
+
+        // Dropping AUX low resets the tracker immediately, including across u32 wrap.
+        assert!(aux.can_transmit(false, u32::MAX - 10));
+        assert!(!aux.can_transmit(true, u32::MAX - 5));
+        assert!(!aux.can_transmit(true, 10));
+        assert!(aux.can_transmit(true, (u32::MAX - 5).wrapping_add(AUX_MAX_WAIT_MS)));
     }
 }

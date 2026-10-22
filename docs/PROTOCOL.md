@@ -8,15 +8,21 @@ contract. The reference implementation is `crates/gse-proto`, which is
 
 ## Physical layer
 
-| Link | Rate | Format |
-|------|------|--------|
-| Laptop ↔ ground board (ST-LINK VCP) | 115 200 Bd (ignored by USB CDC) | 8N1, no flow control |
-| Ground board ↔ SX1281 | 9 600 Bd | 8N1, no flow control |
-| Vehicle board ↔ SX1281 | 9 600 Bd | 8N1, no flow control |
+| Link | Rate | Format / signals |
+|------|------|------------------|
+| Laptop ↔ ground board (`NUCLEO-H753ZI` ST-LINK VCP, `PD8`/`PD9`) | `115 200 Bd` | `8N1`, `3.3 V` CMOS |
+| Ground board ↔ `DX-LR42-24T12D` (`USART6`, `PG14`/`PG9` + `PG10`/`PG12`/`PG13`) | `9 600 Bd` | `8N1`, `3.3 V` TTL UART, `AUX` frame-boundary flow control (`250 ms` failsafe), `(M0=0, M1=0)` open-drain |
+| Vehicle board ↔ `DX-LR42-24T12D` (`USART6`, `PG14`/`PG9` + `PG10`/`PG12`/`PG13`) | `9 600 Bd` | `8N1`, `3.3 V` TTL UART, `AUX` frame-boundary flow control (`250 ms` failsafe), `(M0=0, M1=0)` open-drain |
+| Over-the-air link (`DX-LR42-24T12D`, Semtech SX1281, `2400–2500 MHz`) | `10 kbps` default (`AT+LEVEL3`, `2424 MHz`, `+13 dBm`) | Half-duplex LoRa (`LEVEL 0..7`, `230 B` max packet) or FLRC (`LEVEL 8`, `6..=127 B` packet) |
 
-The SX1281 modules are configured as transparent UART bridges on matching RF
-settings. Framing is self-synchronising and independent of LoRa packet
-boundaries.
+Both `DX-LR42-24T12D` modules operate in continuous transparent mode
+(`AT+MODE0`, `AT+SLEEP2`, `AT+DRSSI0`). Every valid wire frame is `13..=62`
+bytes long (compile-time checked in `gse_proto::radio`), fitting inside a single
+air packet across all nine modulation levels (`0..=8`) without sub-packet
+splitting. On receive, `DxLr42Receiver` (`crates/gse-fw-core/src/radio.rs`)
+absorbs local module status lines (`"Power On\r\n"`, `"Exit AT\r\n"`) before COBS
+decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
+`"ERROR=104"`) via `"+++"`.
 
 ## Frame
 

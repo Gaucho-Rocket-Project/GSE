@@ -1,4 +1,4 @@
-//! Vehicle board image: SX1281 (USART6) receiver and actuator driver.
+//! Vehicle board image: `DX-LR42-24T12D` SX1281 (`USART6`) receiver and actuator driver.
 //!
 //! FILL and SRV are 50 Hz servos on TIM1, IGN is a push-pull output. Every
 //! command is re-checked here even if the ground station already gated it;

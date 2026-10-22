@@ -3,11 +3,8 @@
 Operator console, wire protocol and flight-hardware firmware for a two-board
 rocket ground support station:
 
-- **Ground board** — NUCLEO-H753ZI connected to the operator laptop over USB-C /
-  ST-LINK Virtual COM Port, bridged to an SX1281 LoRa module over UART.
-- **Vehicle board** — NUCLEO-H753ZI on the rocket with a paired SX1281 module,
-  driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter
-  relay (`IGN`).
+- **Ground board** — STMicroelectronics **`NUCLEO-H753ZI`** ([DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937)) connected to the operator laptop over USB / ST-LINK Virtual COM Port and bridged to a **DX-SMART `DX-LR42-24T12D`** 2.4 GHz Semtech SX1281 LoRa/FLRC transceiver ([Amazon `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0)) over `USART6`.
+- **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
 The host application (`gse-app`) is a single dependency-free Rust binary. It
 serves an embedded terminal-style browser console on port `8765`, speaks a
@@ -18,19 +15,18 @@ independently re-checked in the `no_std` vehicle firmware — the vehicle never
 trusts the ground station.
 
 ```
-┌──────────────────────┐  USB CDC   ┌───────────────┐  UART   ┌──────────┐
-│  gse-app (laptop)    │ 115200 bd  │ ground board  │ 9600 bd │ SX1281   │
-│  HTTP console :8765  │◄──────────►│ NUCLEO-H753ZI │◄───────►│ (LoRa)   │
-└──────────────────────┘            └───────────────┘         └────┬─────┘
-                                                                   │ air
-                                                              ┌────┴─────┐
-                                                              │ SX1281   │
-                                                              │ vehicle  │
-                                                              │ H753ZI   │
-                                                              └────┬─────┘
-                                                FILL servo ◄───────┤
-                                                SRV servo  ◄───────┤
-                                                IGN relay  ◄───────┘
+┌──────────────────────┐  USB CDC   ┌───────────────┐  UART   ┌────────────────┐
+│  gse-app (laptop)    │ 115200 bd  │ ground board  │ 9600 bd │ DX-LR42-24T12D │
+│  HTTP console :8765  │◄──────────►│ NUCLEO-H753ZI │◄───────►│ (2.4G SX1281)  │
+└──────────────────────┘            └───────────────┘         └───────┬────────┘
+                                                                      │ 2.4 GHz RF
+                                                              ┌───────┴────────┐
+                                                              │ DX-LR42-24T12D │
+                                                              │ vehicle H753ZI │
+                                                              └───────┬────────┘
+                                                   FILL servo ◄───────┤
+                                                   SRV servo  ◄───────┤
+                                                   IGN relay  ◄───────┘
 ```
 
 ## Features
@@ -241,7 +237,7 @@ Session logs are written alongside state files under `logs/session-<timestamp>.l
   `TEST`, clickable to open **Settings**), and `TARGET` (`SIMULATOR` or
   `HARDWARE`) pills, plus `connect`, `disconnect` and `settings`.
 - **`SYS // MONITOR` left rail**: displays process health (`setup`, `gse-app`,
-  `gse-sim`, `sx1281-rf`), live interlock gates (`init safe`, `fill ↔ srv`,
+  `gse-sim`, `dx-lr42-rf`), live interlock gates (`init safe`, `fill ↔ srv`,
   `fill seq`, `srv+ign` / `ign gate`), and bus dispatch state.
 - **Control toggles**: horizontal terminal switches (`FILL[ON/OFF]`,
   `SRV+IGN[ON/OFF]` in `LIVE`; `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]`
@@ -279,11 +275,12 @@ assets, and `GET /api/health`.
 `firmware/stm32h753` contains the `no_std` STM32H753ZI package with two
 binaries:
 
-- `gse-ground` — USB CDC (`USART3`, `PD8`/`PD9`) ↔ SX1281 (`USART6`,
-  `PG14`/`PG9`) transparent frame bridge + `LINKSTAT` diagnostics.
-- `gse-vehicle` — SX1281 transceiver + `TIM1` 50 Hz servo PWM (`PE9` `FILL`,
-  `PE11` `SRV`), push-pull `IGN` output (`PE13`), 250 ms telemetry, 5 s RF
-  link-loss failsafe, and 4 s hardware watchdog (`IWDG1`).
+- `gse-ground` — USB CDC (`USART3`, `PD8`/`PD9`) ↔ `DX-LR42-24T12D` (`USART6`,
+  `PG14`/`PG9` + `PG10` `AUX` + `PG12`/`PG13` `M0`/`M1`) transparent frame
+  bridge + AT self-recovery + `LINKSTAT` diagnostics.
+- `gse-vehicle` — `DX-LR42-24T12D` transceiver + `TIM1` 50 Hz servo PWM (`PE9`
+  `FILL`, `PE11` `SRV`), push-pull `IGN` output (`PE13`), 250 ms telemetry,
+  5 s RF link-loss failsafe, and 4 s hardware watchdog (`IWDG1`).
 
 ```bash
 rustup target add thumbv7em-none-eabihf
@@ -294,19 +291,29 @@ cargo build --release --bin gse-vehicle
 cargo run --release --bin gse-vehicle
 ```
 
-See [docs/HARDWARE.md](docs/HARDWARE.md) for wiring, fail-safe pull-downs, and
-the bench bring-up procedure.
+Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
+`2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
+custom channel / `3.7 km` long-range `LEVEL 1` preset over a `3.3 V` USB-UART
+adapter:
+
+```bash
+python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --inspect
+python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --preset long-range --channel 2440MHz --key 27182 --lock-pins
+```
+
+See [docs/HARDWARE.md](docs/HARDWARE.md) for the full 7-pin wiring table, `5.0 V`
+`VCC` / `3.3 V` CMOS rules, fail-safe pull-downs, and bench bring-up checklist.
 
 ## Project layout
 
 ```text
-crates/gse-proto      no_std wire framing (COBS, CRC-16) + shared control FSM
-crates/gse-fw-core    no_std ground bridge & vehicle state/timer execution
+crates/gse-proto      no_std wire framing (COBS, CRC-16), DX-LR42 constants & shared FSM
+crates/gse-fw-core    no_std ground bridge, vehicle FSM & DX-LR42 UART stream adapter
 crates/gse-app        host service, safety gates, HTTP/SSE server & embedded web UI
 crates/gse-sim        two-board TCP RF link simulator using real firmware cores
-crates/gse-fw-check   host unit tests for STM32 register & ring-buffer helpers
+crates/gse-fw-check   host unit tests for STM32 register, ring-buffer & AUX helpers
 firmware/stm32h753    NUCLEO-H753ZI hardware abstraction & firmware binaries
-scripts/              end-to-end smoke test (smoke.sh / smoke.py) & SSE state trace
+scripts/              smoke tests, SSE state trace & DX-LR42 AT provisioning helper
 docs/                 protocol spec, hardware/wiring guide & recorded state trace
 ```
 
@@ -335,7 +342,7 @@ trace and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the byte-level specification.
 |---|---|
 | `No serial ports found` | Use a data-capable USB cable, power the board, verify ST-LINK VCP driver |
 | `No ground board responded …` | Confirm `gse-ground` is flashed, baud is `115200`, user is in `dialout` on Linux |
-| Ground `online`, vehicle stays `pinging` | Check `PG9`/`PG14` ↔ SX1281 `TX`/`RX`, `9600` Bd transparent UART config, antennas |
+| Ground `online`, vehicle stays `pinging` | Check `VCC` (`5V`, `CN8` pin 9), `PG9`/`PG14` ↔ `DX-LR42-24T12D` Pin 4 `TX` / Pin 3 `RX` (`3.3 V` TTL), matching `AT+CHANNEL` / `AT+LEVEL` / `AT+KEY`, `M0`/`M1` (`PG12`/`PG13`), and `2.4 GHz` antennas |
 | `SRV+IGN` greyed out in `LIVE` mode | Run a full timed `FILL` cycle to completion (closing `FILL` early aborts the fill latch; press `Reset fill seq` first) |
 | Mode switch refused in Settings | Return all controls to `OFF/SAFE` and cancel any active countdown before switching `LIVE` ↔ `TEST` |
 | Shortcut binding rejected | Key combination is already bound to another action (named in the error toast) |

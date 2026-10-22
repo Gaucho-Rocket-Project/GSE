@@ -20,6 +20,7 @@ pub mod crc;
 pub mod frame;
 pub mod fsm;
 pub mod message;
+pub mod radio;
 pub mod state;
 
 pub use control::cmd_flags;

@@ -25,11 +25,12 @@ use gse_proto::control::{cmd_flags, ACTION_ON};
 use gse_proto::fsm::{ControlEvent, ControlState, FillState, IgnState, Interlocks, SrvState};
 use gse_proto::Transition;
 use gse_proto::{
-    encode_message, AckResult, Command, Control, Endpoint, Event, EventCode, Frame, FrameDecoder,
-    Heartbeat, Hello, Message, Pong, Reason, StateSnapshot,
+    encode_message, AckResult, Command, Control, Endpoint, Event, EventCode, Frame, Heartbeat,
+    Hello, Message, Pong, Reason, StateSnapshot,
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, Leds, VehicleHal};
+use crate::radio::{DxLr42Receiver, DxLr42Stats};
 
 /// Snapshot broadcast rate.
 pub const STATE_PERIOD_MS: u32 = 250;
@@ -133,7 +134,7 @@ impl Outcome {
 pub struct Vehicle<H: VehicleHal> {
     hal: H,
     state: VehicleState,
-    decoder: FrameDecoder,
+    decoder: DxLr42Receiver,
     tx_seq: u8,
     boot_ms: u32,
     booted: bool,
@@ -146,6 +147,7 @@ pub struct Vehicle<H: VehicleHal> {
     last_hello_tx: u32,
     last_activity: u32,
     crc_errors_seen: u32,
+    at_recoveries_seen: u16,
 }
 
 impl<H: VehicleHal> Vehicle<H> {
@@ -154,7 +156,7 @@ impl<H: VehicleHal> Vehicle<H> {
         Vehicle {
             hal,
             state: VehicleState::default(),
-            decoder: FrameDecoder::new(),
+            decoder: DxLr42Receiver::new(),
             tx_seq: 0,
             boot_ms: now,
             booted: false,
@@ -167,6 +169,7 @@ impl<H: VehicleHal> Vehicle<H> {
             last_hello_tx: now,
             last_activity: now,
             crc_errors_seen: 0,
+            at_recoveries_seen: 0,
         }
     }
 
@@ -223,6 +226,10 @@ impl<H: VehicleHal> Vehicle<H> {
 
     pub fn decoder_stats(&self) -> gse_proto::DecodeStats {
         self.decoder.stats()
+    }
+
+    pub fn radio_driver_stats(&self) -> DxLr42Stats {
+        self.decoder.radio_stats()
     }
 
     fn snapshot_at(&self, now: u32) -> StateSnapshot {
@@ -292,6 +299,7 @@ impl<H: VehicleHal> Vehicle<H> {
         let now = self.hal.now_ms();
         if !self.booted {
             self.booted = true;
+            self.hal.set_radio_transparent();
             self.emit_event(EventCode::Boot, 0, now);
             self.send_hello(now);
             self.last_state_tx = now;
@@ -304,11 +312,16 @@ impl<H: VehicleHal> Vehicle<H> {
                 break;
             }
             for &byte in &buf[..n] {
-                if let Some(frame) = self.decoder.push(byte) {
+                if let Some(frame) = self.decoder.push(byte, now) {
                     self.last_activity = now;
                     self.handle_frame(frame, now);
                 }
             }
+        }
+
+        if let Some(escape) = self.decoder.poll_recovery_tx(now) {
+            self.hal.set_radio_transparent();
+            self.hal.write_radio(escape);
         }
 
         self.check_link(now);
@@ -326,6 +339,11 @@ impl<H: VehicleHal> Vehicle<H> {
         if crc_errors != self.crc_errors_seen {
             self.state.faults |= gse_proto::faults::CRC_ERROR;
             self.crc_errors_seen = crc_errors;
+        }
+        let at_recoveries = self.decoder.radio_stats().at_recoveries;
+        if at_recoveries != self.at_recoveries_seen {
+            self.state.faults |= gse_proto::faults::RADIO_ERROR;
+            self.at_recoveries_seen = at_recoveries;
         }
 
         let link_up = self.saw_host
@@ -717,11 +735,12 @@ impl<H: VehicleHal> Vehicle<H> {
     }
 
     fn send_msg(&mut self, message: Message, dst: Endpoint) -> bool {
+        let now = self.hal.now_ms();
         let mut buf = [0u8; Frame::MAX_ENCODED];
         let seq = self.tx_seq;
         match encode_message(&message, Endpoint::Vehicle, dst, seq, &mut buf) {
             Some(n) => {
-                if !self.hal.radio_ready() {
+                if self.decoder.tx_inhibited(now) || !self.hal.radio_ready() {
                     return false;
                 }
                 self.hal.write_radio(&buf[..n]);
@@ -1254,5 +1273,28 @@ mod tests {
         assert!(acks[0].result.is_ok());
         assert!(!vehicle.hal().srv && !vehicle.hal().ign);
         assert!(acks[0].state.outputs_safe());
+    }
+
+    #[test]
+    fn dx_lr42_at_mode_trap_sets_radio_fault_and_self_recovers() {
+        let mut vehicle = new_vehicle();
+        vehicle.poll();
+        vehicle.hal_mut().radio_out.clear();
+
+        vehicle.hal_mut().feed_bytes(b"Entry AT\r\n");
+        vehicle.poll();
+        assert_eq!(vehicle.radio_driver_stats().at_recoveries, 1);
+        assert_ne!(vehicle.state().faults & gse_proto::faults::RADIO_ERROR, 0);
+
+        vehicle.hal_mut().advance(crate::radio::AT_PRE_GUARD_MS);
+        vehicle.poll();
+        assert_eq!(&vehicle.hal().radio_out[..], b"+++");
+        vehicle.hal_mut().radio_out.clear();
+
+        vehicle.hal_mut().advance(crate::radio::AT_POST_SETTLE_MS);
+        send(&mut vehicle, cmd(Control::Fill, 1, 2, 1));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(vehicle.hal().fill);
     }
 }
