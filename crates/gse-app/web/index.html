@@ -5,254 +5,298 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="gse-token" content="__GSE_TOKEN__">
 <meta name="color-scheme" content="dark">
-<title>GSE · Ground Support</title>
+<title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css">
+<link rel="stylesheet" href="/app.css?v=3">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand">
-    <svg viewBox="0 0 32 32" class="logo" aria-hidden="true">
-      <path d="M16 2c3.6 3.4 5.4 7.6 5.4 12.5 0 3.1-.9 5.9-2.6 8.4h-5.6c-1.7-2.5-2.6-5.3-2.6-8.4C10.6 9.6 12.4 5.4 16 2z"/>
-      <circle cx="16" cy="12" r="2.4"/>
-      <path d="M12.2 23.4 9 29h14l-3.2-5.6z"/>
-    </svg>
-    <div>
-      <h1>Ground Support Equipment</h1>
-      <p class="sub">NUCLEO-H753ZI · SX1281 LoRa link</p>
-    </div>
-  </div>
+<div class="crt">
+  <div class="scanlines" aria-hidden="true"></div>
+  <div class="crt-glow" aria-hidden="true"></div>
 
-  <div class="status-strip">
-    <div class="pill" id="pill-ground" data-state="offline">
-      <span class="dot"></span>
-      <span class="pill-label">Ground board</span>
-      <span class="pill-value" id="ground-text">offline</span>
-    </div>
-    <div class="pill" id="pill-vehicle" data-state="offline">
-      <span class="dot"></span>
-      <span class="pill-label">Vehicle</span>
-      <span class="pill-value" id="vehicle-text">offline</span>
-    </div>
-    <div class="pill" id="pill-link" data-state="idle">
-      <span class="dot"></span>
-      <span class="pill-label">RTT</span>
-      <span class="pill-value" id="rtt-text">–</span>
-    </div>
-    <div class="pill" id="pill-mode" data-state="live">
-      <span class="dot"></span>
-      <span class="pill-label">Mode</span>
-      <span class="pill-value" id="mode-text">LIVE</span>
-    </div>
-  </div>
-
-  <div class="top-actions">
-    <button class="btn ghost" id="btn-connect" title="Scan for the ground board">Connect</button>
-    <button class="btn ghost" id="btn-disconnect" title="Close the serial link">Disconnect</button>
-    <button class="btn ghost" id="btn-settings" title="Configuration and key bindings">Settings</button>
-  </div>
-</header>
-
-<main class="layout">
-  <section class="panel controls" aria-labelledby="h-controls">
-    <div class="panel-head">
-      <h2 id="h-controls">Controls</h2>
-      <span class="hint" id="pending-text">No command in flight</span>
+  <!-- ================= header ================= -->
+  <header class="term-header">
+    <div class="term-brand">
+      <span class="prompt">gse@ground:~$</span>
+      <span class="term-title">GROUND SUPPORT · NUCLEO-H753ZI · SX1281 LoRa</span>
     </div>
 
-    <div class="machine-line" id="machine-line" aria-live="polite">
-      <span class="machine-k">Control state</span>
-      <span class="machine-v" id="machine-text">INIT · FILL OFF · SRV OFF · IGN SAFE</span>
-    </div>
+    <div class="term-clock" id="term-clock">--:--:--</div>
 
-    <div class="control-grid">
-      <button class="control" id="btn-fill_on" data-action="fill_on">
-        <span class="ctl-name">FILL</span>
-        <span class="ctl-state" id="led-fill">OFF</span>
-        <span class="ctl-desc">Fill valve ON</span>
-        <span class="ctl-key" data-key-for="fill_on">F</span>
-        <span class="ctl-why"></span>
-      </button>
-      <button class="control" id="btn-fill_off" data-action="fill_off">
-        <span class="ctl-name">FILL OFF</span>
-        <span class="ctl-state">CLOSE</span>
-        <span class="ctl-desc">Close fill valve now</span>
-        <span class="ctl-key" data-key-for="fill_off"></span>
-        <span class="ctl-why"></span>
-      </button>
-
-      <button class="control" id="btn-srv_on" data-action="srv_on">
-        <span class="ctl-name">SRV</span>
-        <span class="ctl-state" id="led-srv">OFF</span>
-        <span class="ctl-desc">Vehicle servos ON</span>
-        <span class="ctl-key" data-key-for="srv_on">S</span>
-        <span class="ctl-why"></span>
-      </button>
-      <button class="control" id="btn-srv_off" data-action="srv_off">
-        <span class="ctl-name">SRV OFF</span>
-        <span class="ctl-state">STOP</span>
-        <span class="ctl-desc">Vehicle servos OFF</span>
-        <span class="ctl-key" data-key-for="srv_off"></span>
-        <span class="ctl-why"></span>
-      </button>
-
-      <button class="control danger" id="btn-ign_pwr" data-action="ign_pwr">
-        <span class="ctl-name">IGN</span>
-        <span class="ctl-state" id="led-ign">SAFE</span>
-        <span class="ctl-desc">Ignition PWR</span>
-        <span class="ctl-key" data-key-for="ign_pwr">I</span>
-        <span class="ctl-why"></span>
-      </button>
-      <button class="control" id="btn-ign_safe" data-action="ign_safe">
-        <span class="ctl-name">IGN SAFE</span>
-        <span class="ctl-state">SAFE</span>
-        <span class="ctl-desc">Remove ignition power</span>
-        <span class="ctl-key" data-key-for="ign_safe"></span>
-        <span class="ctl-why"></span>
-      </button>
-    </div>
-
-    <div class="fill-bar-wrap">
-      <div class="fill-bar-head">
-        <span>Fill sequence</span>
-        <span id="fill-status">idle</span>
+    <div class="term-strip">
+      <div class="pill" id="pill-ground" data-state="offline">
+        <span class="dot"></span>
+        <span class="pill-label">GROUND</span>
+        <span class="pill-value" id="ground-text">offline</span>
       </div>
-      <div class="fill-bar"><div class="fill-fill" id="fill-fill"></div></div>
-      <div class="fill-bar-foot">
-        <span id="fill-remaining">–</span>
-        <span id="fill-duration">60 s configured</span>
+      <div class="pill" id="pill-vehicle" data-state="offline">
+        <span class="dot"></span>
+        <span class="pill-label">VEHICLE</span>
+        <span class="pill-value" id="vehicle-text">offline</span>
+      </div>
+      <div class="pill" id="pill-link" data-state="idle">
+        <span class="dot"></span>
+        <span class="pill-label">LINK</span>
+        <span class="pill-value" id="rtt-text">–</span>
+      </div>
+      <div class="pill" id="pill-mode" data-state="live">
+        <span class="dot"></span>
+        <span class="pill-label">MODE</span>
+        <span class="pill-value" id="mode-text">LIVE</span>
       </div>
     </div>
 
-    <div class="secondary-row">
-      <button class="btn ghost" id="btn-reset_controls" data-action="reset_controls"
-              title="Force FILL OFF, SRV OFF and IGN SAFE, then clear latches">
-        Reset controls <span class="ctl-key" data-key-for="reset_controls">Shift+R</span>
-      </button>
-      <button class="btn ghost" id="btn-reset_fill" data-action="reset_fill">
-        Reset fill sequence <span class="ctl-key" data-key-for="reset_fill">R</span>
-      </button>
-      <button class="btn ghost" id="btn-clear_faults" data-action="clear_faults">
-        Clear faults <span class="ctl-key" data-key-for="clear_faults">Shift+C</span>
-      </button>
-      <button class="btn estop" id="btn-estop" data-action="estop">
-        ALL SAFE · E-STOP <span class="ctl-key" data-key-for="estop">E</span>
-      </button>
+    <div class="term-actions">
+      <button class="btn ghost" id="btn-connect" type="button" title="Scan for the ground board">connect</button>
+      <button class="btn ghost" id="btn-disconnect" type="button" title="Close the serial link">disconnect</button>
+      <button class="btn ghost" id="btn-settings" type="button" title="Configuration and key bindings">settings</button>
     </div>
-  </section>
+  </header>
 
-  <section class="panel telemetry" aria-labelledby="h-telemetry">
-    <div class="panel-head">
-      <h2 id="h-telemetry">Vehicle telemetry</h2>
-      <span class="hint" id="vehicle-age">–</span>
-    </div>
-    <div class="tele-grid">
-      <div class="tele"><span class="tele-k">State</span><span class="tele-v" id="tele-summary">–</span></div>
-      <div class="tele"><span class="tele-k">Firmware</span><span class="tele-v" id="tele-fw">–</span></div>
-      <div class="tele"><span class="tele-k">Device</span><span class="tele-v" id="tele-dev">–</span></div>
-      <div class="tele"><span class="tele-k">Protocol</span><span class="tele-v" id="tele-proto">–</span></div>
-    </div>
-    <div class="chips" id="chips-flags" aria-label="Vehicle flags"></div>
-    <div class="faults" id="faults"></div>
+  <!-- ================= body ================= -->
+  <div class="term-body">
+    <!-- left eDEX system & safety monitor rail -->
+    <aside class="term-rail" aria-label="System and safety monitor">
+      <div class="rail-head">
+        <span class="rail-title">SYS // MONITOR</span>
+        <span class="rail-tag" id="sys-uptime">00:00:00</span>
+      </div>
 
-    <div class="panel-head sub-head">
-      <h2>Link statistics</h2>
-    </div>
-    <div class="stat-grid" id="stat-grid">
-      <div><span>RX frames</span><b id="stat-rx">0</b></div>
-      <div><span>TX frames</span><b id="stat-tx">0</b></div>
-      <div><span>CRC errors</span><b id="stat-crc">0</b></div>
-      <div><span>Malformed</span><b id="stat-malformed">0</b></div>
-      <div><span>Retries</span><b id="stat-retries">0</b></div>
-      <div><span>Reconnects</span><b id="stat-reconnects">0</b></div>
-      <div><span>ACKs ok</span><b id="stat-acks">0</b></div>
-      <div><span>Rejected</span><b id="stat-rejected">0</b></div>
-      <div><span>Commands</span><b id="stat-commands">0</b></div>
-    </div>
-    <div class="note" id="scan-note"></div>
-  </section>
+      <div class="rail-block">
+        <div class="rail-k">PROCESSES</div>
+        <div class="rail-line"><span class="rail-name">gse-app</span><span class="rail-v ok" id="proc-app">ONLINE</span></div>
+        <div class="rail-line"><span class="rail-name">gse-sim</span><span class="rail-v" id="proc-sim">STANDBY</span></div>
+        <div class="rail-line"><span class="rail-name">sx1281-rf</span><span class="rail-v" id="proc-lora">OFFLINE</span></div>
+      </div>
 
-  <section class="panel log-panel" aria-labelledby="h-log">
-    <div class="panel-head">
-      <h2 id="h-log">Session log</h2>
-      <div class="log-tools">
-        <select id="log-filter" aria-label="Log filter">
-          <option value="">All sources</option>
-          <option value="App">App</option>
-          <option value="Operator">Operator</option>
-          <option value="Ground">Ground</option>
-          <option value="Vehicle">Vehicle</option>
-        </select>
-        <label class="check"><input type="checkbox" id="log-follow" checked> Follow</label>
-        <a class="btn tiny ghost" id="log-download" href="#" download>CSV</a>
-        <button class="btn tiny ghost" id="btn-clear-log">Clear</button>
+      <div class="rail-block">
+        <div class="rail-k">SAFETY INTERLOCKS</div>
+        <div class="rail-line"><span class="rail-name">init safe</span><span class="rail-v" id="gate-init">WAIT</span></div>
+        <div class="rail-line"><span class="rail-name">fill ↔ srv</span><span class="rail-v" id="gate-interlock">CLEAR</span></div>
+        <div class="rail-line"><span class="rail-name">fill seq</span><span class="rail-v" id="gate-fill">IDLE</span></div>
+        <div class="rail-line"><span class="rail-name">ign gate</span><span class="rail-v" id="gate-ign">LOCKED</span></div>
+      </div>
+
+      <div class="rail-block">
+        <div class="rail-k">BUS DISPATCH</div>
+        <div class="rail-line"><span class="rail-name">in-flight</span><span class="rail-v" id="rail-pending">IDLE</span></div>
+        <div class="rail-line"><span class="rail-name">framing</span><span class="rail-v dim" id="sys-proto">COBS/CRC16</span></div>
+      </div>
+    </aside>
+
+    <!-- main workspace -->
+    <main class="term-main">
+      <!-- control console -->
+      <section class="console-pane controls-pane" id="pane-controls" aria-labelledby="h-controls">
+        <div class="pane-head">
+          <h2 class="pane-k" id="h-controls">CONTROL CONSOLE</h2>
+          <span class="pane-v" id="pending-text">No command in flight</span>
+        </div>
+        <div class="pane-body">
+          <div class="machine-line" id="machine-line" aria-live="polite">
+            <span class="machine-k">CTRL STATE</span>
+            <span class="machine-v" id="machine-text">INIT · FILL OFF · SRV OFF · IGN SAFE</span>
+          </div>
+
+          <div class="control-grid">
+            <button class="control toggle-ctl" id="btn-fill" data-toggle="fill_toggle" type="button">
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">FILL</span><span class="ctl-switch">[<span class="sw-opt sw-on" id="sw-fill-on">ON</span>/<span class="sw-opt sw-off active" id="sw-fill-off">OFF</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="fill_on">F</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-fill">OFF</span>
+                <span class="ctl-desc" id="desc-fill">Fill valve servo · click → ON</span>
+              </span>
+              <span class="ctl-why" id="why-fill"></span>
+            </button>
+
+            <button class="control toggle-ctl" id="btn-srv" data-toggle="srv_toggle" type="button">
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">SRV</span><span class="ctl-switch">[<span class="sw-opt sw-on" id="sw-srv-on">ON</span>/<span class="sw-opt sw-off active" id="sw-srv-off">OFF</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="srv_on">S</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-srv">OFF</span>
+                <span class="ctl-desc" id="desc-srv">Vehicle servos · click → ON</span>
+              </span>
+              <span class="ctl-why" id="why-srv"></span>
+            </button>
+
+            <button class="control toggle-ctl danger" id="btn-ign" data-toggle="ign_toggle" type="button">
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">IGN</span><span class="ctl-switch">[<span class="sw-opt sw-pwr" id="sw-ign-on">PWR</span>/<span class="sw-opt sw-safe active" id="sw-ign-off">SAFE</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="ign_pwr">I</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-ign">SAFE</span>
+                <span class="ctl-desc" id="desc-ign">Igniter power · gated</span>
+              </span>
+              <span class="ctl-why" id="why-ign"></span>
+            </button>
+          </div>
+
+          <div class="fill-bar-wrap">
+            <div class="fill-bar-head">
+              <span>FILL SEQUENCE</span>
+              <span id="fill-status">idle</span>
+            </div>
+            <div class="fill-bar"><div class="fill-fill" id="fill-fill"></div></div>
+            <div class="fill-bar-foot">
+              <span id="fill-remaining">–</span>
+              <span id="fill-duration">60 s configured</span>
+            </div>
+          </div>
+
+          <div class="secondary-row">
+            <button class="btn ghost" id="btn-reset_controls" data-action="reset_controls" type="button"
+                    title="Force FILL OFF, SRV OFF and IGN SAFE, then clear latches">
+              reset controls <span class="ctl-key" data-key-for="reset_controls">Shift+R</span>
+            </button>
+            <button class="btn ghost" id="btn-reset_fill" data-action="reset_fill" type="button">
+              reset fill seq <span class="ctl-key" data-key-for="reset_fill">R</span>
+            </button>
+            <button class="btn ghost" id="btn-clear_faults" data-action="clear_faults" type="button">
+              clear faults <span class="ctl-key" data-key-for="clear_faults">Shift+C</span>
+            </button>
+            <button class="btn estop" id="btn-estop" data-action="estop" type="button">
+              ALL SAFE · E-STOP <span class="ctl-key" data-key-for="estop">E</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- telemetry -->
+      <section class="console-pane tele-pane" id="pane-tele" aria-labelledby="h-telemetry">
+        <div class="pane-head">
+          <h2 class="pane-k" id="h-telemetry">VEHICLE TELEMETRY</h2>
+          <span class="pane-v" id="vehicle-age">–</span>
+        </div>
+        <div class="pane-body">
+          <div class="tele-grid">
+            <div class="tele"><span class="tele-k">state</span><span class="tele-v" id="tele-summary">–</span></div>
+            <div class="tele"><span class="tele-k">firmware</span><span class="tele-v" id="tele-fw">–</span></div>
+            <div class="tele"><span class="tele-k">device</span><span class="tele-v" id="tele-dev">–</span></div>
+            <div class="tele"><span class="tele-k">protocol</span><span class="tele-v" id="tele-proto">–</span></div>
+          </div>
+          <div class="chips" id="chips-flags" aria-label="Vehicle flags"></div>
+          <div class="faults" id="faults"></div>
+
+          <div class="sub-divider"><span class="pane-k">LINK STATISTICS</span></div>
+          <div class="stat-grid" id="stat-grid">
+            <div><span>rx frames</span><b id="stat-rx">0</b></div>
+            <div><span>tx frames</span><b id="stat-tx">0</b></div>
+            <div><span>crc errors</span><b id="stat-crc">0</b></div>
+            <div><span>malformed</span><b id="stat-malformed">0</b></div>
+            <div><span>retries</span><b id="stat-retries">0</b></div>
+            <div><span>reconnects</span><b id="stat-reconnects">0</b></div>
+            <div><span>acks ok</span><b id="stat-acks">0</b></div>
+            <div><span>rejected</span><b id="stat-rejected">0</b></div>
+            <div><span>commands</span><b id="stat-commands">0</b></div>
+          </div>
+          <div class="note" id="scan-note"></div>
+        </div>
+      </section>
+
+      <!-- session log -->
+      <section class="console-pane log-pane" id="pane-log" aria-labelledby="h-log">
+        <div class="pane-head">
+          <h2 class="pane-k" id="h-log">SESSION LOG</h2>
+          <div class="log-tools">
+            <select id="log-filter" aria-label="Log filter">
+              <option value="">all sources</option>
+              <option value="App">app</option>
+              <option value="Operator">operator</option>
+              <option value="Ground">ground</option>
+              <option value="Vehicle">vehicle</option>
+            </select>
+            <label class="check"><input type="checkbox" id="log-follow" checked> follow</label>
+            <a class="btn tiny ghost" id="log-download" href="#" download>csv</a>
+            <button class="btn tiny ghost" id="btn-clear-log" type="button">clear</button>
+          </div>
+        </div>
+        <div class="pane-body log-body">
+          <div class="log" id="log" role="log" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ================= footer ================= -->
+  <footer class="term-foot">
+    <span id="foot-config">config: –</span>
+    <span id="foot-session">log: –</span>
+    <span id="foot-keys">keys: F fill · S srv · I ign · E e-stop · Shift+R reset · R reset fill · Shift+C faults</span>
+  </footer>
+
+  <!-- settings dialog -->
+  <dialog id="settings" class="settings">
+    <form method="dialog" class="settings-inner" id="settings-form">
+      <h2>settings</h2>
+
+      <fieldset>
+        <legend>link</legend>
+        <label>serial port
+          <span class="row">
+            <select id="cfg-port"></select>
+            <button type="button" class="btn tiny ghost" id="btn-refresh-ports">rescan</button>
+          </span>
+        </label>
+        <label>baud rate
+          <select id="cfg-baud"></select>
+        </label>
+        <p class="hint" id="port-hint"></p>
+      </fieldset>
+
+      <fieldset>
+        <legend>sequence</legend>
+        <label>fill duration (seconds)
+          <input type="number" id="cfg-fill" min="1" max="600" step="1">
+        </label>
+        <label class="check"><input type="checkbox" id="cfg-confirm"> ask before IGN PWR</label>
+        <label class="check"><input type="checkbox" id="cfg-sound"> audible alerts</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>keyboard shortcuts</legend>
+        <div class="shortcut-list" id="shortcut-list"></div>
+        <p class="hint">click a binding, then press the new key combination. esc cancels.</p>
+        <button type="button" class="btn tiny ghost" id="btn-reset-shortcuts">restore defaults</button>
+      </fieldset>
+
+      <div class="settings-actions">
+        <button type="submit" class="btn primary" value="apply">apply</button>
+        <button type="button" class="btn ghost" id="btn-settings-close">close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- confirm ignition -->
+  <div class="confirm" id="confirm" hidden>
+    <div class="confirm-box">
+      <h2>confirm ignition</h2>
+      <p>you are about to command <b>IGN PWR</b>. the igniter will be energised.</p>
+      <p class="hint" id="confirm-reason"></p>
+      <div class="settings-actions">
+        <button class="btn danger-solid" id="confirm-ok" type="button">yes, IGN PWR</button>
+        <button class="btn ghost" id="confirm-cancel" type="button">cancel</button>
       </div>
     </div>
-    <div class="log" id="log" role="log" aria-live="polite"></div>
-  </section>
-</main>
-
-<footer class="foot">
-  <span id="foot-config">config: –</span>
-  <span id="foot-session">log: –</span>
-  <span id="foot-keys">keys: F fill · S srv · I ign · E e-stop · R reset · Shift+C faults</span>
-</footer>
-
-<dialog id="settings" class="settings">
-  <form method="dialog" class="settings-inner" id="settings-form">
-    <h2>Settings</h2>
-
-    <fieldset>
-      <legend>Link</legend>
-      <label>Serial port
-        <span class="row">
-          <select id="cfg-port"></select>
-          <button type="button" class="btn tiny ghost" id="btn-refresh-ports">Rescan</button>
-        </span>
-      </label>
-      <label>Baud rate
-        <select id="cfg-baud"></select>
-      </label>
-      <p class="hint" id="port-hint"></p>
-    </fieldset>
-
-    <fieldset>
-      <legend>Sequence</legend>
-      <label>Fill duration (seconds)
-        <input type="number" id="cfg-fill" min="1" max="600" step="1">
-      </label>
-      <label class="check"><input type="checkbox" id="cfg-confirm"> Ask before IGN PWR</label>
-      <label class="check"><input type="checkbox" id="cfg-sound"> Audible alerts</label>
-    </fieldset>
-
-    <fieldset>
-      <legend>Keyboard shortcuts</legend>
-      <div class="shortcut-list" id="shortcut-list"></div>
-      <p class="hint">Click a binding, then press the new key combination. Esc cancels.</p>
-      <button type="button" class="btn tiny ghost" id="btn-reset-shortcuts">Restore defaults</button>
-    </fieldset>
-
-    <div class="settings-actions">
-      <button type="submit" class="btn primary" value="apply">Apply</button>
-      <button type="button" class="btn ghost" id="btn-settings-close">Close</button>
-    </div>
-  </form>
-</dialog>
-
-<div class="confirm" id="confirm" hidden>
-  <div class="confirm-box">
-    <h2>Confirm ignition</h2>
-    <p>You are about to command <b>IGN PWR</b>. The igniter will be energised.</p>
-    <p class="hint" id="confirm-reason"></p>
-    <div class="settings-actions">
-      <button class="btn danger-solid" id="confirm-ok">Yes, IGN PWR</button>
-      <button class="btn ghost" id="confirm-cancel">Cancel</button>
-    </div>
   </div>
+
+  <!-- toast -->
+  <div class="toast" id="toast" hidden></div>
 </div>
 
-<div class="toast" id="toast" hidden></div>
-
-<script src="/app.js"></script>
+<script src="/app.js?v=3"></script>
 </body>
 </html>
