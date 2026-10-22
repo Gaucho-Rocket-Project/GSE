@@ -176,7 +176,7 @@ fn handle_connection(
             200,
             &[
                 ("Content-Type", "text/css; charset=utf-8".into()),
-                ("Cache-Control", "max-age=300".into()),
+                ("Cache-Control", "no-store".into()),
             ],
             ui::APP_CSS.as_bytes(),
             false,
@@ -186,7 +186,7 @@ fn handle_connection(
             200,
             &[
                 ("Content-Type", "text/javascript; charset=utf-8".into()),
-                ("Cache-Control", "max-age=300".into()),
+                ("Cache-Control", "no-store".into()),
             ],
             ui::APP_JS.as_bytes(),
             false,

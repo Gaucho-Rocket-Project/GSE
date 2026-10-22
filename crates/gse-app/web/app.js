@@ -40,6 +40,7 @@
   var lastBeep = 0;
   var audioCtx = null;
   var fillTick = null;
+  var clockTick = null;
   var lastVehicleOnline = null;
   var lastFillComplete = null;
 
@@ -111,6 +112,14 @@
     var m = Math.floor(s / 60);
     var rem = Math.round(s % 60);
     return m + "m " + (rem < 10 ? "0" + rem : rem) + "s";
+  }
+
+  function fmtUptime(ms) {
+    var total = Math.max(0, Math.floor((ms || 0) / 1000));
+    var h = Math.floor(total / 3600);
+    var m = Math.floor((total % 3600) / 60);
+    var s = total % 60;
+    return pad(h) + ":" + pad(m) + ":" + pad(s);
   }
 
   function pad(n) { return n < 10 ? "0" + n : String(n); }
@@ -230,6 +239,12 @@
 
   function requestIgn() {
     if (!snapshot) { return; }
+    var ignGate = snapshot.actions && snapshot.actions.ign_pwr;
+    if (ignGate && !ignGate.enabled) {
+      toast(ignGate.reason || "IGN PWR blocked", "warn");
+      beep(220, 0.12);
+      return;
+    }
     if (config && config.confirm_ign) {
       pendingIgn = "ign_pwr";
       $("confirm-reason").textContent = "SRV is ON and the fill sequence is complete.";
@@ -271,6 +286,35 @@
     if (value) { value.textContent = text; }
   }
 
+  function renderToggle(cfg) {
+    var btn = $(cfg.btnId);
+    if (!btn) { return; }
+    var nextAction = cfg.active ? cfg.offAction : cfg.onAction;
+    var gate = cfg.actions[nextAction] || { enabled: false, reason: "" };
+    btn.disabled = !gate.enabled;
+    btn.title = gate.enabled ? (ACTION_LABELS[nextAction] || nextAction) : (gate.reason || "");
+    btn.classList.toggle("is-on", !!cfg.active && !cfg.danger);
+    btn.classList.toggle("is-pwr", !!cfg.active && !!cfg.danger);
+
+    var swOn = $(cfg.swOnId);
+    var swOff = $(cfg.swOffId);
+    if (swOn) { swOn.classList.toggle("active", !!cfg.active); }
+    if (swOff) { swOff.classList.toggle("active", !cfg.active); }
+
+    var desc = $(cfg.descId);
+    if (desc) { desc.textContent = cfg.desc; }
+
+    var why = $(cfg.whyId);
+    if (why) { why.textContent = gate.enabled ? "" : (gate.reason || ""); }
+  }
+
+  function setRailVal(id, text, cls) {
+    var el = $(id);
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = "rail-v" + (cls ? " " + cls : "");
+  }
+
   function render() {
     if (!snapshot) { return; }
     var s = snapshot;
@@ -292,15 +336,6 @@
     lastVehicleOnline = vehicleOnline;
 
     var actions = s.actions || {};
-    Object.keys(actions).forEach(function (key) {
-      var el = document.querySelector('[data-action="' + key + '"]');
-      if (!el) { return; }
-      el.disabled = !actions[key].enabled;
-      el.title = actions[key].enabled ? (ACTION_LABELS[key] || key) : actions[key].reason;
-      var why = el.querySelector(".ctl-why");
-      if (why) { why.textContent = actions[key].reason || ""; }
-    });
-
     var vs = s.vehicle.state || {};
     // LED text comes from the confirmed control machine, not from a guess:
     // it only changes when the vehicle acknowledges the transition.
@@ -311,6 +346,66 @@
     setLed("led-fill", fillOn ? "ON" : "OFF", fillOn ? "on" : "");
     setLed("led-srv", srvOn ? "ON" : "OFF", srvOn ? "on" : "");
     setLed("led-ign", ignPwr ? "PWR" : "SAFE", ignPwr ? "pwr" : "");
+
+    var target = ctl.target;
+    renderToggle({
+      btnId: "btn-fill",
+      swOnId: "sw-fill-on",
+      swOffId: "sw-fill-off",
+      descId: "desc-fill",
+      whyId: "why-fill",
+      active: fillOn,
+      danger: false,
+      onAction: "fill_on",
+      offAction: "fill_off",
+      actions: actions,
+      desc: target && target.fill !== ctl.fill
+        ? ("Awaiting ACK → " + target.fill)
+        : (fillOn ? "Fill valve open · click → OFF" : "Fill valve servo · click → ON")
+    });
+    renderToggle({
+      btnId: "btn-srv",
+      swOnId: "sw-srv-on",
+      swOffId: "sw-srv-off",
+      descId: "desc-srv",
+      whyId: "why-srv",
+      active: srvOn,
+      danger: false,
+      onAction: "srv_on",
+      offAction: "srv_off",
+      actions: actions,
+      desc: target && target.srv !== ctl.srv
+        ? ("Awaiting ACK → " + target.srv)
+        : (srvOn ? "Vehicle servos ON · click → OFF" : "Vehicle servos · click → ON")
+    });
+    renderToggle({
+      btnId: "btn-ign",
+      swOnId: "sw-ign-on",
+      swOffId: "sw-ign-off",
+      descId: "desc-ign",
+      whyId: "why-ign",
+      active: ignPwr,
+      danger: true,
+      onAction: "ign_pwr",
+      offAction: "ign_safe",
+      actions: actions,
+      desc: target && target.ign !== ctl.ign
+        ? ("Awaiting ACK → " + target.ign)
+        : (ignPwr
+            ? "IGNITER ENERGISED · click → SAFE"
+            : (actions.ign_pwr && actions.ign_pwr.enabled
+                ? "Igniter armed · click → PWR"
+                : "Igniter power · locked"))
+    });
+
+    Object.keys(actions).forEach(function (key) {
+      var el = document.querySelector('[data-action="' + key + '"]');
+      if (!el) { return; }
+      el.disabled = !actions[key].enabled;
+      el.title = actions[key].enabled ? (ACTION_LABELS[key] || key) : actions[key].reason;
+      var why = el.querySelector(".ctl-why");
+      if (why) { why.textContent = actions[key].reason || ""; }
+    });
 
     var machineText;
     if (!ctl.ready) {
@@ -339,6 +434,7 @@
     renderChips(s);
     renderStats(s);
     renderFill(s);
+    renderRail(s, groundOnline, vehicleOnline, fillOn, srvOn, ignPwr);
 
     if (s.pending) {
       $("pending-text").textContent = s.pending.label + " · try " + s.pending.attempts + " · " + fmtMs(s.pending.age_ms);
@@ -352,6 +448,31 @@
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
     updateKeyFooter();
+  }
+
+  function renderRail(s, groundOnline, vehicleOnline, fillOn, srvOn, ignPwr) {
+    var up = $("sys-uptime");
+    if (up) { up.textContent = fmtUptime(s.uptime_ms); }
+    setRailVal("proc-app", "ONLINE", "ok");
+    setRailVal("proc-sim", s.sim ? "ACTIVE" : "DISABLED", s.sim ? "ok" : "dim");
+    setRailVal("proc-lora",
+      vehicleOnline ? ("ONLINE " + (s.vehicle.rtt_ms !== null ? s.vehicle.rtt_ms + "ms" : "")).trim()
+        : (groundOnline ? "PINGING" : "OFFLINE"),
+      vehicleOnline ? "ok" : (groundOnline ? "warn" : "dim"));
+
+    var ctl = s.controls || {};
+    var fill = s.fill || {};
+    setRailVal("gate-init", ctl.ready ? "VERIFIED" : "PENDING", ctl.ready ? "ok" : "warn");
+    setRailVal("gate-interlock",
+      fillOn ? "SRV LOCKED" : (srvOn ? "FILL LOCKED" : "CLEAR"),
+      (fillOn || srvOn) ? "warn" : "ok");
+    setRailVal("gate-fill",
+      fill.active ? "RUNNING" : (fill.seq_aborted ? "ABORTED" : (fill.seq_complete ? "COMPLETE" : "UNRUN")),
+      fill.seq_aborted ? "hot" : (fill.seq_complete || fill.active ? "ok" : "dim"));
+    setRailVal("gate-ign",
+      ignPwr ? "ENERGISED" : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ARMED" : "LOCKED"),
+      ignPwr ? "hot" : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ok" : "dim"));
+    setRailVal("rail-pending", s.pending ? s.pending.label : "IDLE", s.pending ? "warn" : "dim");
   }
 
   function setLed(id, text, cls) {
@@ -645,6 +766,14 @@
   /* ------------------------------------------------------------------ */
 
   function wire() {
+    document.querySelectorAll(".control-grid button[data-toggle]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var toggleAction = btn.dataset.toggle;
+        if (!toggleAction || recording) { return; }
+        toggle(toggleAction);
+      });
+    });
+
     document.querySelectorAll(".control-grid button[data-action], .secondary-row button[data-action]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var action = btn.dataset.action;
@@ -776,7 +905,15 @@
     };
   }
 
-  function startFillTicker() {
+  function startTickers() {
+    var clockEl = $("term-clock");
+    function tickClock() {
+      if (clockEl) { clockEl.textContent = clockOf(Date.now()); }
+    }
+    tickClock();
+    if (clockTick) { clearInterval(clockTick); }
+    clockTick = setInterval(tickClock, 1000);
+
     if (fillTick) { clearInterval(fillTick); }
     fillTick = setInterval(function () {
       if (snapshot) { renderFill(snapshot); }
@@ -787,7 +924,7 @@
     wire();
     loadLog();
     connectEvents();
-    startFillTicker();
+    startTickers();
     api("/api/state").then(function (state) {
       if (!snapshot) { snapshot = state; render(); }
       if (!config) { config = state.config; }
