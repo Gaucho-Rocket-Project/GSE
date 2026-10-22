@@ -56,9 +56,11 @@ OPTIONS:
     -V, --version         Show the version
 
 SAFETY:
-    FILL and SRV are interlocked; IGN PWR requires a completed fill sequence
-    and SRV on. The vehicle firmware re-checks every command and can always
-    refuse one.
+    Supports selectable LIVE (FILL -> configurable countdown -> combined
+    SRV+IGN) and TEST (independent FILL, SRV, IGN) operating modes in Settings.
+    FILL and SRV are interlocked; neither IGN PWR nor SRV+IGN ON can activate
+    without a completed fill sequence. The vehicle firmware independently
+    re-checks every command and can always refuse one.
 
 EXAMPLES:
     gse-app                          scan every serial port for the ground board

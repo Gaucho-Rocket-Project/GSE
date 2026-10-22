@@ -98,8 +98,8 @@ red = fault (or, on the vehicle, ignition powered).
 ## Firmware layout
 
 ```
-firmware/stm32h753/src/hw.rs        register-level board layer, HAL impls
-firmware/stm32h753/src/lib.rs       `gse_board` no_std library
+firmware/stm32h753/src/hw.rs          register-level board layer, HAL impls
+firmware/stm32h753/src/lib.rs         `gse_board` no_std library
 firmware/stm32h753/src/bin/ground.rs  bridge image
 firmware/stm32h753/src/bin/vehicle.rs vehicle image
 ```
@@ -117,15 +117,25 @@ analyser is still recommended.
    command and the board answers `PONG` (see `docs/PROTOCOL.md`).
 2. Flash `gse-vehicle` on the second board. With both radios powered, the
    vehicle green LED blinks as `STATE` frames go out every 250 ms.
-3. Run `gse-app`, pick the port, verify the header shows **Ground board** and
-   **Vehicle** online with a plausible RTT.
-4. Test the interlocks on the bench with the igniter disconnected: fill → auto
-   off → SRV ON → IGN PWR should unlock only after a complete fill; FILL while
-   SRV is on and IGN PWR before a complete fill must stay greyed out.
-5. Pull the radio from the vehicle board and verify all outputs drop within
+3. Run `gse-app`, pick the port (or leave on `Auto-detect`), and verify the
+   header pills show **GROUND** and **VEHICLE** `online` with a plausible RTT.
+4. **Verify `TEST` mode on the bench (igniter disconnected):** open **Settings**,
+   switch `Control setup` to **`TEST`**, and shorten `Fill duration` (e.g. `5 s`).
+   Confirm `FILL[ON/OFF]` → auto `OFF` completes the fill, `SRV[ON/OFF]` enables
+   PE11 PWM and unlocks `IGN[PWR/SAFE]`, `FILL` stays greyed out while `SRV` is
+   `ON`, and `SRV OFF` stays blocked while `IGN` is `PWR`.
+5. **Verify `LIVE` mode on the bench (igniter disconnected):** reset controls
+   (`Shift+R`), switch `Control setup` back to **`LIVE`** (with e.g. `5 s`
+   `SRV+IGN` countdown), confirm `SRV+IGN[ON/OFF]` starts greyed out
+   (`OFF/SAFE`), complete a timed `FILL` cycle to unlock `SRV+IGN`, verify
+   pressing `SRV+IGN` runs the on-screen countdown before energising PE11 + PE13
+   (`ON/PWR`), verify pressing `E-STOP` (`E`) mid-countdown aborts before
+   actuation, and verify pressing `SRV+IGN` again cleanly drops PE13 (`IGN`)
+   followed by PE11 (`SRV`) back to `OFF/SAFE`.
+6. Pull the radio from the vehicle board and verify all outputs drop within
    ~5 s, the red LED comes on and the host logs the link loss.
-6. Press *Reset controls* (`Shift+R`) after a fault and confirm the app logs
-   `All outputs confirmed OFF/SAFE`, clears the latches and re-arms the tiles.
-7. Stop the app (Ctrl+C) with SRV ON and confirm the log ends with
-   `ALL SAFE acknowledged - every control is OFF/SAFE`; the vehicle must be
-   de-energised before you power the console down.
+7. Press *Reset controls* (`Shift+R`) after a fault and confirm the app logs
+   `All outputs confirmed OFF/SAFE`, clears the latches and re-arms the controls.
+8. Stop the app (Ctrl+C) with an output active and confirm the session log ends
+   with `ALL SAFE acknowledged`; the vehicle must be confirmed safe before
+   powering the ground station down.
