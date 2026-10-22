@@ -243,6 +243,36 @@ impl ControlState {
                     Transition::NoOp(Reason::NotActive)
                 }
             }
+            E::SrvIgnOn => {
+                if self.srv.is_on() && self.ign.is_pwr() {
+                    Transition::NoOp(Reason::AlreadyInState)
+                } else if self.fill.is_on() {
+                    // Safety rule 1: FILL and SRV can never both be on.
+                    Transition::Blocked(Reason::FillActive)
+                } else if !il.fill_seq_complete || il.fill_seq_aborted {
+                    // Live launch safety rule: SRV+IGN requires a completed fill.
+                    Transition::Blocked(Reason::FillSeqIncomplete)
+                } else if il.inhibited || il.estop {
+                    Transition::Blocked(Reason::NotPermitted)
+                } else {
+                    Transition::Allowed(ControlState {
+                        srv: SrvState::On,
+                        ign: IgnState::Pwr,
+                        ..self
+                    })
+                }
+            }
+            E::SrvIgnOff => {
+                if !self.srv.is_on() && !self.ign.is_pwr() {
+                    Transition::NoOp(Reason::NotActive)
+                } else {
+                    Transition::Allowed(ControlState {
+                        srv: SrvState::Off,
+                        ign: IgnState::Safe,
+                        ..self
+                    })
+                }
+            }
             // Both of these force the machine to its initial state and are
             // always safe, from any state, including during a fault.
             E::SafeAll | E::Reset => Transition::Allowed(ControlState::SAFE),
@@ -280,20 +310,26 @@ pub enum ControlEvent {
     SrvOff = 3,
     IgnPwr = 4,
     IgnSafe = 5,
+    /// Combined live-launch transition: `OFF/SAFE -> ON/PWR` (`SRV ON + IGN PWR`).
+    SrvIgnOn = 6,
+    /// Combined live-launch safe transition: `ON/PWR -> OFF/SAFE` (`IGN SAFE + SRV OFF`).
+    SrvIgnOff = 7,
     /// All outputs to OFF/SAFE (`SYSTEM/SAFE_ALL`).
-    SafeAll = 6,
+    SafeAll = 8,
     /// Operator reset: all outputs OFF/SAFE and latches cleared.
-    Reset = 7,
+    Reset = 9,
 }
 
 impl ControlEvent {
-    pub const ALL: [ControlEvent; 8] = [
+    pub const ALL: [ControlEvent; 10] = [
         ControlEvent::FillOn,
         ControlEvent::FillOff,
         ControlEvent::SrvOn,
         ControlEvent::SrvOff,
         ControlEvent::IgnPwr,
         ControlEvent::IgnSafe,
+        ControlEvent::SrvIgnOn,
+        ControlEvent::SrvIgnOff,
         ControlEvent::SafeAll,
         ControlEvent::Reset,
     ];
@@ -310,6 +346,8 @@ impl ControlEvent {
             ControlEvent::SrvOff => "SRV OFF",
             ControlEvent::IgnPwr => "IGN PWR",
             ControlEvent::IgnSafe => "IGN SAFE",
+            ControlEvent::SrvIgnOn => "SRV+IGN ON",
+            ControlEvent::SrvIgnOff => "SRV+IGN OFF",
             ControlEvent::SafeAll => "ALL SAFE",
             ControlEvent::Reset => "RESET CONTROLS",
         }
@@ -324,6 +362,8 @@ impl ControlEvent {
             ControlEvent::SrvOff => "srv_off",
             ControlEvent::IgnPwr => "ign_pwr",
             ControlEvent::IgnSafe => "ign_safe",
+            ControlEvent::SrvIgnOn => "srv_ign_on",
+            ControlEvent::SrvIgnOff => "srv_ign_off",
             ControlEvent::SafeAll => "safe_all",
             ControlEvent::Reset => "reset_controls",
         }
@@ -346,6 +386,11 @@ impl ControlEvent {
             Control::Ign => match action {
                 ACTION_ON => Some(ControlEvent::IgnPwr),
                 ACTION_OFF => Some(ControlEvent::IgnSafe),
+                _ => None,
+            },
+            Control::SrvIgn => match action {
+                ACTION_ON => Some(ControlEvent::SrvIgnOn),
+                ACTION_OFF => Some(ControlEvent::SrvIgnOff),
                 _ => None,
             },
             Control::System => None,
@@ -627,10 +672,86 @@ mod tests {
             ControlEvent::from_command(Control::Ign, ACTION_OFF),
             Some(ControlEvent::IgnSafe)
         );
+        assert_eq!(
+            ControlEvent::from_command(Control::SrvIgn, ACTION_ON),
+            Some(ControlEvent::SrvIgnOn)
+        );
+        assert_eq!(
+            ControlEvent::from_command(Control::SrvIgn, ACTION_OFF),
+            Some(ControlEvent::SrvIgnOff)
+        );
         assert_eq!(ControlEvent::from_command(Control::System, 0), None);
         assert_eq!(ControlEvent::from_command(Control::Fill, 7), None);
         assert_eq!(ControlEvent::FillOn.id(), "fill_on");
+        assert_eq!(ControlEvent::SrvIgnOn.id(), "srv_ign_on");
+        assert_eq!(ControlEvent::SrvIgnOff.id(), "srv_ign_off");
         assert_eq!(ControlEvent::Reset.label(), "RESET CONTROLS");
+    }
+
+    #[test]
+    fn live_srv_ign_requires_completed_fill_and_toggles_cleanly() {
+        // Blocked before fill completes.
+        assert_eq!(
+            ControlState::SAFE.transition(ControlEvent::SrvIgnOn, il(false)),
+            Transition::Blocked(Reason::FillSeqIncomplete)
+        );
+        // Blocked while FILL valve is open even if flag were set.
+        let filling = ControlState {
+            fill: FillState::On,
+            ..ControlState::SAFE
+        };
+        assert_eq!(
+            filling.transition(ControlEvent::SrvIgnOn, il(true)),
+            Transition::Blocked(Reason::FillActive)
+        );
+        // Blocked when aborted, inhibited or estopped.
+        assert_eq!(
+            ControlState::SAFE.transition(
+                ControlEvent::SrvIgnOn,
+                Interlocks {
+                    fill_seq_aborted: true,
+                    ..il(true)
+                }
+            ),
+            Transition::Blocked(Reason::FillSeqIncomplete)
+        );
+        assert_eq!(
+            ControlState::SAFE.transition(
+                ControlEvent::SrvIgnOn,
+                Interlocks {
+                    inhibited: true,
+                    ..il(true)
+                }
+            ),
+            Transition::Blocked(Reason::NotPermitted)
+        );
+        assert_eq!(
+            ControlState::SAFE.transition(
+                ControlEvent::SrvIgnOn,
+                Interlocks {
+                    estop: true,
+                    ..il(true)
+                }
+            ),
+            Transition::Blocked(Reason::NotPermitted)
+        );
+        // Allowed after completed fill: OFF/SAFE -> ON/PWR atomically, and FILL blocked.
+        let armed = allowed(ControlState::SAFE, ControlEvent::SrvIgnOn, il(true));
+        assert_eq!(
+            armed,
+            ControlState {
+                fill: FillState::Off,
+                srv: SrvState::On,
+                ign: IgnState::Pwr,
+            }
+        );
+        assert_eq!(
+            armed.transition(ControlEvent::FillOn, il(true)),
+            Transition::Blocked(Reason::IgnPowered)
+        );
+        // Operator turns SRV+IGN -> OFF/SAFE atomically.
+        let safed = allowed(armed, ControlEvent::SrvIgnOff, il(true));
+        assert_eq!(safed, ControlState::SAFE);
     }
 
     #[test]

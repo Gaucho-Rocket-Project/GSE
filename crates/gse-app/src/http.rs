@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use crate::broadcaster::EventMsg;
 use crate::clock;
-use crate::config::{Config, BAUDS};
+use crate::config::{Config, OperationMode, BAUDS};
 use crate::engine::{ConfigPatch, Request, UserAction};
 use crate::json::{self, Value};
 use crate::serial;
@@ -304,6 +304,24 @@ fn handle_connection(
             }
             match parse_config_patch(&request) {
                 Ok(patch) => {
+                    if let Some(next_mode) = patch.op_mode {
+                        let blocked_mode_change = {
+                            let st = shared.lock();
+                            let target_unsafe =
+                                st.controls.target.is_some_and(|target| !target.is_safe());
+                            next_mode != st.config.op_mode
+                                && (!st.vehicle.state.outputs_safe()
+                                    || target_unsafe
+                                    || st.countdown.active)
+                        };
+                        if blocked_mode_change {
+                            return write_json(
+                                &mut stream,
+                                400,
+                                "{\"error\":\"Return all controls to OFF/SAFE before switching between LIVE and TEST modes\"}",
+                            );
+                        }
+                    }
                     let _ = requests.send(Request::SetConfig(patch));
                     write_json(&mut stream, 200, "{\"ok\":true}")
                 }
@@ -548,6 +566,14 @@ fn parse_action(request: &HttpRequest) -> Result<UserAction, String> {
 fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
     let body = request.json_body()?;
     let mut patch = ConfigPatch::default();
+    if let Some(v) = body.get("op_mode") {
+        let mode_str = v
+            .as_str()
+            .ok_or_else(|| "op_mode must be 'live' or 'test'".to_string())?;
+        let mode = OperationMode::parse(mode_str)
+            .ok_or_else(|| format!("unknown op_mode '{mode_str}' (expected 'live' or 'test')"))?;
+        patch.op_mode = Some(mode);
+    }
     if let Some(v) = body.get("fill_seconds") {
         let seconds = v
             .as_i64()
@@ -760,9 +786,12 @@ mod tests {
     #[test]
     fn config_validation() {
         let mut r = request("POST", "/api/config");
-        r.body = br#"{"fill_seconds":90,"baud":115200,"port":"auto"}"#.to_vec();
+        r.body = br#"{"op_mode":"test","fill_seconds":90,"baud":115200,"port":"auto"}"#.to_vec();
         let patch = parse_config_patch(&r).unwrap();
+        assert_eq!(patch.op_mode, Some(OperationMode::Test));
         assert_eq!(patch.fill_seconds, Some(90));
+        r.body = br#"{"op_mode":"nope"}"#.to_vec();
+        assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"fill_seconds":9999}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"baud":1234}"#.to_vec();

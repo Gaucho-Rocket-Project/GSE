@@ -6,22 +6,36 @@
 //! transition leave the browser; the vehicle independently re-checks the same
 //! table before driving an output.
 //!
+//! Operating modes:
+//! * [`OperationMode::Test`] — vehicle control testing: independent `FILL`,
+//!   `SRV`, and `IGN` channels (`FILL` <-> `SRV` exclusive, `IGN` gated on a
+//!   completed fill + `SRV ON`).
+//! * [`OperationMode::Live`] — live launch sequence: `FILL` unchanged, plus a
+//!   combined `SRV+IGN` channel (`OFF/SAFE` -> 5 s countdown -> `ON/PWR` ->
+//!   `OFF/SAFE`), greyed out until the fill sequence has completed.
+//!
 //! Additional app-only gates:
 //!
 //! * nothing is enabled before the ground and vehicle links are up,
 //! * nothing except E-STOP is enabled while a command is awaiting its ACK,
+//! * while the 5 s `SRV+IGN` launch countdown is running, only E-STOP and
+//!   RESET CONTROLS remain active (both immediately cancel the countdown),
 //! * control actions stay locked until the startup handshake has confirmed
 //!   every output is OFF/SAFE ([`Inputs::controls_ready`]).
 
 use gse_proto::fsm::{ControlEvent, ControlState, Interlocks, Transition};
 use gse_proto::{Reason, StateSnapshot};
 
+use crate::config::OperationMode;
 use crate::state::{ActionState, Actions};
 
 pub struct Inputs {
+    pub mode: OperationMode,
     pub ground_online: bool,
     pub vehicle_online: bool,
     pub pending: bool,
+    /// True during the 5-second LIVE launch countdown before `SRV+IGN ON`.
+    pub countdown_active: bool,
     /// The startup/reset handshake confirmed FILL OFF, SRV OFF, IGN SAFE.
     pub controls_ready: bool,
     pub state: StateSnapshot,
@@ -50,6 +64,8 @@ fn no_op_text(event: ControlEvent) -> &'static str {
         ControlEvent::SrvOff => "SRV is already OFF",
         ControlEvent::IgnPwr => "IGN is already PWR",
         ControlEvent::IgnSafe => "IGN is already SAFE",
+        ControlEvent::SrvIgnOn => "SRV+IGN is already ON/PWR",
+        ControlEvent::SrvIgnOff => "SRV+IGN is already OFF/SAFE",
         ControlEvent::SafeAll | ControlEvent::Reset => "All controls are already OFF/SAFE",
     }
 }
@@ -57,11 +73,21 @@ fn no_op_text(event: ControlEvent) -> &'static str {
 /// Operator text for a refused transition.
 fn blocked_text(event: ControlEvent, interlocks: Interlocks, reason: Reason) -> String {
     match (event, reason) {
-        (ControlEvent::IgnPwr, Reason::NotPermitted) if interlocks.inhibited => {
+        (ControlEvent::IgnPwr | ControlEvent::SrvIgnOn, Reason::NotPermitted)
+            if interlocks.inhibited =>
+        {
             "Vehicle inhibited - press RESET CONTROLS and run a new fill".to_string()
         }
-        (ControlEvent::IgnPwr, Reason::NotPermitted) if interlocks.estop => {
+        (ControlEvent::IgnPwr | ControlEvent::SrvIgnOn, Reason::NotPermitted)
+            if interlocks.estop =>
+        {
             "E-STOP is latched - press RESET CONTROLS first".to_string()
+        }
+        (ControlEvent::SrvIgnOn, Reason::FillSeqIncomplete) => {
+            "SRV+IGN requires a completed FILL sequence".to_string()
+        }
+        (ControlEvent::SrvIgnOn, Reason::FillActive) => {
+            "SRV+IGN cannot be enabled while FILL is open".to_string()
         }
         _ => reason.label().to_string(),
     }
@@ -108,23 +134,43 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         None
     };
 
-    // Every one of these comes straight from the shared transition table.
-    let fill_on = gate(base.as_ref(), state, interlocks, ControlEvent::FillOn);
-    let fill_off = gate(base.as_ref(), state, interlocks, ControlEvent::FillOff);
-    let srv_on = gate(base.as_ref(), state, interlocks, ControlEvent::SrvOn);
-    let srv_off = gate(base.as_ref(), state, interlocks, ControlEvent::SrvOff);
-    let ign_pwr = gate(base.as_ref(), state, interlocks, ControlEvent::IgnPwr);
-    let ign_safe = gate(base.as_ref(), state, interlocks, ControlEvent::IgnSafe);
+    let countdown_gate = if inputs.countdown_active {
+        Some(blocked("SRV+IGN 5 s countdown in progress"))
+    } else {
+        None
+    };
+    let channel_base = base.as_ref().or(countdown_gate.as_ref());
 
-    // RESET CONTROLS always resolves to OFF/SAFE, so it is never refused by an
-    // interlock: only link state, a pending command or the init handshake gate
-    // it. This is the operator's way back from any latched condition.
+    let fill_on = gate(channel_base, state, interlocks, ControlEvent::FillOn);
+    let fill_off = gate(channel_base, state, interlocks, ControlEvent::FillOff);
+
+    let (srv_on, srv_off, ign_pwr, ign_safe, srv_ign_on, srv_ign_off) = match inputs.mode {
+        OperationMode::Test => (
+            gate(channel_base, state, interlocks, ControlEvent::SrvOn),
+            gate(channel_base, state, interlocks, ControlEvent::SrvOff),
+            gate(channel_base, state, interlocks, ControlEvent::IgnPwr),
+            gate(channel_base, state, interlocks, ControlEvent::IgnSafe),
+            blocked("Only available in LIVE mode"),
+            blocked("Only available in LIVE mode"),
+        ),
+        OperationMode::Live => (
+            blocked("Disabled in LIVE mode (use SRV+IGN)"),
+            blocked("Disabled in LIVE mode (use SRV+IGN)"),
+            blocked("Disabled in LIVE mode (use SRV+IGN)"),
+            blocked("Disabled in LIVE mode (use SRV+IGN)"),
+            gate(channel_base, state, interlocks, ControlEvent::SrvIgnOn),
+            gate(channel_base, state, interlocks, ControlEvent::SrvIgnOff),
+        ),
+    };
+
+    // RESET CONTROLS always resolves to OFF/SAFE (and cancels any active
+    // countdown), so only link state, a pending command or init gate it.
     let reset_controls = match &base {
         Some(base) => base.clone(),
         None => allowed(),
     };
 
-    let reset_fill = match &base {
+    let reset_fill = match channel_base {
         Some(b) => b.clone(),
         None => {
             if inputs.state.fill_open() {
@@ -143,7 +189,7 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         }
     };
 
-    let clear_faults = match &base {
+    let clear_faults = match channel_base {
         Some(b) => b.clone(),
         None => {
             if inputs.state.faults == 0 && !inputs.state.inhibited() && !inputs.state.estop() {
@@ -154,8 +200,8 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         }
     };
 
-    // The emergency stop is never blocked by a pending command or by the
-    // current output state; it is only useless when the vehicle is unreachable.
+    // The emergency stop is never blocked by a pending command, countdown, or
+    // output state; it is only useless when the vehicle is unreachable.
     let estop = if !inputs.vehicle_online {
         blocked(offline_reason)
     } else {
@@ -169,6 +215,8 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         srv_off,
         ign_pwr,
         ign_safe,
+        srv_ign_on,
+        srv_ign_off,
         reset_controls,
         reset_fill,
         clear_faults,
@@ -190,25 +238,37 @@ mod tests {
 
     fn online(state: StateSnapshot) -> Inputs {
         Inputs {
+            mode: OperationMode::Test,
             ground_online: true,
             vehicle_online: true,
             pending: false,
+            countdown_active: false,
             controls_ready: true,
             state,
+        }
+    }
+
+    fn online_live(state: StateSnapshot) -> Inputs {
+        Inputs {
+            mode: OperationMode::Live,
+            ..online(state)
         }
     }
 
     #[test]
     fn everything_blocked_when_offline() {
         let actions = evaluate(&Inputs {
+            mode: OperationMode::Test,
             ground_online: false,
             vehicle_online: false,
             pending: false,
+            countdown_active: false,
             controls_ready: false,
             state: state(flags::FILL_OPEN),
         });
         assert!(!actions.fill_on.enabled);
         assert!(!actions.fill_off.enabled);
+        assert!(!actions.srv_ign_on.enabled);
         assert!(!actions.reset_controls.enabled);
         assert!(!actions.estop.enabled);
         assert!(actions.fill_on.reason.contains("Ground board"));
@@ -217,13 +277,16 @@ mod tests {
     #[test]
     fn controls_wait_for_the_startup_safe_handshake() {
         let actions = evaluate(&Inputs {
+            mode: OperationMode::Live,
             ground_online: true,
             vehicle_online: true,
             pending: false,
+            countdown_active: false,
             controls_ready: false,
             state: StateSnapshot::default(),
         });
         assert!(!actions.fill_on.enabled);
+        assert!(!actions.srv_ign_on.enabled);
         assert!(actions.fill_on.reason.contains("Initialising"));
         assert!(!actions.reset_controls.enabled);
     }
@@ -261,6 +324,49 @@ mod tests {
         // Aborted fill never enables ignition.
         let actions = evaluate(&online(state(flags::SRV_ON | flags::FILL_SEQ_ABORTED)));
         assert!(!actions.ign_pwr.enabled);
+    }
+
+    #[test]
+    fn live_mode_gates_srv_ign_on_completed_fill_and_blocks_individual_channels() {
+        // At rest before fill: FILL ON enabled, SRV+IGN disabled, individual SRV/IGN disabled.
+        let actions = evaluate(&online_live(StateSnapshot::default()));
+        assert!(actions.fill_on.enabled);
+        assert!(!actions.srv_ign_on.enabled);
+        assert!(!actions.srv_ign_off.enabled);
+        assert!(!actions.srv_on.enabled);
+        assert!(!actions.ign_pwr.enabled);
+        assert!(actions.srv_ign_on.reason.contains("completed FILL"));
+
+        // While filling: FILL OFF enabled, SRV+IGN disabled.
+        let actions = evaluate(&online_live(state(flags::FILL_OPEN)));
+        assert!(actions.fill_off.enabled);
+        assert!(!actions.srv_ign_on.enabled);
+
+        // Aborted fill: SRV+IGN remains disabled.
+        let actions = evaluate(&online_live(state(flags::FILL_SEQ_ABORTED)));
+        assert!(!actions.srv_ign_on.enabled);
+
+        // Completed fill: SRV+IGN ON enabled!
+        let actions = evaluate(&online_live(state(flags::FILL_SEQ_COMPLETE)));
+        assert!(actions.srv_ign_on.enabled);
+        assert!(!actions.srv_ign_off.enabled);
+
+        // During 5 s countdown: channel actions locked, RESET CONTROLS + E-STOP stay enabled.
+        let mut counting = online_live(state(flags::FILL_SEQ_COMPLETE));
+        counting.countdown_active = true;
+        let actions = evaluate(&counting);
+        assert!(!actions.srv_ign_on.enabled);
+        assert!(!actions.fill_on.enabled);
+        assert!(actions.reset_controls.enabled);
+        assert!(actions.estop.enabled);
+
+        // Once SRV+IGN is ON/PWR: SRV+IGN OFF enabled, FILL ON blocked.
+        let actions = evaluate(&online_live(state(
+            flags::FILL_SEQ_COMPLETE | flags::SRV_ON | flags::IGN_PWR,
+        )));
+        assert!(!actions.srv_ign_on.enabled);
+        assert!(actions.srv_ign_off.enabled);
+        assert!(!actions.fill_on.enabled);
     }
 
     #[test]
@@ -316,9 +422,11 @@ mod tests {
     #[test]
     fn estop_available_during_pending() {
         let actions = evaluate(&Inputs {
+            mode: OperationMode::Live,
             ground_online: true,
             vehicle_online: true,
             pending: true,
+            countdown_active: false,
             controls_ready: true,
             state: StateSnapshot::default(),
         });
@@ -342,9 +450,11 @@ mod tests {
     fn every_action_has_a_reason_when_disabled() {
         // A greyed-out control must always explain itself.
         let actions = evaluate(&Inputs {
+            mode: OperationMode::Test,
             ground_online: true,
             vehicle_online: true,
             pending: false,
+            countdown_active: false,
             controls_ready: true,
             state: state(flags::FILL_OPEN | flags::IGN_PWR),
         });
@@ -355,6 +465,8 @@ mod tests {
             ("srv_off", &actions.srv_off),
             ("ign_pwr", &actions.ign_pwr),
             ("ign_safe", &actions.ign_safe),
+            ("srv_ign_on", &actions.srv_ign_on),
+            ("srv_ign_off", &actions.srv_ign_off),
             ("reset_fill", &actions.reset_fill),
         ] {
             if !action.enabled {

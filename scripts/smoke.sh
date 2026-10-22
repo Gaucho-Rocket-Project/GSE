@@ -3,9 +3,13 @@
 # Requires `cargo build --workspace` first.
 set -euo pipefail
 
+free_port() {
+    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SIM_PORT="${GSE_SMOKE_SIM_PORT:-8799}"
-HTTP_PORT="${GSE_SMOKE_HTTP_PORT:-8798}"
+SIM_PORT="${GSE_SMOKE_SIM_PORT:-$(free_port)}"
+HTTP_PORT="${GSE_SMOKE_HTTP_PORT:-$(free_port)}"
 WORK="$(mktemp -d)"
 SIM_PID=""
 APP_PID=""

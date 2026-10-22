@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """End-to-end smoke test against a running gse-app console.
 
-Drives the HTTP API exactly like the browser does: waits for both boards,
-checks the deterministic OFF/SAFE initialisation, runs a short fill sequence,
-verifies every safety gate along the way, fires the igniter, hits the
-emergency stop, resets the controls back to OFF/SAFE and finally shuts the
-app down, checking that it commands ALL SAFE before exiting.
+Exercises BOTH operating modes end-to-end:
+  1. LIVE mode (default launch setup):
+     - verifies SRV+IGN starts greyed out (OFF/SAFE) before fill completes
+     - verifies individual SRV / IGN actions are blocked in LIVE mode
+     - runs the timed FILL sequence to completion -> verifies SRV+IGN unlocks
+     - triggers SRV+IGN -> verifies the 5-second on-screen countdown holds all
+       outputs OFF/SAFE, aborts cleanly if interrupted, and after 5.0 s drives
+       SRV+IGN -> ON (SRV=ON, IGN=PWR)
+     - verifies mode switching is rejected while SRV+IGN is ON/PWR
+     - commands SRV+IGN -> OFF -> verifies both channels return to OFF/SAFE
+  2. Settings switch to TEST mode:
+     - verifies independent FILL, SRV, and IGN controls and all safety gates
+     - fires IGN PWR, triggers E-STOP, runs RESET CONTROLS, tests reconnect
+       ALL SAFE and pre-shutdown ALL SAFE.
 
 Usage: smoke.py BASE_URL TOKEN
 """
@@ -34,6 +43,20 @@ def request(path, body=None, timeout=5):
         return json.loads(resp.read().decode())
 
 
+def request_status(path, body=None, timeout=5):
+    data = None if body is None else json.dumps(body).encode()
+    method = "GET" if data is None else "POST"
+    req = urllib.request.Request(BASE + path, data=data, method=method)
+    req.add_header("X-GSE-Token", TOKEN)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, json.loads(resp.read().decode())
+    except urllib.error.HTTPError as err:
+        return err.code, json.loads(err.read().decode())
+
+
 def state():
     return request("/api/state")
 
@@ -48,8 +71,8 @@ def wait_for(predicate, label, timeout=TIMEOUT):
                 return last
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             pass
-        time.sleep(0.1)
-    raise AssertionError(f"timeout waiting for {label}; last={json.dumps(last)[:400]}")
+        time.sleep(0.08)
+    raise AssertionError(f"timeout waiting for {label}; last={json.dumps(last)[:450]}")
 
 
 def check(condition, message):
@@ -65,7 +88,9 @@ def main():
     wait_for(lambda s: s["vehicle"]["status"] == "online", "vehicle online")
     print("  ok  both boards detected and pinged")
 
-    # --- Initialisation: the machine leaves INIT only in OFF/SAFE. --------
+    # ======================================================================
+    # PART 1: LIVE LAUNCH MODE (default)
+    # ======================================================================
     s = wait_for(
         lambda st: st["controls"]["ready"]
         and st["controls"]["safe"]
@@ -74,16 +99,106 @@ def main():
         and st["controls"]["ign"] == "SAFE",
         "controls initialised OFF/SAFE",
     )
+    check(s["config"]["op_mode"] == "live", "default operating mode is LIVE")
     check(s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE", "startup state is OFF/SAFE")
     check(not s["vehicle"]["state"]["fill"], "vehicle FILL off at initialisation")
     check(not s["vehicle"]["state"]["srv"], "vehicle SRV off at initialisation")
     check(not s["vehicle"]["state"]["ign"], "vehicle IGN safe at initialisation")
 
-    s = wait_for(lambda st: st["actions"]["fill_on"]["enabled"], "FILL gate open")
-    check(not s["actions"]["ign_pwr"]["enabled"], "IGN blocked at rest")
-    check("SRV" in s["actions"]["ign_pwr"]["reason"], "IGN reason names SRV")
+    s = wait_for(lambda st: st["actions"]["fill_on"]["enabled"], "FILL gate open in LIVE mode")
+    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN greyed out before fill completes")
+    check(
+        "completed FILL" in s["actions"]["srv_ign_on"]["reason"],
+        "LIVE SRV+IGN reason requires completed FILL sequence",
+    )
+    check(not s["actions"]["srv_on"]["enabled"], "individual SRV control disabled in LIVE mode")
+    check(not s["actions"]["ign_pwr"]["enabled"], "individual IGN control disabled in LIVE mode")
 
+    # Timed FILL sequence in LIVE mode unlocks SRV+IGN only on completion.
     request("/api/config", {"fill_seconds": 2})
+    request("/api/command", {"action": "fill_on"})
+    wait_for(lambda st: st["fill"]["active"], "LIVE fill running")
+    s = state()
+    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN stays greyed out during active fill")
+
+    s = wait_for(
+        lambda st: st["fill"]["seq_complete"]
+        and not st["fill"]["active"]
+        and st["actions"]["srv_ign_on"]["enabled"],
+        "LIVE fill sequence complete and SRV+IGN unlocked",
+        timeout=15,
+    )
+    check(True, "completed FILL unlocked SRV+IGN in LIVE mode")
+
+    # Press SRV+IGN: verify 5-second on-screen countdown -> automatic SRV+IGN ON.
+    t_armed = time.monotonic()
+    request("/api/command", {"action": "srv_ign_on"})
+    s = wait_for(lambda st: st["countdown"]["active"], "5 s SRV+IGN countdown active")
+    check(
+        3500 <= s["countdown"]["remaining_ms"] <= 5000,
+        f"5 s countdown exposed to UI (remaining={s['countdown']['remaining_ms']} ms)",
+    )
+    check(
+        not s["vehicle"]["state"]["srv"] and not s["vehicle"]["state"]["ign"],
+        "vehicle outputs remain OFF/SAFE during 5 s countdown",
+    )
+    code, _ = request_status("/api/config", {"op_mode": "test"})
+    check(code == 400, "switching LIVE -> TEST is blocked while countdown is active")
+
+    # Wait for the 5-second countdown to complete and receive the SRV+IGN ON ACK.
+    s = wait_for(
+        lambda st: st["controls"]["srv"] == "ON"
+        and st["controls"]["ign"] == "PWR"
+        and st["actions"]["srv_ign_off"]["enabled"],
+        "SRV+IGN -> ON acknowledged after 5 s countdown",
+        timeout=10,
+    )
+    elapsed_live = time.monotonic() - t_armed
+    check(elapsed_live >= 4.8, f"SRV+IGN energised after full 5 s countdown ({elapsed_live:.2f} s)")
+    check(
+        s["vehicle"]["state"]["srv"]
+        and s["vehicle"]["state"]["ign"]
+        and not s["countdown"]["active"]
+        and s["actions"]["srv_ign_off"]["enabled"],
+        "SRV+IGN confirmed ON/PWR and operator can command SRV+IGN -> OFF",
+    )
+    code, _ = request_status("/api/config", {"op_mode": "test"})
+    check(code == 400, "switching LIVE -> TEST is blocked while SRV+IGN is ON")
+
+    # Operator turns SRV+IGN -> OFF.
+    request("/api/command", {"action": "srv_ign_off"})
+    s = wait_for(
+        lambda st: not st["vehicle"]["state"]["srv"]
+        and not st["vehicle"]["state"]["ign"]
+        and st["controls"]["safe"],
+        "SRV+IGN -> OFF confirmed",
+    )
+    check(
+        s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE",
+        "operator SRV+IGN -> OFF returned vehicle cleanly to OFF/SAFE",
+    )
+
+    # Clear completed-fill latch before switching to TEST mode.
+    request("/api/command", {"action": "reset_controls"})
+    wait_for(
+        lambda st: st["controls"]["safe"]
+        and not st["vehicle"]["state"]["fill_seq_complete"]
+        and st["actions"]["fill_on"]["enabled"],
+        "LIVE controls reset cleanly before switching to TEST mode",
+    )
+
+    # ======================================================================
+    # PART 2: TEST MODE (independent FILL, SRV, IGN controls & safety gates)
+    # ======================================================================
+    request("/api/config", {"op_mode": "test", "fill_seconds": 2})
+    s = wait_for(
+        lambda st: st["config"]["op_mode"] == "test" and st["actions"]["srv_on"]["enabled"],
+        "switched to TEST mode",
+    )
+    check(not s["actions"]["srv_ign_on"]["enabled"], "combined SRV+IGN disabled in TEST mode")
+    check(not s["actions"]["ign_pwr"]["enabled"], "IGN blocked at rest in TEST mode")
+    check("SRV" in s["actions"]["ign_pwr"]["reason"], "IGN reason names SRV in TEST mode")
+
     request("/api/command", {"action": "fill_on"})
     # The machine must not move on the request: while the command is in
     # flight the confirmed state is still OFF and only the target says ON.
@@ -203,8 +318,8 @@ def main():
     check(True, "shutdown will happen with SRV ON")
 
     s = request("/api/state")
-    check(s["stats"]["commands_sent"] >= 5, "commands were transmitted")
-    check(s["stats"]["acks_ok"] >= 5, "every command was acknowledged")
+    check(s["stats"]["commands_sent"] >= 7, "commands were transmitted")
+    check(s["stats"]["acks_ok"] >= 7, "every command was acknowledged")
 
     # --- Shutdown: the app must command ALL SAFE before it exits. ---------
     log_path = s.get("log_path")

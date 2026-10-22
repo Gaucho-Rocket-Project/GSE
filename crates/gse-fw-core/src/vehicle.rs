@@ -420,6 +420,7 @@ impl<H: VehicleHal> Vehicle<H> {
             Control::Fill => self.apply_fill(cmd, now),
             Control::Srv => self.apply_srv(cmd, now),
             Control::Ign => self.apply_ign(cmd, now),
+            Control::SrvIgn => self.apply_srv_ign(cmd, now),
         }
     }
 
@@ -531,8 +532,27 @@ impl<H: VehicleHal> Vehicle<H> {
                     self.hal.set_ign(false);
                     Outcome::ok(SETTLE_RELAY_MS, Some((EventCode::IgnSafe, 0)))
                 }
-                // Not reachable: `apply_control` is only called for the three
-                // actuator controls. Reject rather than panic on the vehicle.
+                Control::SrvIgn if cmd.action == ACTION_ON => {
+                    self.state.srv = true;
+                    self.hal.set_srv(true);
+                    self.emit_event(EventCode::SrvOn, 0, now);
+                    self.state.ign = true;
+                    self.hal.set_ign(true);
+                    Outcome::ok(SETTLE_SERVO_MS, Some((EventCode::IgnPwr, 0)))
+                }
+                Control::SrvIgn => {
+                    // Always safe the pyrotechnic igniter first before removing servo power.
+                    if self.state.ign {
+                        self.state.ign = false;
+                        self.hal.set_ign(false);
+                        self.emit_event(EventCode::IgnSafe, 0, now);
+                    }
+                    self.state.srv = false;
+                    self.hal.set_srv(false);
+                    Outcome::ok(SETTLE_SERVO_MS, Some((EventCode::SrvOff, 0)))
+                }
+                // Not reachable: `apply_control` is only called for actuator
+                // controls. Reject rather than panic on the vehicle.
                 Control::System => Outcome::reject(AckResult::UnknownControl, Reason::NotPermitted),
             },
         }
@@ -553,6 +573,10 @@ impl<H: VehicleHal> Vehicle<H> {
 
     fn apply_ign(&mut self, cmd: &Command, now: u32) -> Outcome {
         self.apply_control(Control::Ign, cmd, now)
+    }
+
+    fn apply_srv_ign(&mut self, cmd: &Command, now: u32) -> Outcome {
+        self.apply_control(Control::SrvIgn, cmd, now)
     }
 
     /// Close the fill valve and latch the fill-sequence result.
@@ -1187,5 +1211,48 @@ mod tests {
         let acks = poll_until_ack(&mut vehicle);
         assert!(acks[0].result.is_ok());
         assert!(vehicle.hal().fill);
+    }
+
+    #[test]
+    fn live_srv_ign_sequence_enforces_fill_interlock_and_toggles_outputs() {
+        let mut vehicle = new_vehicle();
+        vehicle.poll();
+
+        // Reject SRV+IGN ON before fill sequence completes.
+        send(&mut vehicle, cmd(Control::SrvIgn, 1, 0, 1));
+        let acks = poll_until_ack(&mut vehicle);
+        assert_eq!(acks[0].result, AckResult::RejectedSafety);
+        assert_eq!(acks[0].reason, Reason::FillSeqIncomplete);
+        assert!(!vehicle.hal().srv && !vehicle.hal().ign);
+
+        // Open fill for 2 s and reject SRV+IGN while valve is still open.
+        send(&mut vehicle, cmd(Control::Fill, 1, 2, 2));
+        let _ = poll_until_ack(&mut vehicle);
+        send(&mut vehicle, cmd(Control::SrvIgn, 1, 0, 3));
+        let acks = poll_until_ack(&mut vehicle);
+        assert_eq!(acks[0].result, AckResult::RejectedSafety);
+        assert_eq!(acks[0].reason, Reason::FillActive);
+        assert!(!vehicle.hal().srv && !vehicle.hal().ign);
+
+        // Complete fill sequence.
+        vehicle.hal_mut().advance(2_100);
+        send(&mut vehicle, cmd(Control::Fill, 0, 0, 4));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(vehicle.state().fill_seq_complete);
+
+        // SRV+IGN ON energises both SRV and IGN and ACKs ON/PWR.
+        send(&mut vehicle, cmd(Control::SrvIgn, 1, 0, 5));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(vehicle.hal().srv && vehicle.hal().ign);
+        assert!(acks[0].state.srv_on() && acks[0].state.ign_pwr());
+
+        // SRV+IGN OFF safes both IGN and SRV back to OFF/SAFE.
+        send(&mut vehicle, cmd(Control::SrvIgn, 0, 0, 6));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(!vehicle.hal().srv && !vehicle.hal().ign);
+        assert!(acks[0].state.outputs_safe());
     }
 }
