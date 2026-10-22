@@ -9,11 +9,15 @@
 //! Safety rules (mirrored by `gse-app`):
 //!
 //! 1. FILL and SRV can never be on at the same time.
-//! 2. FILL opens for `arg_s` seconds; the app closes it at the deadline, and the
-//!    vehicle force-closes it at `deadline + FILL_FALLBACK_EXTRA_MS` if the app
-//!    is gone.
-//! 3. IGN PWR requires a *completed* FILL sequence (open for the full duration,
-//!    then closed). An aborted fill cannot be used to arm the igniter.
+//! 2. FILL opens for `arg_s` seconds; turning FILL OFF before expiry pauses the
+//!    fill timer (preserving `fill_target_ms`) and unlocks SRV / SRV+IGN, while
+//!    subsequent FILL ON resumes from the paused timer. At expiry the app closes
+//!    FILL automatically (with a `deadline + FILL_FALLBACK_EXTRA_MS` hardware
+//!    fallback on the vehicle).
+//! 3. SRV ON, IGN PWR, and SRV+IGN ON require FILL to have run and turned OFF
+//!    (`fill_seq_complete` or `fill_paused`, without `fill_seq_aborted`). An
+//!    uncommanded fault abort (E-STOP / link timeout mid-fill) cannot unlock
+//!    downstream channels.
 //! 4. IGN PWR requires SRV ON.
 //! 5. Any command link timeout while outputs are active forces all outputs safe
 //!    and inhibits ignition until the operator resets the sequence.
@@ -56,7 +60,11 @@ pub struct VehicleState {
     pub ign: bool,
     pub fill_timer_active: bool,
     pub fill_start_ms: u32,
+    /// Active segment duration in milliseconds (full `fill_duration_s * 1000` on
+    /// a fresh fill, or the remaining ms saved when a fill was paused early).
+    pub fill_target_ms: u32,
     pub fill_duration_s: u16,
+    pub fill_paused: bool,
     pub fill_seq_complete: bool,
     pub fill_seq_aborted: bool,
     pub fill_auto_off: bool,
@@ -77,7 +85,9 @@ impl Default for VehicleState {
             ign: false,
             fill_timer_active: false,
             fill_start_ms: 0,
+            fill_target_ms: 0,
             fill_duration_s: 0,
+            fill_paused: false,
             fill_seq_complete: false,
             fill_seq_aborted: false,
             fill_auto_off: false,
@@ -209,6 +219,7 @@ impl<H: VehicleHal> Vehicle<H> {
     fn interlocks(&self) -> Interlocks {
         Interlocks {
             fill_seq_complete: self.state.fill_seq_complete,
+            fill_paused: self.state.fill_paused,
             fill_seq_aborted: self.state.fill_seq_aborted,
             inhibited: self.state.inhibited,
             estop: self.state.estop,
@@ -246,6 +257,9 @@ impl<H: VehicleHal> Vehicle<H> {
         if self.state.fill_timer_active {
             flags |= gse_proto::flags::FILL_TIMER_ACTIVE;
         }
+        if self.state.fill_paused {
+            flags |= gse_proto::flags::FILL_PAUSED;
+        }
         if self.state.fill_seq_complete {
             flags |= gse_proto::flags::FILL_SEQ_COMPLETE;
         }
@@ -271,13 +285,17 @@ impl<H: VehicleHal> Vehicle<H> {
             flags |= gse_proto::flags::INHIBITED;
         }
         let fill_remaining_ms = if self.state.fill && self.state.fill_timer_active {
-            let duration_ms = self.state.fill_duration_s as u32 * 1000;
-            let deadline = self.state.fill_start_ms.wrapping_add(duration_ms);
+            let deadline = self
+                .state
+                .fill_start_ms
+                .wrapping_add(self.state.fill_target_ms);
             if deadline_passed(now, deadline) {
                 0
             } else {
                 deadline.wrapping_sub(now)
             }
+        } else if self.state.fill_paused {
+            self.state.fill_target_ms
         } else {
             0
         };
@@ -286,7 +304,7 @@ impl<H: VehicleHal> Vehicle<H> {
             faults: self.state.faults,
             fill_remaining_ms,
             // Keep the configured duration after the valve closes so the
-            // completion log and the console show how long the fill ran.
+            // completion/pause log and the console show total fill progress.
             fill_duration_s: self.state.fill_duration_s,
             last_cmd_id: self.state.last_cmd_id,
             uptime_ms: elapsed_ms(now, self.boot_ms),
@@ -445,11 +463,12 @@ impl<H: VehicleHal> Vehicle<H> {
     fn apply_system(&mut self, cmd: &Command, now: u32) -> Outcome {
         match cmd.action {
             gse_proto::SYSTEM_ACTION_SAFE_ALL => {
+                let estop = cmd.flags & cmd_flags::ESTOP != 0;
                 let was_fill = self.state.fill;
                 let was_srv = self.state.srv;
                 let was_ign = self.state.ign;
                 if was_fill {
-                    if let Some(ev) = self.close_fill(now) {
+                    if let Some(ev) = self.close_fill(now, estop, false) {
                         self.emit_event(ev.0, ev.1, now);
                     }
                 }
@@ -461,7 +480,9 @@ impl<H: VehicleHal> Vehicle<H> {
                     self.state.ign = false;
                     self.hal.set_ign(false);
                 }
-                if cmd.flags & cmd_flags::ESTOP != 0 {
+                if estop {
+                    self.state.fill_paused = false;
+                    self.state.fill_target_ms = 0;
                     self.state.estop = true;
                     self.emit_event(EventCode::Estop, 0, now);
                 } else if was_fill || was_srv || was_ign {
@@ -477,6 +498,9 @@ impl<H: VehicleHal> Vehicle<H> {
                 if self.state.ign {
                     return Outcome::reject(AckResult::RejectedSafety, Reason::IgnPowered);
                 }
+                self.state.fill_paused = false;
+                self.state.fill_target_ms = 0;
+                self.state.fill_duration_s = 0;
                 self.state.fill_seq_complete = false;
                 self.state.fill_seq_aborted = false;
                 self.state.fill_auto_off = false;
@@ -512,22 +536,26 @@ impl<H: VehicleHal> Vehicle<H> {
             Transition::NoOp(_) => Outcome::ok(0, None),
             Transition::Allowed(_) => match control {
                 Control::Fill if cmd.action == ACTION_ON => {
+                    let resuming = self.state.fill_paused && self.state.fill_target_ms > 0;
+                    if !resuming {
+                        self.state.fill_duration_s = cmd.arg_s;
+                        self.state.fill_target_ms = (cmd.arg_s as u32).saturating_mul(1000);
+                    }
+                    let event_secs = self.state.fill_target_ms.div_ceil(1000).min(255) as u8;
                     self.state.fill = true;
                     self.state.fill_timer_active = true;
                     self.state.fill_start_ms = now;
-                    self.state.fill_duration_s = cmd.arg_s;
+                    self.state.fill_paused = false;
                     self.state.fill_seq_complete = false;
                     self.state.fill_seq_aborted = false;
                     self.state.fill_auto_off = false;
                     self.state.inhibited = false;
                     self.hal.set_fill(true);
-                    Outcome::ok(
-                        SETTLE_SERVO_MS,
-                        Some((EventCode::FillOn, cmd.arg_s.min(255) as u8)),
-                    )
+                    Outcome::ok(SETTLE_SERVO_MS, Some((EventCode::FillOn, event_secs)))
                 }
                 Control::Fill => {
-                    let ev = self.close_fill(now);
+                    let is_auto = cmd.flags & cmd_flags::AUTO != 0;
+                    let ev = self.close_fill(now, false, is_auto);
                     Outcome::ok(SETTLE_SERVO_MS, ev)
                 }
                 Control::Srv if cmd.action == ACTION_ON => {
@@ -597,30 +625,51 @@ impl<H: VehicleHal> Vehicle<H> {
         self.apply_control(Control::SrvIgn, cmd, now)
     }
 
-    /// Close the fill valve and latch the fill-sequence result.
-    fn close_fill(&mut self, now: u32) -> Option<(EventCode, u8)> {
+    /// Close the fill valve and record whether the sequence completed, paused,
+    /// or aborted due to an emergency stop / link loss.
+    fn close_fill(
+        &mut self,
+        now: u32,
+        force_abort: bool,
+        is_auto: bool,
+    ) -> Option<(EventCode, u8)> {
         if !self.state.fill {
             return None;
         }
         let was_timed = self.state.fill_timer_active;
         let elapsed = elapsed_ms(now, self.state.fill_start_ms);
-        let duration_ms = self.state.fill_duration_s as u32 * 1000;
-        let completed =
-            was_timed && elapsed.saturating_add(FILL_COMPLETE_TOLERANCE_MS) >= duration_ms;
+        let target_ms = self.state.fill_target_ms;
+        let completed = was_timed
+            && (elapsed >= target_ms
+                || (is_auto && elapsed.saturating_add(FILL_COMPLETE_TOLERANCE_MS) >= target_ms));
         self.state.fill = false;
         self.state.fill_timer_active = false;
         self.hal.set_fill(false);
         if completed {
+            self.state.fill_paused = false;
+            self.state.fill_target_ms = 0;
             self.state.fill_seq_complete = true;
             self.state.fill_seq_aborted = false;
             Some((
                 EventCode::FillOff,
                 self.state.fill_duration_s.min(255) as u8,
             ))
-        } else {
-            self.state.fill_seq_aborted = true;
+        } else if force_abort {
+            self.state.fill_paused = false;
+            self.state.fill_target_ms = 0;
             self.state.fill_seq_complete = false;
-            Some((EventCode::FillAborted, elapsed.min(255) as u8))
+            self.state.fill_seq_aborted = true;
+            Some((EventCode::FillAborted, (elapsed / 1000).min(255) as u8))
+        } else {
+            let remaining_ms = target_ms.saturating_sub(elapsed);
+            self.state.fill_paused = true;
+            self.state.fill_target_ms = remaining_ms;
+            self.state.fill_seq_complete = false;
+            self.state.fill_seq_aborted = false;
+            Some((
+                EventCode::FillOff,
+                remaining_ms.div_ceil(1000).min(255) as u8,
+            ))
         }
     }
 
@@ -629,11 +678,17 @@ impl<H: VehicleHal> Vehicle<H> {
             return;
         }
         let elapsed = elapsed_ms(now, self.state.fill_start_ms);
-        let duration_ms = self.state.fill_duration_s as u32 * 1000;
-        if elapsed >= duration_ms.saturating_add(FILL_FALLBACK_EXTRA_MS) {
+        if elapsed
+            >= self
+                .state
+                .fill_target_ms
+                .saturating_add(FILL_FALLBACK_EXTRA_MS)
+        {
             let duration = self.state.fill_duration_s;
             self.state.fill_auto_off = true;
-            if let Some(_ev) = self.close_fill(now) {
+            if let Some(_ev) = self.close_fill(now, false, true) {
+                self.state.fill_paused = false;
+                self.state.fill_target_ms = 0;
                 self.state.fill_seq_complete = true;
                 self.state.fill_seq_aborted = false;
                 self.emit_event(EventCode::FillAutoOff, duration.min(255) as u8, now);
@@ -654,10 +709,7 @@ impl<H: VehicleHal> Vehicle<H> {
         let active = self.state.fill || self.state.srv || self.state.ign;
         if active {
             if self.state.fill {
-                if let Some(_ev) = self.close_fill(now) {
-                    // The link died during the fill; mark it aborted unless the
-                    // full duration had already elapsed.
-                }
+                let _ = self.close_fill(now, true, false);
             }
             self.state.srv = false;
             self.hal.set_srv(false);
@@ -836,45 +888,51 @@ mod tests {
     fn fill_and_srv_are_mutually_exclusive() {
         let mut vehicle = new_vehicle();
         vehicle.poll();
-        send(&mut vehicle, cmd(Control::Srv, 1, 0, 1));
-        let _ = poll_until_ack(&mut vehicle);
-        assert!(vehicle.hal().srv);
 
-        send(&mut vehicle, cmd(Control::Fill, 1, 60, 2));
+        // SRV is locked prior to any FILL run.
+        send(&mut vehicle, cmd(Control::Srv, 1, 0, 1));
         let acks = poll_until_ack(&mut vehicle);
         assert_eq!(acks[0].result, AckResult::RejectedSafety);
-        assert_eq!(acks[0].reason, Reason::FillSrvExclusive);
-        assert!(!vehicle.hal().fill);
+        assert_eq!(acks[0].reason, Reason::FillSeqIncomplete);
 
-        // FILL on first, then SRV must be rejected.
-        send(&mut vehicle, cmd(Control::Srv, 0, 0, 3));
+        // Open FILL for 60 s: SRV is blocked while FILL is open.
+        send(&mut vehicle, cmd(Control::Fill, 1, 60, 2));
         let _ = poll_until_ack(&mut vehicle);
-        send(&mut vehicle, cmd(Control::Fill, 1, 60, 4));
-        let _ = poll_until_ack(&mut vehicle);
-        send(&mut vehicle, cmd(Control::Srv, 1, 0, 5));
+        send(&mut vehicle, cmd(Control::Srv, 1, 0, 3));
         let acks = poll_until_ack(&mut vehicle);
         assert_eq!(acks[0].result, AckResult::RejectedSafety);
         assert_eq!(acks[0].reason, Reason::FillActive);
         assert!(!vehicle.hal().srv);
+
+        // Pause FILL early: SRV unlocks, and while SRV is ON, FILL ON is blocked.
+        send(&mut vehicle, cmd(Control::Fill, 0, 0, 4));
+        let _ = poll_until_ack(&mut vehicle);
+        send(&mut vehicle, cmd(Control::Srv, 1, 0, 5));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(vehicle.hal().srv);
+
+        send(&mut vehicle, cmd(Control::Fill, 1, 60, 6));
+        let acks = poll_until_ack(&mut vehicle);
+        assert_eq!(acks[0].result, AckResult::RejectedSafety);
+        assert_eq!(acks[0].reason, Reason::FillSrvExclusive);
+        assert!(!vehicle.hal().fill);
     }
 
     #[test]
-    fn ign_requires_completed_fill_and_srv() {
+    fn ign_requires_fill_run_and_srv() {
         let mut vehicle = new_vehicle();
         vehicle.poll();
 
-        // Nothing done: rejected for SRV.
+        // Nothing done: IGN rejected for SRV; SRV rejected for FILL sequence.
         send(&mut vehicle, cmd(Control::Ign, 1, 0, 1));
         let acks = poll_until_ack(&mut vehicle);
         assert_eq!(acks[0].reason, Reason::SrvRequired);
 
-        // SRV on, but no fill: rejected for fill sequence.
         send(&mut vehicle, cmd(Control::Srv, 1, 0, 2));
-        let _ = poll_until_ack(&mut vehicle);
-        send(&mut vehicle, cmd(Control::Ign, 1, 0, 3));
         let acks = poll_until_ack(&mut vehicle);
         assert_eq!(acks[0].reason, Reason::FillSeqIncomplete);
-        assert!(!vehicle.hal().ign);
+        assert!(!vehicle.hal().srv && !vehicle.hal().ign);
     }
 
     #[test]
@@ -894,6 +952,7 @@ mod tests {
         let acks = poll_until_ack(&mut vehicle);
         assert!(acks[0].result.is_ok());
         assert!(acks[0].state.fill_seq_complete());
+        assert!(!acks[0].state.fill_paused());
         assert!(!vehicle.hal().fill);
 
         // SRV ON, IGN PWR.
@@ -909,24 +968,57 @@ mod tests {
     }
 
     #[test]
-    fn aborted_fill_cannot_arm_igniter() {
+    fn early_fill_off_pauses_timer_unlocks_outputs_and_resumes_cleanly() {
         let mut vehicle = new_vehicle();
         vehicle.poll();
-        send(&mut vehicle, cmd(Control::Fill, 1, 60, 1));
+
+        // Start a 10 s fill and advance 3.5 s after ACK (total ~3.86 s elapsed).
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 1));
         let _ = poll_until_ack(&mut vehicle);
-        vehicle.hal_mut().advance(5_000);
+        vehicle.hal_mut().advance(3_500);
+
+        // Manual FILL -> OFF prior to expiry pauses the timer and unlocks SRV.
         send(&mut vehicle, cmd(Control::Fill, 0, 0, 2));
         let acks = poll_until_ack(&mut vehicle);
-        assert!(acks[0].state.fill_seq_aborted());
+        assert!(acks[0].result.is_ok());
+        assert!(acks[0].state.fill_paused());
         assert!(!acks[0].state.fill_seq_complete());
+        assert!(!acks[0].state.fill_seq_aborted());
+        let saved_remaining_ms = acks[0].state.fill_remaining_ms;
+        assert!(
+            (6_000..=6_300).contains(&saved_remaining_ms),
+            "unexpected remaining ms: {saved_remaining_ms}"
+        );
 
+        // Advancing time while paused does NOT decrement the remaining fill duration.
+        vehicle.hal_mut().advance(4_000);
+        assert_eq!(vehicle.snapshot().fill_remaining_ms, saved_remaining_ms);
+
+        // SRV unlocks and turns ON cleanly while FILL is paused, then OFF again.
         send(&mut vehicle, cmd(Control::Srv, 1, 0, 3));
-        let _ = poll_until_ack(&mut vehicle);
-        send(&mut vehicle, cmd(Control::Ign, 1, 0, 4));
         let acks = poll_until_ack(&mut vehicle);
-        assert_eq!(acks[0].result, AckResult::RejectedSafety);
-        assert_eq!(acks[0].reason, Reason::FillSeqIncomplete);
-        assert!(!vehicle.hal().ign);
+        assert!(acks[0].result.is_ok());
+        assert!(vehicle.hal().srv);
+        send(&mut vehicle, cmd(Control::Srv, 0, 0, 4));
+        let _ = poll_until_ack(&mut vehicle);
+        assert!(!vehicle.hal().srv);
+
+        // Turning FILL -> ON resumes from `saved_remaining_ms` rather than restarting 10 s.
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 5));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(acks[0].state.fill_open());
+        assert!(!acks[0].state.fill_paused());
+        assert!(acks[0].state.fill_remaining_ms < saved_remaining_ms);
+
+        // Advancing just past `saved_remaining_ms` completes the full 10 s fill!
+        vehicle.hal_mut().advance(saved_remaining_ms + 100);
+        send(&mut vehicle, cmd(Control::Fill, 0, 0, 6));
+        let acks = poll_until_ack(&mut vehicle);
+        assert!(acks[0].result.is_ok());
+        assert!(acks[0].state.fill_seq_complete());
+        assert!(!acks[0].state.fill_paused());
+        assert_eq!(acks[0].state.fill_remaining_ms, 0);
     }
 
     #[test]
@@ -960,7 +1052,12 @@ mod tests {
     fn link_timeout_forces_all_safe_and_inhibits() {
         let mut vehicle = new_vehicle();
         vehicle.poll();
-        send(&mut vehicle, cmd(Control::Srv, 1, 0, 1));
+        // Start and pause a fill so SRV unlocks, then enable SRV.
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 1));
+        let _ = poll_until_ack(&mut vehicle);
+        send(&mut vehicle, cmd(Control::Fill, 0, 0, 2));
+        let _ = poll_until_ack(&mut vehicle);
+        send(&mut vehicle, cmd(Control::Srv, 1, 0, 3));
         let _ = poll_until_ack(&mut vehicle);
         assert!(vehicle.hal().srv);
         vehicle.hal_mut().drain_frames();
@@ -975,6 +1072,33 @@ mod tests {
             f.message(),
             Some(Message::Event(e)) if e.code == EventCode::LinkTimeoutSafe
         )));
+    }
+
+    #[test]
+    fn link_loss_mid_fill_marks_fill_aborted_and_locks_srv_and_ign() {
+        let mut vehicle = new_vehicle();
+        vehicle.poll();
+        send(&mut vehicle, cmd(Control::Fill, 1, 60, 1));
+        let _ = poll_until_ack(&mut vehicle);
+        assert!(vehicle.hal().fill);
+        vehicle.hal_mut().drain_frames();
+
+        vehicle.hal_mut().advance(LINK_TIMEOUT_MS + 1);
+        vehicle.poll();
+        assert!(!vehicle.hal().fill);
+        assert!(vehicle.state().fill_seq_aborted);
+        assert!(!vehicle.state().fill_paused);
+
+        // Even after clearing faults, the aborted fill cannot unlock SRV or SRV+IGN.
+        send(
+            &mut vehicle,
+            cmd(Control::System, gse_proto::SYSTEM_ACTION_CLEAR_FAULTS, 0, 2),
+        );
+        let _ = poll_until_ack(&mut vehicle);
+        send(&mut vehicle, cmd(Control::Srv, 1, 0, 3));
+        let acks = poll_until_ack(&mut vehicle);
+        assert_eq!(acks[0].result, AckResult::RejectedSafety);
+        assert_eq!(acks[0].reason, Reason::FillSeqIncomplete);
     }
 
     #[test]
@@ -1026,13 +1150,13 @@ mod tests {
     fn duplicate_command_reacks_without_side_effects() {
         let mut vehicle = new_vehicle();
         vehicle.poll();
-        send(&mut vehicle, cmd(Control::Srv, 1, 0, 5));
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 5));
         let first = poll_until_ack(&mut vehicle);
         assert!(first[0].result.is_ok());
-        assert!(vehicle.hal().srv);
+        assert!(vehicle.hal().fill);
 
         // Retry the exact same command after the ack was sent.
-        send(&mut vehicle, cmd(Control::Srv, 1, 0, 5));
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 5));
         vehicle.poll();
         let frames = vehicle.hal_mut().drain_frames();
         let acks: Vec<_> = frames
@@ -1190,15 +1314,13 @@ mod tests {
         assert!(vehicle.state().estop);
         assert!(!vehicle.hal().fill && !vehicle.hal().srv && !vehicle.hal().ign);
 
-        // Re-arming the outputs is allowed, but the igniter is inhibited by
-        // the latched E-STOP (the shared machine returns NotPermitted).
+        // Both SRV and IGN remain inhibited by the latched E-STOP (the shared
+        // machine returns NotPermitted).
         send(&mut vehicle, cmd(Control::Srv, 1, 0, 5));
-        let _ = poll_until_ack(&mut vehicle);
-        send(&mut vehicle, cmd(Control::Ign, 1, 0, 6));
         let acks = poll_until_ack(&mut vehicle);
         assert_eq!(acks[0].result, AckResult::RejectedSafety);
         assert_eq!(acks[0].reason, Reason::NotPermitted);
-        assert!(!vehicle.hal().ign);
+        assert!(!vehicle.hal().srv && !vehicle.hal().ign);
 
         // RESET CONTROLS (SAFE ALL + RESET FILL) clears the latch and the
         // fill-sequence latch, returning every output to its initial state.

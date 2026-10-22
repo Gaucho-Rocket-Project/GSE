@@ -22,8 +22,10 @@
 //! Invariants (checked exhaustively by the tests):
 //!
 //! 1. `FILL ON` and `SRV ON` are mutually exclusive.
-//! 2. `IGN PWR` requires SRV ON, a *completed* fill sequence, no latch and no
-//!    E-STOP.
+//! 2. `SRV ON`, `IGN PWR`, and `SRV+IGN ON` all require `FILL` to have run and
+//!    been turned `OFF` (`FILL_SEQ_COMPLETE` or operator-paused `FILL_PAUSED`,
+//!    with no uncommanded `FILL_SEQ_ABORTED`), plus no inhibit latch and no
+//!    `ESTOP`. `IGN PWR` additionally requires `SRV ON`.
 //! 3. Starting from `OFF`/`SAFE`, no legal sequence can produce an unsafe
 //!    combination; the UI keeps all controls at that state until the board
 //!    confirms it.
@@ -194,6 +196,12 @@ impl ControlState {
                     Transition::Blocked(Reason::FillActive)
                 } else if self.ign.is_pwr() {
                     Transition::Blocked(Reason::IgnPowered)
+                } else if !il.fill_ready() {
+                    // SRV remains locked until FILL has run and turned OFF
+                    // (either automatically at timer expiry or manually paused).
+                    Transition::Blocked(Reason::FillSeqIncomplete)
+                } else if il.inhibited || il.estop {
+                    Transition::Blocked(Reason::NotPermitted)
                 } else {
                     Transition::Allowed(ControlState {
                         srv: SrvState::On,
@@ -219,10 +227,10 @@ impl ControlState {
                 } else if self.fill.is_on() {
                     Transition::Blocked(Reason::FillActive)
                 } else if !self.srv.is_on() {
-                    // Safety rule 4.
+                    // Safety rule: SRV must be ON before IGN PWR.
                     Transition::Blocked(Reason::SrvRequired)
-                } else if !il.fill_seq_complete || il.fill_seq_aborted {
-                    // Safety rule 3: only a full, completed fill arms the igniter.
+                } else if !il.fill_ready() {
+                    // Safety rule: FILL must have completed or been paused OFF.
                     Transition::Blocked(Reason::FillSeqIncomplete)
                 } else if il.inhibited || il.estop {
                     Transition::Blocked(Reason::NotPermitted)
@@ -249,8 +257,8 @@ impl ControlState {
                 } else if self.fill.is_on() {
                     // Safety rule 1: FILL and SRV can never both be on.
                     Transition::Blocked(Reason::FillActive)
-                } else if !il.fill_seq_complete || il.fill_seq_aborted {
-                    // Live launch safety rule: SRV+IGN requires a completed fill.
+                } else if !il.fill_ready() {
+                    // Live launch rule: SRV+IGN requires FILL complete or paused OFF.
                     Transition::Blocked(Reason::FillSeqIncomplete)
                 } else if il.inhibited || il.estop {
                     Transition::Blocked(Reason::NotPermitted)
@@ -284,15 +292,21 @@ impl ControlState {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Interlocks {
     pub fill_seq_complete: bool,
+    pub fill_paused: bool,
     pub fill_seq_aborted: bool,
     pub inhibited: bool,
     pub estop: bool,
 }
 
 impl Interlocks {
+    pub const fn fill_ready(self) -> bool {
+        (self.fill_seq_complete || self.fill_paused) && !self.fill_seq_aborted
+    }
+
     pub const fn from_snapshot(snapshot: &StateSnapshot) -> Self {
         Interlocks {
             fill_seq_complete: snapshot.fill_seq_complete(),
+            fill_paused: snapshot.fill_paused(),
             fill_seq_aborted: snapshot.fill_seq_aborted(),
             inhibited: snapshot.has(flags::INHIBITED),
             estop: snapshot.has(flags::ESTOP),
@@ -489,15 +503,26 @@ mod tests {
 
     #[test]
     fn fill_and_srv_never_coexist() {
-        // SRV ON first blocks FILL.
-        let srv = allowed(ControlState::SAFE, ControlEvent::SrvOn, il(false));
+        let paused = Interlocks {
+            fill_paused: true,
+            ..Interlocks::default()
+        };
+
+        // SRV is locked before FILL has run.
+        assert_eq!(
+            ControlState::SAFE.transition(ControlEvent::SrvOn, il(false)),
+            Transition::Blocked(Reason::FillSeqIncomplete)
+        );
+
+        // Once FILL has completed or been paused OFF, SRV unlocks; SRV ON blocks FILL ON.
+        let srv = allowed(ControlState::SAFE, ControlEvent::SrvOn, paused);
         assert_eq!(srv.srv, SrvState::On);
         assert_eq!(
             srv.transition(ControlEvent::FillOn, il(true)),
             Transition::Blocked(Reason::FillSrvExclusive)
         );
 
-        // FILL ON first blocks SRV.
+        // FILL ON blocks SRV ON even if fill flags were set.
         let fill = allowed(ControlState::SAFE, ControlEvent::FillOn, il(false));
         assert_eq!(fill.fill, FillState::On);
         assert_eq!(
@@ -505,11 +530,11 @@ mod tests {
             Transition::Blocked(Reason::FillActive)
         );
 
-        // Both states remain reachable only one at a time.
+        // Turning FILL OFF into paused state returns outputs SAFE and unlocks SRV.
         let back = allowed(fill, ControlEvent::FillOff, il(false));
         assert_eq!(back, ControlState::SAFE);
         assert_eq!(
-            back.transition(ControlEvent::SrvOn, il(false)),
+            back.transition(ControlEvent::SrvOn, paused),
             Transition::Allowed(ControlState {
                 srv: SrvState::On,
                 ..ControlState::SAFE
@@ -518,7 +543,11 @@ mod tests {
     }
 
     #[test]
-    fn ignition_requires_srv_and_a_completed_fill() {
+    fn ignition_requires_srv_and_fill_complete_or_paused() {
+        let paused = Interlocks {
+            fill_paused: true,
+            ..Interlocks::default()
+        };
         let srv_only = ControlState {
             srv: SrvState::On,
             ..ControlState::SAFE
@@ -531,6 +560,10 @@ mod tests {
         let complete = ControlState::SAFE.transition(ControlEvent::IgnPwr, il(true));
         assert_eq!(complete, Transition::Blocked(Reason::SrvRequired));
 
+        // Allowed when FILL is paused OFF just as when FILL completed.
+        let ready_paused = allowed(srv_only, ControlEvent::IgnPwr, paused);
+        assert_eq!(ready_paused.ign, IgnState::Pwr);
+
         let ready = allowed(srv_only, ControlEvent::IgnPwr, il(true));
         assert_eq!(ready.ign, IgnState::Pwr);
         assert_eq!(
@@ -541,16 +574,16 @@ mod tests {
             ready.transition(ControlEvent::FillOn, il(true)),
             Transition::Blocked(Reason::IgnPowered)
         );
-        assert_eq!(
-            ready.transition(ControlEvent::SrvOff, il(true)),
-            Transition::Blocked(Reason::IgnPowered)
-        );
 
-        // Aborted fill and latched faults keep the igniter safe.
+        // Aborted fill and latched faults keep both SRV and IGN safe.
         let aborted = Interlocks {
             fill_seq_aborted: true,
             ..il(true)
         };
+        assert_eq!(
+            ControlState::SAFE.transition(ControlEvent::SrvOn, aborted),
+            Transition::Blocked(Reason::FillSeqIncomplete)
+        );
         assert_eq!(
             srv_only.transition(ControlEvent::IgnPwr, aborted),
             Transition::Blocked(Reason::FillSeqIncomplete)
@@ -560,6 +593,10 @@ mod tests {
             ..il(true)
         };
         assert_eq!(
+            ControlState::SAFE.transition(ControlEvent::SrvOn, inhibited),
+            Transition::Blocked(Reason::NotPermitted)
+        );
+        assert_eq!(
             srv_only.transition(ControlEvent::IgnPwr, inhibited),
             Transition::Blocked(Reason::NotPermitted)
         );
@@ -567,6 +604,10 @@ mod tests {
             estop: true,
             ..il(true)
         };
+        assert_eq!(
+            ControlState::SAFE.transition(ControlEvent::SrvOn, estop),
+            Transition::Blocked(Reason::NotPermitted)
+        );
         assert_eq!(
             srv_only.transition(ControlEvent::IgnPwr, estop),
             Transition::Blocked(Reason::NotPermitted)
@@ -614,8 +655,12 @@ mod tests {
 
     #[test]
     fn every_reachable_state_keeps_the_invariants() {
-        // Exhaustive walk: no sequence of events may produce FILL+SRV or an
-        // ignited output without SRV ON and a completed fill.
+        let paused = Interlocks {
+            fill_paused: true,
+            ..Interlocks::default()
+        };
+        // Exhaustive walk: no sequence of events may produce FILL+SRV, enable
+        // SRV before FILL has run, or arm IGN without SRV ON + FILL ready.
         let mut frontier = [ControlState::SAFE; 8];
         let mut len = 1;
         let mut seen = [ControlState::SAFE; 8];
@@ -625,14 +670,17 @@ mod tests {
             let state = frontier[len - 1];
             len -= 1;
             for event in ControlEvent::ALL {
-                for interlocks in [il(false), il(true)] {
+                for interlocks in [il(false), paused, il(true)] {
                     if let Transition::Allowed(next) = state.transition(event, interlocks) {
                         assert!(
                             !(next.fill_on() && next.srv_on()),
                             "FILL+SRV reached via {event:?} from {state:?}"
                         );
+                        if !state.srv_on() && next.srv_on() {
+                            assert!(interlocks.fill_ready());
+                        }
                         if next.ign_pwr() {
-                            assert!(next.srv_on() && interlocks.fill_seq_complete);
+                            assert!(next.srv_on() && interlocks.fill_ready());
                         }
                         if !seen[..seen_len].contains(&next) && seen_len < seen.len() {
                             seen[seen_len] = next;

@@ -42,11 +42,16 @@ trusts the ground station.
   - **`TEST` mode (`op_mode: "test"`)** — 3-button checkout interface
     (**`FILL[ON/OFF]`**, **`SRV[ON/OFF]`**, **`IGN[PWR/SAFE]`**) for testing
     vehicle channels independently with full safety interlocks.
-- **Configurable sequence timers** in **Settings** (`1..=600 s`):
+- **Configurable sequence timers & pause/resume/abort controls** in **Settings** (`1..=600 s`):
   - **Fill duration** (`fill_seconds`, default `60 s`) — auto-closes `FILL` at
-    expiry and marks the fill sequence complete.
-  - **`SRV+IGN` launch countdown** (`countdown_seconds`, default `5 s`) —
-    displayed live on screen before `SRV+IGN` energises in `LIVE` mode.
+    expiry and marks the fill sequence complete. Turning `FILL -> OFF` prior to
+    expiry **pauses** the fill timer (`fill_remaining_ms` preserved), unlocks
+    `SRV` (`TEST`) / `SRV+IGN` (`LIVE`), and lets subsequent `FILL -> ON`
+    **resume** from the paused remaining time.
+  - **Ignition countdown** (`countdown_seconds`, default `5 s`) — displayed live
+    on screen before `SRV+IGN -> ON` (`LIVE`) or `IGN -> PWR` (`TEST`), and can
+    be aborted mid-countdown at any time (cancelling ignition immediately,
+    returning `SRV -> OFF` if powered, and keeping `FILL` progress intact).
 - **Rebindable keyboard shortcuts** — defaults:
   - `F` — `FILL` toggle (`ON` / `OFF`)
   - `L` — `SRV+IGN` toggle (`LIVE` mode)
@@ -77,14 +82,14 @@ activating command is in progress.
 | Aspect | `LIVE` Mode (`op_mode: "live"`, default) | `TEST` Mode (`op_mode: "test"`) |
 |---|---|---|
 | Console controls | `FILL[ON/OFF]` + `SRV+IGN[ON/OFF]` (2 buttons) | `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]` (3 buttons) |
-| Fill sequence | `FILL ON` → auto `FILL OFF` after `fill_seconds` (default `60 s`) → `FILL_SEQ_COMPLETE` | Identical (`FILL ON` → auto `FILL OFF` after `fill_seconds` → `FILL_SEQ_COMPLETE`) |
-| Pre-fill lock | `SRV+IGN` defaults to `OFF/SAFE` and is greyed out until `FILL` completes without abort | `SRV` can be toggled when `FILL` is `OFF`; `IGN PWR` stays greyed out until `FILL` completes **and** `SRV` is `ON` |
-| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`), holding outputs `OFF/SAFE` until `T-0.0 s`, then sends `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then `IGN PWR` (with optional confirmation dialog) |
+| Fill sequence & pause/resume | `FILL ON` → auto `FILL OFF` after `fill_seconds` (`FILL_SEQ_COMPLETE`), or manual `FILL OFF` prior to expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) so `FILL ON` resumes | Identical (`FILL ON` → auto `FILL OFF`, or manual `FILL OFF` pauses timer and `FILL ON` resumes) |
+| Pre-fill lock | `SRV+IGN` starts `OFF/SAFE` and unlocks once `FILL` completes or is paused `OFF` | `SRV` and `IGN` start locked and `SRV` unlocks once `FILL` completes or is paused `OFF`; `IGN` additionally requires `SRV = ON` |
+| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`) holding outputs `OFF/SAFE` until `T-0.0 s`, then commands `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then pressing `IGN` (optional confirm dialog) runs the `countdown_seconds` countdown before commanding `Control::Ign` (`ON`) → `PWR` |
 | Safe shutoff | Pressing `SRV+IGN` while `ON/PWR` commands `Control::SrvIgn` (`OFF`) → safes `IGN` first, then `SRV` → `OFF/SAFE` | Operator commands `IGN SAFE`, then `SRV OFF` (`SRV OFF` is blocked while `IGN` is `PWR`) |
-| Countdown abort | Pressing `E-STOP` (`E`), `Reset controls` (`Shift+R`), or losing the link immediately cancels the countdown with zero output actuation | N/A |
+| Countdown abort | Clicking `ABORT`, toggling `SRV+IGN` (`L`), or posting `abort_countdown` immediately cancels the countdown with outputs `OFF/SAFE` and preserves `FILL` state | Clicking `ABORT`, toggling `IGN` (`I`), or posting `abort_countdown` immediately cancels `IGN`, commands `SRV -> OFF`, and preserves `FILL` state |
 
-- **LIVE sequence:** `FILL ON → (fill_seconds timer) → auto FILL OFF → press SRV+IGN → (countdown_seconds on-screen countdown) → SRV+IGN ON/PWR → press SRV+IGN → SRV+IGN OFF/SAFE`
-- **TEST sequence:** `FILL ON → (fill_seconds timer) → auto FILL OFF → SRV ON → IGN PWR → IGN SAFE → SRV OFF`
+- **LIVE sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → press SRV+IGN → (abortable countdown) → SRV+IGN ON/PWR → SRV+IGN OFF/SAFE`
+- **TEST sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → SRV ON → press IGN → (abortable countdown) → IGN PWR → IGN SAFE → SRV OFF`
 
 ## Safety interlocks
 
@@ -95,10 +100,10 @@ on the STM32H753ZI vehicle board. There is **no override** in either layer.
 | # | Rule | Where enforced |
 |---|------|----------------|
 | 1 | `FILL` and `SRV` can never be `ON` simultaneously | `safety.rs`, `fsm.rs`, `vehicle.rs` |
-| 2 | `FILL` closes automatically after `fill_seconds` (default `60 s`, `1..=600 s`) and sets `FILL_SEQ_COMPLETE`; closing `FILL` early sets `FILL_SEQ_ABORTED` | `engine.rs` auto-off on board timer + independent 2 s vehicle hardware backstop in `vehicle.rs` |
-| 3 | `IGN PWR` (`TEST`) and `SRV+IGN ON` (`LIVE`) are impossible unless a full timed fill completed without abort | `safety.rs` + `fsm.rs` + `vehicle.rs` |
-| 4 | In `TEST` mode, `IGN PWR` requires `SRV = ON`, and `SRV OFF` is refused while `IGN = PWR` | `safety.rs` + `fsm.rs` + `vehicle.rs` |
-| 5 | In `LIVE` mode, `SRV+IGN` starts `OFF/SAFE`, runs a host countdown (`countdown_seconds`, default `5 s`) with continuous safety re-checking, and safes `IGN` before `SRV` on `OFF` | `safety.rs` + `engine.rs` + `fsm.rs` + `vehicle.rs` |
+| 2 | `FILL` closes automatically after `fill_seconds` (`FILL_SEQ_COMPLETE`), while manual `FILL OFF` before expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) for later resume; only uncommanded fault closes (`E-STOP` / RF timeout mid-fill) set `FILL_SEQ_ABORTED` | `engine.rs` auto-off on board timer + vehicle `close_fill` & 2 s hardware backstop in `vehicle.rs` |
+| 3 | `SRV ON` (`TEST`), `IGN PWR` (`TEST`), and `SRV+IGN ON` (`LIVE`) stay locked until `FILL` has completed or been paused `OFF` without an uncommanded abort | `safety.rs` + `fsm.rs` + `vehicle.rs` |
+| 4 | In `TEST` mode, `IGN PWR` requires `SRV = ON`, runs an abortable `countdown_seconds` countdown, and `SRV OFF` is refused while `IGN = PWR` | `safety.rs` + `engine.rs` + `fsm.rs` + `vehicle.rs` |
+| 5 | Aborting an active countdown (`IGN` or `SRV+IGN`) immediately cancels ignition, closes `SRV` if powered, and keeps `FILL` progress intact | `safety.rs` + `engine.rs` |
 | 6 | Operating mode (`LIVE` ↔ `TEST`) cannot be changed while any output is active, targeted active, or counting down | `http.rs` (`HTTP 400`) + `engine.rs` |
 | 7 | Losing the RF link forces all outputs `OFF/SAFE` after 5 s and latches `INHIBITED` | `vehicle.rs` (`check_link` + `LINK_LOSS_SAFE`) |
 | 8 | `ALL SAFE · E-STOP` always wins immediately, cancelling any active countdown or in-flight command and latching `ESTOP` | `engine.rs` + `vehicle.rs` |
@@ -128,13 +133,13 @@ changing confirmed state badges.
 
 | Event | Preconditions | Result |
 |---|---|---|
-| `FILL ON` | `FILL=OFF, SRV=OFF, IGN=SAFE` | `FILL=ON` (`Blocked` if `SRV=ON` or `IGN=PWR`) |
-| `FILL OFF` | `FILL=ON` | `FILL=OFF` (`NoOp` if already `OFF`) |
-| `SRV ON` (`TEST`) | `FILL=OFF, IGN=SAFE` | `SRV=ON` (`Blocked` while `FILL=ON` or `IGN=PWR`) |
+| `FILL ON` | `FILL=OFF, SRV=OFF, IGN=SAFE` | `FILL=ON` (resumes saved `fill_remaining_ms` if `FILL_PAUSED`, else starts `fill_seconds`) |
+| `FILL OFF` | `FILL=ON` | `FILL=OFF` (pauses `fill_remaining_ms` + unlocks downstream channels if closed before expiry) |
+| `SRV ON` (`TEST`) | `FILL=OFF, IGN=SAFE`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON` (`Blocked` otherwise) |
 | `SRV OFF` (`TEST`) | `SRV=ON, IGN=SAFE` | `SRV=OFF` (`Blocked` while `IGN=PWR`) |
-| `IGN PWR` (`TEST`) | `FILL=OFF, SRV=ON`, `fill_seq_complete`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `IGN=PWR` (`Blocked` otherwise) |
+| `IGN PWR` (`TEST`) | `FILL=OFF, SRV=ON`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `IGN=PWR` (`Blocked` otherwise) |
 | `IGN SAFE` (`TEST`) | `IGN=PWR` | `IGN=SAFE` (`NoOp` if already `SAFE`) |
-| `SRV+IGN ON` (`LIVE`) | `FILL=OFF`, `fill_seq_complete`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON, IGN=PWR` (`NoOp` if already `ON/PWR`, `Blocked` otherwise) |
+| `SRV+IGN ON` (`LIVE`) | `FILL=OFF`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON, IGN=PWR` (`NoOp` if already `ON/PWR`, `Blocked` otherwise) |
 | `SRV+IGN OFF` (`LIVE`) | `SRV=ON` or `IGN=PWR` | `SRV=OFF, IGN=SAFE` (`NoOp` if already `OFF/SAFE`) |
 | `SAFE ALL` / `RESET` | any state | `FILL=OFF, SRV=OFF, IGN=SAFE` |
 
@@ -243,11 +248,13 @@ Session logs are written alongside state files under `logs/session-<timestamp>.l
   `SRV+IGN[ON/OFF]` in `LIVE`; `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]`
   in `TEST`). Whenever a gate is closed, the button is disabled and displays the
   exact reason underneath.
-- **On-screen countdown (`LIVE` mode)**: pressing `SRV+IGN` after a completed
-  fill reveals `#countdown-banner` (`T - X.X s` + progress bar) counting down to
-  `0.0 s` before energizing `SRV+IGN`.
+- **On-screen countdown & abort (`LIVE` & `TEST` modes)**: pressing `SRV+IGN`
+  (`LIVE`) or `IGN` (`TEST`) displays `#countdown-banner` (`T - X.X s`, progress
+  bar, and **`ABORT`** button) counting down to `0.0 s`. Aborting during the
+  countdown immediately cancels ignition, closes `SRV` if powered, and keeps
+  `FILL` progress intact.
 - **Settings modal**: configures **Operating Mode** (`LIVE` / `TEST`), serial
-  port & baud rate, **fill duration (seconds)** (`1..=600`), **`srv+ign`
+  port & baud rate, **fill duration (seconds)** (`1..=600`), **ignition
   countdown (seconds)** (`1..=600`), `ask before IGN PWR` (`TEST` mode),
   `audible alerts`, and click-to-record keyboard shortcuts.
 
@@ -262,7 +269,7 @@ assets, and `GET /api/health`.
 | `/api/health` | `GET` | Liveness check (`{"ok":true,"subscribers":N}`) |
 | `/api/state` | `GET` | Full JSON snapshot (`config`, `ground`, `vehicle`, `controls`, `fill`, `countdown`, `actions`, `stats`) |
 | `/api/events` | `GET` | SSE stream emitting `state` and `log` events |
-| `/api/command` | `POST` | Dispatch action (`fill_on`, `fill_off`, `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`, `reset_controls`, `reset_fill`, `clear_faults`, `estop`) |
+| `/api/command` | `POST` | Dispatch action (`fill_on`, `fill_off`, `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`, `abort_countdown`, `reset_controls`, `reset_fill`, `clear_faults`, `estop`) |
 | `/api/config` | `POST` | Patch configuration (`op_mode`, `fill_seconds`, `countdown_seconds`, `port`, `baud`, `confirm_ign`, `sound`) |
 | `/api/shortcuts` | `POST` | Rebind `{action, combo}` or reset `{reset: true}` |
 | `/api/ports` | `GET` | Enumerate available serial ports |
@@ -343,7 +350,7 @@ trace and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the byte-level specification.
 | `No serial ports found` | Use a data-capable USB cable, power the board, verify ST-LINK VCP driver |
 | `No ground board responded …` | Confirm `gse-ground` is flashed, baud is `115200`, user is in `dialout` on Linux |
 | Ground `online`, vehicle stays `pinging` | Check `VCC` (`5V`, `CN8` pin 9), `PG9`/`PG14` ↔ `DX-LR42-24T12D` Pin 4 `TX` / Pin 3 `RX` (`3.3 V` TTL), matching `AT+CHANNEL` / `AT+LEVEL` / `AT+KEY`, `M0`/`M1` (`PG12`/`PG13`), and `2.4 GHz` antennas |
-| `SRV+IGN` greyed out in `LIVE` mode | Run a full timed `FILL` cycle to completion (closing `FILL` early aborts the fill latch; press `Reset fill seq` first) |
+| `SRV+IGN` (`LIVE`) or `SRV` (`TEST`) greyed out | Run `FILL` and let it auto-complete or click `FILL` again to pause it `OFF` (if an earlier fault set `FILL_SEQ_ABORTED`, press `Reset fill seq` first) |
 | Mode switch refused in Settings | Return all controls to `OFF/SAFE` and cancel any active countdown before switching `LIVE` ↔ `TEST` |
 | Shortcut binding rejected | Key combination is already bound to another action (named in the error toast) |
 

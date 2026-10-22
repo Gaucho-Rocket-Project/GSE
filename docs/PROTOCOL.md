@@ -113,13 +113,13 @@ Capabilities: `RADIO` 1, `SERVOS` 2, `IGNITER` 4, `WATCHDOG` 8,
 
 - **`SYSTEM` actions (`control = 0`)**:
   - `SAFE_ALL` (`0`) — de-energise `IGN`, `SRV`, and `FILL` immediately.
-  - `RESET_FILL` (`1`) — clear `FILL_SEQ_COMPLETE`, `FILL_SEQ_ABORTED`,
-    `ESTOP`, `INHIBITED`, and `LINK_LOSS_SAFE` (requires `FILL = OFF` and
-    `IGN = SAFE`).
-  - `CLEAR_FAULTS` (`2`) — clear latched fault bits and inhibit/E-STOP flags.
+  - `RESET_FILL` (`1`) — clear `FILL_SEQ_COMPLETE`, `FILL_PAUSED`,
+    `FILL_SEQ_ABORTED`, `ESTOP`, `INHIBITED`, and `LINK_LOSS_SAFE` (requires
+    `FILL = OFF` and `IGN = SAFE`).
+  - `CLEAR_FAULTS` (`2`) — clear latched fault bits and inhibit flags.
 - **`SRV+IGN` combined launch control (`control = 4`)**:
   - `ACTION_ON` (`1`) — used by `LIVE` launch mode after the host countdown
-    reaches `T-0`: re-verifies `!fill_open && fill_seq_complete &&
+    reaches `T-0`: re-verifies `!fill_open && (fill_seq_complete || fill_paused) &&
     !fill_seq_aborted && !inhibited && !estop`, drives `SRV = true` and
     `IGN = true`, waits `SETTLE_SERVO_MS` (`350 ms`), emits `EventCode::SrvOn`
     + `EventCode::IgnPwr`, and replies `ACK` with `SRV_ON | IGN_PWR`.
@@ -168,13 +168,14 @@ Flags:
 | 2 | `IGN_PWR` | igniter powered |
 | 3 | `FILL_TIMER_ACTIVE` | onboard fill countdown running |
 | 4 | `FILL_SEQ_COMPLETE` | full timed fill cycle completed |
-| 5 | `FILL_SEQ_ABORTED` | fill closed before timer expiry |
+| 5 | `FILL_SEQ_ABORTED` | fill aborted by emergency stop or RF link timeout before completion |
 | 6 | `LINK_LOSS_SAFE` | outputs forced safe on link timeout |
 | 7 | `LAST_REJECTED` | previous command was rejected |
 | 8 | `FILL_AUTO_OFF` | last close was triggered by the fill timer |
 | 9 | `BOOT_SAFE` | no actuating command accepted since boot |
 | 10 | `ESTOP` | emergency stop latched |
 | 11 | `INHIBITED` | ignition inhibited until reset |
+| 12 | `FILL_PAUSED` | fill closed manually prior to timer expiry; remaining ms preserved and downstream channels unlocked |
 
 Faults: `UART_OVERRUN` 0, `CRC_ERROR` 1, `LINK_TIMEOUT` 2, `WATCHDOG_RESET` 3,
 `RADIO_ERROR` 4, `CONFIG_ERROR` 5, `OUTPUT_FAULT` 6.
@@ -207,8 +208,8 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 | Host → vehicle `HEARTBEAT` | every 1 s | resets vehicle's link-loss timer |
 | Vehicle `LINK_TIMEOUT_MS` | 5 s without host frame | vehicle forces all outputs `OFF/SAFE`, sets `LINK_LOSS_SAFE` + `INHIBITED`, emits `LinkTimeoutSafe` |
 | Vehicle `STATE` telemetry | every 250 ms | updates host snapshot and board-driven fill remaining time |
-| Timed `FILL` (`DEFAULT_FILL_SECONDS = 60`) | `1..=600 s` | board counts down `fill_remaining_ms`; at `0 ms` host sends `FILL OFF (AUTO)` (with 5 s host backstop and 2 s autonomous vehicle close backstop) |
-| `LIVE` `SRV+IGN` countdown (`DEFAULT_COUNTDOWN_SECONDS = 5`) | `1..=600 s` | host counts down on `snapshot.countdown`, re-validating every safety gate on every tick before sending `COMMAND(SrvIgn, ON)` at `T-0` |
+| Timed `FILL` (`DEFAULT_FILL_SECONDS = 60`) | `1..=600 s` | board counts down `fill_remaining_ms` (`fill_target_ms`); operator `FILL OFF` before expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) so `FILL ON` resumes, while at `0 ms` host sends `FILL OFF (AUTO)` (`FILL_SEQ_COMPLETE`) |
+| Ignition countdown (`DEFAULT_COUNTDOWN_SECONDS = 5`) | `1..=600 s` | host counts down on `snapshot.countdown` (`target: "srv_ign" \| "ign"`), re-validating every safety gate on every tick before sending `COMMAND(SrvIgn, ON)` (`LIVE`) or `COMMAND(Ign, ON)` (`TEST`) at `T-0`; aborting cancels immediately, safes `SRV` if `ON`, and preserves `FILL` progress |
 
 ### Control state machine (`gse-proto/src/fsm.rs`)
 
@@ -224,17 +225,19 @@ starting at `FILL OFF · SRV OFF · IGN SAFE`:
 | `FILL=OFF` | `FILL OFF` | `NoOp` (`NotActive`) |
 | `FILL=ON` | `SRV ON` | `Blocked` (`FillActive`) |
 | `IGN=PWR` | `SRV ON` / `SRV OFF` | `Blocked` (`IgnPowered`) |
+| `!(fill_seq_complete \|\| fill_paused)` or `fill_seq_aborted` | `SRV ON` | `Blocked` (`FillSeqIncomplete`) |
+| `inhibited` or `estop` | `SRV ON` | `Blocked` (`NotPermitted`) |
 | `SRV=OFF` | `SRV OFF` | `NoOp` (`NotActive`) |
 | `FILL=ON` | `IGN PWR` | `Blocked` (`FillActive`) |
 | `SRV=OFF` | `IGN PWR` | `Blocked` (`SrvRequired`) |
-| `!fill_seq_complete` or `fill_seq_aborted` | `IGN PWR` | `Blocked` (`FillSeqIncomplete`) |
+| `!(fill_seq_complete \|\| fill_paused)` or `fill_seq_aborted` | `IGN PWR` | `Blocked` (`FillSeqIncomplete`) |
 | `inhibited` or `estop` | `IGN PWR` | `Blocked` (`NotPermitted`) |
 | `IGN=SAFE` | `IGN SAFE` | `NoOp` (`NotActive`) |
 | `SRV=ON` and `IGN=PWR` | `SRV+IGN ON` | `NoOp` (`AlreadyInState`) |
 | `FILL=ON` | `SRV+IGN ON` | `Blocked` (`FillActive`) |
-| `!fill_seq_complete` or `fill_seq_aborted` | `SRV+IGN ON` | `Blocked` (`FillSeqIncomplete`) |
+| `!(fill_seq_complete \|\| fill_paused)` or `fill_seq_aborted` | `SRV+IGN ON` | `Blocked` (`FillSeqIncomplete`) |
 | `inhibited` or `estop` | `SRV+IGN ON` | `Blocked` (`NotPermitted`) |
-| `FILL=OFF`, `fill_seq_complete`, no latches | `SRV+IGN ON` | `Allowed` → `FILL OFF · SRV ON · IGN PWR` |
+| `FILL=OFF`, `(fill_seq_complete \|\| fill_paused)`, no latches | `SRV+IGN ON` | `Allowed` → `FILL OFF · SRV ON · IGN PWR` |
 | `SRV=OFF` and `IGN=SAFE` | `SRV+IGN OFF` | `NoOp` (`NotActive`) |
 | `SRV=ON` or `IGN=PWR` | `SRV+IGN OFF` | `Allowed` → `FILL OFF · SRV OFF · IGN SAFE` |
 | any state | `SAFE_ALL` / `RESET` | `Allowed` → `FILL OFF · SRV OFF · IGN SAFE` |
@@ -248,12 +251,12 @@ every `event: state` frame on `/api/events`:
 - `controls`: confirmed state (`fill`, `srv`, `ign`, `safe`, `summary`, `ready`,
   `target`, `last_event`, `last_result`) — updates only when a vehicle `ACK`
   lands.
-- `fill`: `{active, duration_s, remaining_ms, ends_at, seq_complete, seq_aborted, auto_off_pending}`
-- `countdown`: `{active, duration_ms, remaining_ms, ends_at}` — active during
-  the `LIVE` `SRV+IGN` countdown prior to transmitting `Control::SrvIgn` (`ON`).
+- `fill`: `{active, paused, duration_s, remaining_ms, ends_at, seq_complete, seq_aborted, auto_off_pending}`
+- `countdown`: `{active, target, duration_ms, remaining_ms, ends_at}` — active
+  during the `SRV+IGN` (`LIVE`) or `IGN` (`TEST`) countdown prior to energizing.
 - `actions`: per-action `{enabled, reason}` map for `fill_on`, `fill_off`,
   `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`,
-  `reset_controls`, `reset_fill`, `clear_faults`, and `estop`.
+  `abort_countdown`, `reset_controls`, `reset_fill`, `clear_faults`, and `estop`.
 
 ## Versioning
 
