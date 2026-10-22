@@ -1249,7 +1249,7 @@ impl Engine {
                     Level::Warn,
                     Source::Ground,
                     format!(
-                        "Radio link quiet for {:.1} s - check the SX1281 modules",
+                        "Radio link quiet for {:.1} s - check the DX-LR42-24T12D (SX1281) modules",
                         age as f64 / 1000.0
                     ),
                     Some("radio_warn"),

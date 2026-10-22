@@ -16,12 +16,14 @@ use std::time::{Duration, Instant};
 use gse_fw_core::ground::Ground;
 use gse_fw_core::mock::{MockGround, MockVehicle};
 use gse_fw_core::vehicle::Vehicle;
+use gse_proto::radio::DxLr42Level;
+use gse_proto::RADIO_BAUD;
 
 const TICK_MS: u64 = 2;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "\
-gse-sim - two-board simulator for the GSE link
+gse-sim - two-board simulator for the NUCLEO-H753ZI + DX-LR42-24T12D (SX1281) link
 
 USAGE:
     gse-sim [OPTIONS]
@@ -29,7 +31,8 @@ USAGE:
 OPTIONS:
     --listen <ADDR>        TCP address for the ground board's USB port
                            (default 127.0.0.1:8787)
-    --latency <MS>         One-way radio latency (default 35)
+    --level <0..8>         Simulate DX-LR42-24T12D AT+LEVEL air-rate latency
+    --latency <MS>         One-way radio latency override (default 35)
     --drop-ppm <PPM>       Drop this many packets per million (default 0)
     --corrupt-ppm <PPM>    Corrupt this many packets per million (default 0)
     --noise                Shorthand for --drop-ppm 200 --corrupt-ppm 2000
@@ -95,6 +98,17 @@ impl Options {
             };
             match flag.as_str() {
                 "--listen" => opts.listen = value("--listen")?,
+                "--level" => {
+                    let text = value("--level")?;
+                    let code = text
+                        .parse::<u8>()
+                        .ok()
+                        .and_then(DxLr42Level::from_code)
+                        .ok_or_else(|| {
+                            format!("invalid DX-LR42 level '{text}' (expected 0..=8)")
+                        })?;
+                    opts.radio.latency_ms = code.estimate_one_way_ms(25, RADIO_BAUD);
+                }
                 "--latency" => {
                     let text = value("--latency")?;
                     opts.radio.latency_ms = text
@@ -244,9 +258,16 @@ struct Boards {
 
 impl Boards {
     fn new(config: RadioConfig, seed: u32) -> Self {
+        let mut mock_ground = MockGround::default();
+        let mut mock_vehicle = MockVehicle::default();
+        // Both local DX-LR42-24T12D modules emit `"Power On\r\n"` on power-up.
+        mock_ground.radio_in.extend(b"Power On\r\n".iter().copied());
+        mock_vehicle
+            .radio_in
+            .extend(b"Power On\r\n".iter().copied());
         Boards {
-            ground: Ground::new(MockGround::default()),
-            vehicle: Vehicle::new(MockVehicle::default()),
+            ground: Ground::new(mock_ground),
+            vehicle: Vehicle::new(mock_vehicle),
             radio: Radio::new(config, seed),
         }
     }
@@ -524,6 +545,14 @@ mod tests {
     fn bad_options_rejected() {
         assert!(Options::parse(["--nope".to_string()]).is_err());
         assert!(Options::parse(["--latency".to_string(), "soon".to_string()]).is_err());
+        assert!(Options::parse(["--level".to_string(), "9".to_string()]).is_err());
+    }
+
+    #[test]
+    fn level_option_derives_dx_lr42_airtime() {
+        let fast = parse(&["--level", "3"]);
+        let slow = parse(&["--level=1"]);
+        assert!(slow.radio.latency_ms > fast.radio.latency_ms);
     }
 
     #[test]

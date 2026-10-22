@@ -1,206 +1,215 @@
 # GSE — Ground Support Equipment
 
-Operator console and flight-hardware firmware for a two-board rocket ground
-station:
+Operator console, wire protocol and flight-hardware firmware for a two-board
+rocket ground support station:
 
-- **Ground board** — NUCLEO-H753ZI connected to the laptop over USB-C →
-  micro-USB, bridged to an SX1281 LoRa module over UART.
-- **Vehicle board** — NUCLEO-H753ZI on the rocket, with the same SX1281 module,
-  driving the fill valve, the vehicle servos and the igniter.
+- **Ground board** — STMicroelectronics **`NUCLEO-H753ZI`** ([DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937)) connected to the operator laptop over USB / ST-LINK Virtual COM Port and bridged to a **DX-SMART `DX-LR42-24T12D`** 2.4 GHz Semtech SX1281 LoRa/FLRC transceiver ([Amazon `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0)) over `USART6`.
+- **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
-The host application is a single dependency-free Rust binary. It serves a
-local operator console (HTML/JS embedded in the binary), speaks a compact
-framed protocol over the serial port and enforces the launch interlocks. The
-same interlocks are re-checked in the vehicle firmware — the vehicle never
+The host application (`gse-app`) is a single dependency-free Rust binary. It
+serves an embedded terminal-style browser console on port `8765`, speaks a
+compact COBS + CRC-16 framed protocol over USB serial (or TCP against the
+built-in simulator), and enforces deterministic launch interlocks across two
+selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
+independently re-checked in the `no_std` vehicle firmware — the vehicle never
 trusts the ground station.
 
 ```
-┌──────────────────────┐  USB CDC   ┌───────────────┐  UART   ┌──────────┐
-│  gse-app (laptop)    │ 115200 bd  │ ground board  │ 9600 bd │ SX1281   │
-│  HTTP console + API  │◄──────────►│ NUCLEO-H753ZI │◄───────►│ (LoRa)   │
-└──────────────────────┘            └───────────────┘         └────┬─────┘
-                                                                   │ air
-                                                              ┌────┴─────┐
-                                                              │ SX1281   │
-                                                              │ vehicle  │
-                                                              │ H753ZI   │
-                                                              └────┬─────┘
-                                                FILL servo ◄───────┤
-                                                SRV servo  ◄───────┤
-                                                IGN relay  ◄───────┘
+┌──────────────────────┐  USB CDC   ┌───────────────┐  UART   ┌────────────────┐
+│  gse-app (laptop)    │ 115200 bd  │ ground board  │ 9600 bd │ DX-LR42-24T12D │
+│  HTTP console :8765  │◄──────────►│ NUCLEO-H753ZI │◄───────►│ (2.4G SX1281)  │
+└──────────────────────┘            └───────────────┘         └───────┬────────┘
+                                                                      │ 2.4 GHz RF
+                                                              ┌───────┴────────┐
+                                                              │ DX-LR42-24T12D │
+                                                              │ vehicle H753ZI │
+                                                              └───────┬────────┘
+                                                   FILL servo ◄───────┤
+                                                   SRV servo  ◄───────┤
+                                                   IGN relay  ◄───────┘
 ```
 
 ## Features
 
-- **Operator console** in the browser, served from `127.0.0.1` with a session
-  token; no cloud, no external assets.
-- **Rebindable keyboard shortcuts** (defaults `F` fill, `S` servos, `I` igniter,
-  `E` all-safe, `Shift+R` reset controls, `R` reset fill sequence, `Shift+C`
-  clear faults). Bindings are captured in Settings and persisted.
-- **Live telemetry**: ground/vehicle link state, firmware versions, round-trip
-  time, decoded state flags, latched faults and link counters.
-- **Session log** in memory and on disk (CSV export from the console).
-- **Works on Windows, Linux and macOS** — serial handling is implemented with
-  the native APIs (Win32 comm API; POSIX termios/poll) and needs no drivers
-  beyond the ST-LINK Virtual COM Port.
-- **Simulator** (`gse-sim`) that runs the real ground-bridge and vehicle state
-  machines over a simulated radio with latency, packet loss and bit errors.
-- **Self-contained protocol crate** (`gse-proto`) with COBS framing, CRC-16,
-  typed messages and an exhaustive test suite.
+- **Terminal-style web operator console** served locally (`127.0.0.1:8765` by
+  default) with per-session token auth, live Server-Sent Events (`/api/events`),
+  and zero external/CDN assets.
+- **Selectable `LIVE` and `TEST` operating modes** in **Settings** (or by
+  clicking the **`SETUP`** status pill in the header):
+  - **`LIVE` mode (`op_mode: "live"`, default)** — streamlined 2-button launch
+    interface (**`FILL[ON/OFF]`** + combined **`SRV+IGN[ON/OFF]`**) with a
+    configurable on-screen launch countdown (default `5 s`).
+  - **`TEST` mode (`op_mode: "test"`)** — 3-button checkout interface
+    (**`FILL[ON/OFF]`**, **`SRV[ON/OFF]`**, **`IGN[PWR/SAFE]`**) for testing
+    vehicle channels independently with full safety interlocks.
+- **Configurable sequence timers** in **Settings** (`1..=600 s`):
+  - **Fill duration** (`fill_seconds`, default `60 s`) — auto-closes `FILL` at
+    expiry and marks the fill sequence complete.
+  - **`SRV+IGN` launch countdown** (`countdown_seconds`, default `5 s`) —
+    displayed live on screen before `SRV+IGN` energises in `LIVE` mode.
+- **Rebindable keyboard shortcuts** — defaults:
+  - `F` — `FILL` toggle (`ON` / `OFF`)
+  - `L` — `SRV+IGN` toggle (`LIVE` mode)
+  - `S` — `SRV` toggle (`TEST` mode)
+  - `I` — `IGN` toggle (`TEST` mode)
+  - `E` — `ALL SAFE · E-STOP`
+  - `Shift+R` — `Reset controls` (forces `OFF/SAFE` and clears latches)
+  - `R` — `Reset fill seq`
+  - `Shift+C` — `Clear faults`
+- **Live telemetry & system monitor rail** — ground/vehicle link status, RTT,
+  firmware version, device UID, safety-gate status, decoded vehicle flags,
+  latched faults, and frame counters.
+- **Session logging** — real-time filterable log stream in the UI plus
+  append-only `session-<timestamp>.log` on disk and one-click CSV download.
+- **Cross-platform native serial** — Win32 Comm API on Windows and POSIX
+  `termios`/`poll` on Linux and macOS, with automatic ground-board port
+  discovery (`port: "auto"`).
+- **Hardware-accurate simulator (`gse-sim`)** — executes the exact `no_std`
+  ground-bridge and vehicle state machines over TCP with configurable RF
+  latency, packet drops and bit errors.
+
+## Operating modes (`LIVE` vs `TEST`)
+
+Operators can switch between **`LIVE`** and **`TEST`** in **Settings → Operating
+Mode** whenever all vehicle outputs are `OFF/SAFE` and no launch countdown or
+activating command is in progress.
+
+| Aspect | `LIVE` Mode (`op_mode: "live"`, default) | `TEST` Mode (`op_mode: "test"`) |
+|---|---|---|
+| Console controls | `FILL[ON/OFF]` + `SRV+IGN[ON/OFF]` (2 buttons) | `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]` (3 buttons) |
+| Fill sequence | `FILL ON` → auto `FILL OFF` after `fill_seconds` (default `60 s`) → `FILL_SEQ_COMPLETE` | Identical (`FILL ON` → auto `FILL OFF` after `fill_seconds` → `FILL_SEQ_COMPLETE`) |
+| Pre-fill lock | `SRV+IGN` defaults to `OFF/SAFE` and is greyed out until `FILL` completes without abort | `SRV` can be toggled when `FILL` is `OFF`; `IGN PWR` stays greyed out until `FILL` completes **and** `SRV` is `ON` |
+| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`), holding outputs `OFF/SAFE` until `T-0.0 s`, then sends `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then `IGN PWR` (with optional confirmation dialog) |
+| Safe shutoff | Pressing `SRV+IGN` while `ON/PWR` commands `Control::SrvIgn` (`OFF`) → safes `IGN` first, then `SRV` → `OFF/SAFE` | Operator commands `IGN SAFE`, then `SRV OFF` (`SRV OFF` is blocked while `IGN` is `PWR`) |
+| Countdown abort | Pressing `E-STOP` (`E`), `Reset controls` (`Shift+R`), or losing the link immediately cancels the countdown with zero output actuation | N/A |
+
+- **LIVE sequence:** `FILL ON → (fill_seconds timer) → auto FILL OFF → press SRV+IGN → (countdown_seconds on-screen countdown) → SRV+IGN ON/PWR → press SRV+IGN → SRV+IGN OFF/SAFE`
+- **TEST sequence:** `FILL ON → (fill_seconds timer) → auto FILL OFF → SRV ON → IGN PWR → IGN SAFE → SRV OFF`
 
 ## Safety interlocks
 
-Every gate is evaluated in the app (buttons greyed out, API/keyboard refused)
-*and* in the vehicle firmware. There is **no override** in either place.
+Every gate is evaluated in `gse-app` (greying out buttons with human-readable
+reasons and rejecting API/keyboard requests) **and** re-evaluated independently
+on the STM32H753ZI vehicle board. There is **no override** in either layer.
 
 | # | Rule | Where enforced |
 |---|------|----------------|
-| 1 | FILL and SRV can never be ON at the same time | `safety.rs` gates; `vehicle.rs` rejects the command |
-| 2 | FILL closes automatically after the configured time (default 60 s) and the operator is notified | the board's countdown (reported in `STATE`) triggers `FILL OFF` with `AUTO` in `engine.rs`; the vehicle also closes it itself 2 s after its deadline and emits `FillAutoOff` |
-| 3 | IGN PWR is impossible until the fill sequence has completed | `safety.rs` (greyed out) + vehicle state machine |
-| 4 | IGN PWR is impossible unless SRV is ON | `safety.rs` (greyed out) + vehicle state machine |
-| 5 | Losing the link forces all outputs safe after 5 s and inhibits ignition | vehicle `check_link` and `LINK_LOSS_SAFE` |
-| 6 | The emergency stop always wins, even while a command is in flight | host sends `ESTOP` immediately; the vehicle clears pending commands |
-| 7 | A watchdog reset de-energises every output | IWDG1 (4 s) + reset-default GPIO states |
-| 8 | Every session starts with FILL OFF, SRV OFF and IGN SAFE; controls stay locked until the vehicle confirms it | startup handshake in `engine.rs` + shared state machine |
-| 9 | *Reset controls* always returns every output to OFF/SAFE and clears latches | `SAFE_ALL` + `RESET_FILL` from the app; shared state machine |
-| 10 | Shutting the app down commands ALL SAFE first and waits for the ACK | shutdown sequence in `engine.rs` |
-
-The fill sequence is: **FILL ON → (timer) → FILL OFF → SRV ON → IGN PWR**.
-`IGN SAFE` removes power; a new fill sequence can then be started with
-*Reset fill sequence*.
+| 1 | `FILL` and `SRV` can never be `ON` simultaneously | `safety.rs`, `fsm.rs`, `vehicle.rs` |
+| 2 | `FILL` closes automatically after `fill_seconds` (default `60 s`, `1..=600 s`) and sets `FILL_SEQ_COMPLETE`; closing `FILL` early sets `FILL_SEQ_ABORTED` | `engine.rs` auto-off on board timer + independent 2 s vehicle hardware backstop in `vehicle.rs` |
+| 3 | `IGN PWR` (`TEST`) and `SRV+IGN ON` (`LIVE`) are impossible unless a full timed fill completed without abort | `safety.rs` + `fsm.rs` + `vehicle.rs` |
+| 4 | In `TEST` mode, `IGN PWR` requires `SRV = ON`, and `SRV OFF` is refused while `IGN = PWR` | `safety.rs` + `fsm.rs` + `vehicle.rs` |
+| 5 | In `LIVE` mode, `SRV+IGN` starts `OFF/SAFE`, runs a host countdown (`countdown_seconds`, default `5 s`) with continuous safety re-checking, and safes `IGN` before `SRV` on `OFF` | `safety.rs` + `engine.rs` + `fsm.rs` + `vehicle.rs` |
+| 6 | Operating mode (`LIVE` ↔ `TEST`) cannot be changed while any output is active, targeted active, or counting down | `http.rs` (`HTTP 400`) + `engine.rs` |
+| 7 | Losing the RF link forces all outputs `OFF/SAFE` after 5 s and latches `INHIBITED` | `vehicle.rs` (`check_link` + `LINK_LOSS_SAFE`) |
+| 8 | `ALL SAFE · E-STOP` always wins immediately, cancelling any active countdown or in-flight command and latching `ESTOP` | `engine.rs` + `vehicle.rs` |
+| 9 | Hardware watchdog timeout (~4 s) or MCU fault resets/de-energises every pin | STM32H753 `IWDG1` + `panic` safe-park handler |
+| 10 | Every session and reconnect starts in `INIT` with all controls locked until the vehicle confirms `FILL=OFF SRV=OFF IGN=SAFE` | `engine.rs` startup safe handshake |
+| 11 | `Reset controls` always sends `SAFE_ALL` followed by `RESET_FILL`, returning the system to initial `OFF/SAFE` with latches cleared | `engine.rs` + `fsm.rs` + `vehicle.rs` |
+| 12 | Shutting down `gse-app` commands `ALL SAFE` first and waits up to 2.5 s for the vehicle `ACK` before exiting | `engine.rs` (`begin_shutdown`) |
 
 ## Deterministic control state machine
 
-FILL, SRV and IGN are not independent switches. Every operator action is an
-event in one transition table, implemented once in
-[`crates/gse-proto/src/fsm.rs`](crates/gse-proto/src/fsm.rs) and used by the
-console, the simulator and both firmware images. That gives the same answer for
-a button press, a hand-written HTTP request and a corrupted-but-valid radio
-frame.
+`FILL`, `SRV` and `IGN` are governed by a single pure transition table in
+[`crates/gse-proto/src/fsm.rs`](crates/gse-proto/src/fsm.rs), shared verbatim by
+`gse-app`, `gse-sim` and both STM32 firmware images.
 
-States are `FILL OFF|ON`, `SRV OFF|ON` and `IGN SAFE|PWR`; the initial state is
-`FILL OFF · SRV OFF · IGN SAFE`. Every transition is one of:
+Confirmed states are `FILL OFF|ON`, `SRV OFF|ON` and `IGN SAFE|PWR`, starting at
+`FILL OFF · SRV OFF · IGN SAFE`. Every event returns one of three outcomes:
 
 | Outcome | Meaning | Console | Vehicle |
 |---|---|---|---|
-| Allowed | legal move to the returned state | tile enabled | command applied after the settle time, then ACK |
-| No-op | already in the requested state | tile greyed with "already …" | ACK OK, no actuation |
-| Blocked | an interlock refuses the move | tile greyed with the reason | `ACK` with `RejectedSafety` and the same reason |
+| `Allowed(next)` | legal transition to `next` | button enabled | actuates output, waits settle time, sends `ACK` (`Ok`) |
+| `NoOp(same)` | already in target state | button disabled with `"already …"` | sends `ACK` (`Ok`), no actuation |
+| `Blocked(reason)` | safety gate refuses move | button disabled with blocking reason | sends `ACK` (`RejectedSafety`, `reason`) |
 
-The confirmed state only moves when the vehicle **acknowledges**. Sending a
-command records a *target* (shown in the console as `→`) but never changes the
-confirmed state, and the console keeps displaying that old state even if an
-earlier `STATE` frame already reports the servo moving during its settle time.
-A rejected command or an ACK timeout leaves the machine exactly where it was.
-The vehicle enforces the identical table for every command, so an unsafe
-transition cannot happen even if the console is bypassed.
+Confirmed state in the console updates **only when the vehicle `ACK` lands**.
+While a command is in flight, the console displays the target after `→` without
+changing confirmed state badges.
 
-| Event | From | Result |
+| Event | Preconditions | Result |
 |---|---|---|
-| `FILL ON` | FILL OFF, SRV OFF, IGN SAFE | FILL ON |
-| `FILL ON` | SRV ON | Blocked: FILL and SRV are interlocked |
-| `FILL ON` / `SRV ON` / `IGN PWR` | IGN PWR (for FILL/SRV) | Blocked: SAFE the igniter first |
-| `SRV ON` | FILL open | Blocked: close FILL first |
-| `SRV OFF` | IGN PWR | Blocked: SAFE the igniter first |
-| `IGN PWR` | fill complete, SRV ON, no latch | IGN PWR |
-| `IGN PWR` | SRV OFF | Blocked: IGN PWR requires SRV ON |
-| `IGN PWR` | incomplete/aborted fill, inhibited or E-STOP latched | Blocked with the reason |
-| `FILL OFF` / `IGN SAFE` / `SRV OFF` | output already off | No-op |
-| `SAFE ALL` / `RESET` | any state | FILL OFF · SRV OFF · IGN SAFE |
-
-### Lifecycle
-
-- **Initialisation.** A new link starts in `INIT`; every control tile is greyed
-  until the vehicle reports `FILL OFF · SRV OFF · IGN SAFE`. If the board was
-  left with an output on (for example after a console crash), the app commands
-  `SAFE_ALL` and only unlocks the UI once the vehicle acknowledges the safe
-  state. The same handshake runs after every reconnect.
-- **Command → acknowledgement.** Pressing a tile sends the command and marks the
-  target. The transition is committed only when the ACK arrives with the
-  resulting state; until then every other control is greyed with *Command in
-  progress* (E-STOP excepted).
-- **Reset controls** (`Shift+R`, or the button) sends `SAFE_ALL` followed by
-  `RESET_FILL`, returning the machine to its initial state and clearing the
-  fill-sequence and E-STOP latches. It is always enabled while the link is up,
-  even when everything is already safe, so the operator can always force a known
-  state.
-- **Shutdown** (Ctrl+C, SIGTERM or *Shutdown* in the API) sends `SAFE_ALL` and
-  waits up to 2.5 s for the ACK before the process exits. If the vehicle cannot
-  be reached the shutdown still proceeds but the log records that OFF/SAFE could
-  not be confirmed. If an output was on, the vehicle also has its independent
-  link-loss failsafe.
+| `FILL ON` | `FILL=OFF, SRV=OFF, IGN=SAFE` | `FILL=ON` (`Blocked` if `SRV=ON` or `IGN=PWR`) |
+| `FILL OFF` | `FILL=ON` | `FILL=OFF` (`NoOp` if already `OFF`) |
+| `SRV ON` (`TEST`) | `FILL=OFF, IGN=SAFE` | `SRV=ON` (`Blocked` while `FILL=ON` or `IGN=PWR`) |
+| `SRV OFF` (`TEST`) | `SRV=ON, IGN=SAFE` | `SRV=OFF` (`Blocked` while `IGN=PWR`) |
+| `IGN PWR` (`TEST`) | `FILL=OFF, SRV=ON`, `fill_seq_complete`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `IGN=PWR` (`Blocked` otherwise) |
+| `IGN SAFE` (`TEST`) | `IGN=PWR` | `IGN=SAFE` (`NoOp` if already `SAFE`) |
+| `SRV+IGN ON` (`LIVE`) | `FILL=OFF`, `fill_seq_complete`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON, IGN=PWR` (`NoOp` if already `ON/PWR`, `Blocked` otherwise) |
+| `SRV+IGN OFF` (`LIVE`) | `SRV=ON` or `IGN=PWR` | `SRV=OFF, IGN=SAFE` (`NoOp` if already `OFF/SAFE`) |
+| `SAFE ALL` / `RESET` | any state | `FILL=OFF, SRV=OFF, IGN=SAFE` |
 
 ## Quick start with the simulator
 
 ```bash
 cargo build --workspace
-cargo run -p gse-sim          # terminal 1: simulated boards on 127.0.0.1:8787
-cargo run -p gse-app -- --sim # terminal 2: console at http://127.0.0.1:8765/
+cargo run -p gse-app -- --sim   # starts gse-sim automatically; console at http://127.0.0.1:8765/
 ```
 
-`gse-app --sim` also starts `gse-sim` automatically if the binary sits next to
-`gse-app` (as it does in `target/debug`), so a single command is enough. The
-console opens in the default browser; use `--no-browser` on headless machines.
-
-To exercise recovery paths:
+Use `--no-browser` on headless machines and `--host 0.0.0.0` when serving to a
+remote browser or container preview:
 
 ```bash
-cargo run -p gse-sim -- --latency 60 --noise   # 60 ms each way, drops/bit errors
+./target/debug/gse-app --sim --no-browser --host 0.0.0.0 --http-port 8765
 ```
 
-## Running against the real hardware
-
-1. Flash the boards (see [Firmware](#firmware)).
-2. Plug the ground board's USB into the laptop.
-3. Run:
+To simulate degraded RF conditions (latency, packet drops and bit errors):
 
 ```bash
-gse-app                        # scans every serial port for the ground board
-gse-app --port /dev/ttyACM0    # or name it explicitly
+cargo run -p gse-sim -- --latency 60 --noise   # terminal 1
+cargo run -p gse-app -- --sim                  # terminal 2
+```
+
+## Running against real hardware
+
+1. Flash `gse-ground` and `gse-vehicle` (see [Firmware](#firmware) and
+   [docs/HARDWARE.md](docs/HARDWARE.md)).
+2. Plug the ground NUCLEO-H753ZI USB cable into the laptop.
+3. Launch the console:
+
+```bash
+gse-app                        # auto-detects the ground board on any serial port
+gse-app --port /dev/ttyACM0    # Linux explicit port
 gse-app --port COM5 --verbose  # Windows
 gse-app --port /dev/tty.usbmodem14201
 ```
 
-The application opens the port, sends a `PING`, waits for the ground board's
-`PONG`, then pings the vehicle. The header shows **Ground board** and
-**Vehicle** going online; controls stay greyed out until both answer.
-
-Linux users need access to the serial device:
+Linux users need serial group permission once:
 
 ```bash
-sudo usermod -aG dialout "$USER"   # then log out and back in
+sudo usermod -aG dialout "$USER"   # log out and back in
 ```
 
 ### Command line
 
-```
+```text
 gse-app [OPTIONS]
-  --sim                 use the simulator (tcp:127.0.0.1:8787)
+  --sim                 use the built-in TCP simulator (tcp:127.0.0.1:8787)
   --port <PORT>         serial port, tcp:host:port, or 'auto' (default)
-  --baud <RATE>         baud rate (default 115200)
-  --config <PATH>       configuration file
-  --host <ADDR>         console bind address (default 127.0.0.1)
-  --http-port <PORT>    console port (default 8765, next free if busy)
-  --no-browser          do not open a browser
-  --open                open a browser even when headless
-  --verbose             diagnostics on stderr and in the log
+  --baud <RATE>         serial baud rate (default 115200)
+  --config <PATH>       path to configuration JSON file
+  --host <ADDR>         HTTP bind address (default 127.0.0.1)
+  --http-port <PORT>    HTTP console port (default 8765)
+  --no-browser          do not open a browser window on startup
+  --open                force opening a browser even in headless environments
+  --verbose             print protocol diagnostics on stderr
   -h, --help / -V, --version
 ```
 
 ### Configuration
 
-Stored as JSON, created on first run:
+Persisted atomically as pretty-printed JSON on every change in **Settings**:
 
-| OS | Path |
-|----|------|
-| Linux | `~/.config/gse/config.json` (respects `XDG_CONFIG_HOME`) |
+| OS | Default path |
+|----|--------------|
+| Linux | `~/.config/gse/config.json` (honours `XDG_CONFIG_HOME`) |
 | macOS | `~/Library/Application Support/GSE/config.json` |
 | Windows | `%APPDATA%\GSE\config.json` |
 
 ```json
 {
+  "op_mode": "live",
   "fill_seconds": 60,
+  "countdown_seconds": 5,
   "port": "auto",
   "baud": 115200,
   "confirm_ign": true,
@@ -209,6 +218,7 @@ Stored as JSON, created on first run:
   "http_port": 8765,
   "shortcuts": {
     "fill_toggle": "F",
+    "srv_ign_toggle": "L",
     "srv_toggle": "S",
     "ign_toggle": "I",
     "estop": "E",
@@ -219,74 +229,93 @@ Stored as JSON, created on first run:
 }
 ```
 
-Session logs are written next to the configuration under `logs/` as
-append-only `session-<timestamp>.log` files.
+Session logs are written alongside state files under `logs/session-<timestamp>.log`.
 
 ## Using the console
 
-- The action tiles are **greyed out with the blocking reason** whenever a gate
-  is closed — those reasons also appear as tooltips and in the API.
-- `IGN PWR` asks for confirmation unless *Ask before IGN PWR* is disabled in
-  Settings.
-- The state strip above the tiles shows the confirmed machine state (`FILL OFF ·
-  SRV OFF · IGN SAFE`), the target while a command is in flight, and `INIT`
-  while the startup handshake is running.
-- *Reset controls* forces every output OFF/SAFE and clears latches; *Reset fill
-  sequence* only clears the fill latch.
-- The *Settings* dialog edits the fill duration, serial port, baud rate,
-  confirmation/audio options and every key binding. Click a binding, press the
-  new combination, `Esc` cancels. The API rejects duplicate bindings with a
-  readable error.
-- The log filter, follow mode, CSV export and *Clear* button act on the
-  in-memory log; the on-disk log is never truncated by the UI.
-- The console binds to `127.0.0.1` by default. If you change `--host`, anyone
-  who can reach the port still needs the per-session token embedded in the
-  served page, and the API sends no CORS headers.
+- **Top bar**: shows live `GROUND`, `VEHICLE`, `LINK` RTT, `SETUP` (`LIVE` or
+  `TEST`, clickable to open **Settings**), and `TARGET` (`SIMULATOR` or
+  `HARDWARE`) pills, plus `connect`, `disconnect` and `settings`.
+- **`SYS // MONITOR` left rail**: displays process health (`setup`, `gse-app`,
+  `gse-sim`, `dx-lr42-rf`), live interlock gates (`init safe`, `fill ↔ srv`,
+  `fill seq`, `srv+ign` / `ign gate`), and bus dispatch state.
+- **Control toggles**: horizontal terminal switches (`FILL[ON/OFF]`,
+  `SRV+IGN[ON/OFF]` in `LIVE`; `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]`
+  in `TEST`). Whenever a gate is closed, the button is disabled and displays the
+  exact reason underneath.
+- **On-screen countdown (`LIVE` mode)**: pressing `SRV+IGN` after a completed
+  fill reveals `#countdown-banner` (`T - X.X s` + progress bar) counting down to
+  `0.0 s` before energizing `SRV+IGN`.
+- **Settings modal**: configures **Operating Mode** (`LIVE` / `TEST`), serial
+  port & baud rate, **fill duration (seconds)** (`1..=600`), **`srv+ign`
+  countdown (seconds)** (`1..=600`), `ask before IGN PWR` (`TEST` mode),
+  `audible alerts`, and click-to-record keyboard shortcuts.
+
+## HTTP & SSE API
+
+All endpoints require the per-session `X-GSE-Token` header (or `?token=` query
+parameter on `GET /api/events` and `GET /api/log.csv`), except `GET /`, static
+assets, and `GET /api/health`.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/health` | `GET` | Liveness check (`{"ok":true,"subscribers":N}`) |
+| `/api/state` | `GET` | Full JSON snapshot (`config`, `ground`, `vehicle`, `controls`, `fill`, `countdown`, `actions`, `stats`) |
+| `/api/events` | `GET` | SSE stream emitting `state` and `log` events |
+| `/api/command` | `POST` | Dispatch action (`fill_on`, `fill_off`, `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`, `reset_controls`, `reset_fill`, `clear_faults`, `estop`) |
+| `/api/config` | `POST` | Patch configuration (`op_mode`, `fill_seconds`, `countdown_seconds`, `port`, `baud`, `confirm_ign`, `sound`) |
+| `/api/shortcuts` | `POST` | Rebind `{action, combo}` or reset `{reset: true}` |
+| `/api/ports` | `GET` | Enumerate available serial ports |
+| `/api/connect` / `/api/disconnect` | `POST` | Open/rescan or close the serial/TCP link |
+| `/api/log` / `/api/log.csv` / `/api/log/clear` | `GET` / `POST` | Query recent log entries, export CSV, or clear in-memory log |
+| `/api/shutdown` | `POST` | Command `ALL SAFE`, await `ACK`, and stop `gse-app` |
 
 ## Firmware
 
-`firmware/stm32h753` contains a `no_std` package with two binaries:
+`firmware/stm32h753` contains the `no_std` STM32H753ZI package with two
+binaries:
 
-- `gse-ground` — USB CDC (USART3, PD8/PD9) ↔ SX1281 (USART6, PG14/PG9) bridge.
-- `gse-vehicle` — SX1281 receiver plus TIM1 servo PWM (PE9/PE11), IGN output
-  (PE13) and the watchdog.
-
-They share the control transition table in `crates/gse-proto/src/fsm.rs`, the
-protocol glue in `crates/gse-fw-core` (also used by the simulator) and the board
-layer in `firmware/stm32h753/src/hw.rs`.
+- `gse-ground` — USB CDC (`USART3`, `PD8`/`PD9`) ↔ `DX-LR42-24T12D` (`USART6`,
+  `PG14`/`PG9` + `PG10` `AUX` + `PG12`/`PG13` `M0`/`M1`) transparent frame
+  bridge + AT self-recovery + `LINKSTAT` diagnostics.
+- `gse-vehicle` — `DX-LR42-24T12D` transceiver + `TIM1` 50 Hz servo PWM (`PE9`
+  `FILL`, `PE11` `SRV`), push-pull `IGN` output (`PE13`), 250 ms telemetry,
+  5 s RF link-loss failsafe, and 4 s hardware watchdog (`IWDG1`).
 
 ```bash
 rustup target add thumbv7em-none-eabihf
 cd firmware/stm32h753
 cargo build --release --bin gse-ground
 cargo build --release --bin gse-vehicle
-# flashing, if probe-rs is installed:
+# flash via probe-rs:
 cargo run --release --bin gse-vehicle
 ```
 
-The two images differ only in their board bring-up; flash `gse-ground` on the
-board wired to the laptop and `gse-vehicle` on the rocket board. See
-[docs/HARDWARE.md](docs/HARDWARE.md) for the pin map, power notes and the
-SX1281 configuration expected by the firmware.
+Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
+`2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
+custom channel / `3.7 km` long-range `LEVEL 1` preset over a `3.3 V` USB-UART
+adapter:
 
-The board layer is compiled and unit-tested on the host through
-`crates/gse-fw-check`, so register maths and the transmit ring buffer are
-covered by `cargo test` even without a Cortex-M toolchain.
+```bash
+python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --inspect
+python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --preset long-range --channel 2440MHz --key 27182 --lock-pins
+```
+
+See [docs/HARDWARE.md](docs/HARDWARE.md) for the full 7-pin wiring table, `5.0 V`
+`VCC` / `3.3 V` CMOS rules, fail-safe pull-downs, and bench bring-up checklist.
 
 ## Project layout
 
+```text
+crates/gse-proto      no_std wire framing (COBS, CRC-16), DX-LR42 constants & shared FSM
+crates/gse-fw-core    no_std ground bridge, vehicle FSM & DX-LR42 UART stream adapter
+crates/gse-app        host service, safety gates, HTTP/SSE server & embedded web UI
+crates/gse-sim        two-board TCP RF link simulator using real firmware cores
+crates/gse-fw-check   host unit tests for STM32 register, ring-buffer & AUX helpers
+firmware/stm32h753    NUCLEO-H753ZI hardware abstraction & firmware binaries
+scripts/              smoke tests, SSE state trace & DX-LR42 AT provisioning helper
+docs/                 protocol spec, hardware/wiring guide & recorded state trace
 ```
-crates/gse-proto      wire format + the shared deterministic control state machine
-crates/gse-fw-core    ground bridge + vehicle logic (no_std)
-crates/gse-app        host binary: engine, safety, HTTP console, config
-crates/gse-sim        two-board TCP simulator (uses the real state machines)
-crates/gse-fw-check   host compile/tests for the firmware board layer
-firmware/stm32h753    NUCLEO-H753ZI board support and the two firmware images
-docs/                 protocol and hardware reference
-```
-
-See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the message layout, timing and
-error handling.
 
 ## Testing
 
@@ -296,44 +325,27 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all -- --check
 ```
 
-The suite covers framing (including truncated, corrupt and oversized frames),
-every state-machine transition and safety rejection, the host interlocks, the
-configuration round-trip and the HTTP request parsing. The firmware package is
-built separately in CI and on a machine with the Cortex-M target installed.
-
-An end-to-end smoke test drives the real binaries over HTTP:
+End-to-end verification against compiled `gse-sim` + `gse-app` binaries:
 
 ```bash
-./scripts/smoke.sh   # builds: cargo build --workspace
+cargo build --workspace
+./scripts/smoke.sh                           # 51 end-to-end checks (LIVE + TEST modes, custom countdown, E-STOP, reconnect & shutdown ALL SAFE)
+python3 scripts/state_trace.py               # full SSE transition trace across LIVE & TEST sequences
 ```
 
-It starts the simulator and the console, verifies the OFF/SAFE initialisation,
-runs a short fill sequence, checks every interlock, fires IGN, hits E-STOP,
-resets the controls, reconnects with SRV ON to prove the startup handshake
-forces OFF/SAFE, then shuts down with an output active and checks in the session
-log that ALL SAFE was commanded and acknowledged.
-
-To watch the machine itself, against a console you already have running:
-
-```bash
-scripts/state_trace.py http://127.0.0.1:8765 <token> [--shutdown]
-```
-
-It prints one line per transition — `pending`, `state`, `ack` — with the
-confirmed state and the in-flight target, then verifies that RESET CONTROLS
-returns to OFF/SAFE with the latches cleared. A recorded run is in
-[`docs/state-machine-trace.md`](docs/state-machine-trace.md).
+See [docs/state-machine-trace.md](docs/state-machine-trace.md) for a recorded
+trace and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the byte-level specification.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
-| `No serial ports found` | USB data cable (not charge-only), board powered, ST-LINK drivers installed |
-| `No ground board responded …` | the flashed image is `gse-ground`; baud rate 115200; Linux `dialout` group |
-| Ground online, vehicle stays `pinging` | radio wiring (PG9/PG14 ↔ module RX/TX), module baud 9600, antennas, range |
-| Buttons greyed out with *Command in progress* | wait for the ACK; if it never arrives the engine retries five times and logs a timeout |
-| Console rejects a shortcut | the combination is already bound; the error names the other action |
-| `Address already in use` | another instance is running, or pass `--http-port` |
+| `No serial ports found` | Use a data-capable USB cable, power the board, verify ST-LINK VCP driver |
+| `No ground board responded …` | Confirm `gse-ground` is flashed, baud is `115200`, user is in `dialout` on Linux |
+| Ground `online`, vehicle stays `pinging` | Check `VCC` (`5V`, `CN8` pin 9), `PG9`/`PG14` ↔ `DX-LR42-24T12D` Pin 4 `TX` / Pin 3 `RX` (`3.3 V` TTL), matching `AT+CHANNEL` / `AT+LEVEL` / `AT+KEY`, `M0`/`M1` (`PG12`/`PG13`), and `2.4 GHz` antennas |
+| `SRV+IGN` greyed out in `LIVE` mode | Run a full timed `FILL` cycle to completion (closing `FILL` early aborts the fill latch; press `Reset fill seq` first) |
+| Mode switch refused in Settings | Return all controls to `OFF/SAFE` and cancel any active countdown before switching `LIVE` ↔ `TEST` |
+| Shortcut binding rejected | Key combination is already bound to another action (named in the error toast) |
 
 ## License
 

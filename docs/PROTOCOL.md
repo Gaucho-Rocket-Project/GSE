@@ -1,20 +1,28 @@
 # GSE link protocol — version 1
 
-This document is the byte-level contract between the host application, the
-ground bridge board and the vehicle board. The reference implementation is
-`crates/gse-proto`, which is `no_std`, allocation-free and shared by all three.
+This document specifies the byte-level wire contract between the host
+application (`gse-app`), the ground bridge board (`gse-ground`) and the vehicle
+board (`gse-vehicle`), plus the shared control state machine and host snapshot
+contract. The reference implementation is `crates/gse-proto`, which is
+`no_std`, allocation-free and compiled identically into all targets.
 
 ## Physical layer
 
-| Link | Rate | Format |
-|------|------|--------|
-| Laptop ↔ ground board (ST-LINK VCP) | 115 200 Bd (ignored by USB CDC) | 8N1, no flow control |
-| Ground board ↔ SX1281 | 9 600 Bd | 8N1, no flow control |
-| Vehicle board ↔ SX1281 | 9 600 Bd | 8N1, no flow control |
+| Link | Rate | Format / signals |
+|------|------|------------------|
+| Laptop ↔ ground board (`NUCLEO-H753ZI` ST-LINK VCP, `PD8`/`PD9`) | `115 200 Bd` | `8N1`, `3.3 V` CMOS |
+| Ground board ↔ `DX-LR42-24T12D` (`USART6`, `PG14`/`PG9` + `PG10`/`PG12`/`PG13`) | `9 600 Bd` | `8N1`, `3.3 V` TTL UART, `AUX` frame-boundary flow control (`250 ms` failsafe), `(M0=0, M1=0)` open-drain |
+| Vehicle board ↔ `DX-LR42-24T12D` (`USART6`, `PG14`/`PG9` + `PG10`/`PG12`/`PG13`) | `9 600 Bd` | `8N1`, `3.3 V` TTL UART, `AUX` frame-boundary flow control (`250 ms` failsafe), `(M0=0, M1=0)` open-drain |
+| Over-the-air link (`DX-LR42-24T12D`, Semtech SX1281, `2400–2500 MHz`) | `10 kbps` default (`AT+LEVEL3`, `2424 MHz`, `+13 dBm`) | Half-duplex LoRa (`LEVEL 0..7`, `230 B` max packet) or FLRC (`LEVEL 8`, `6..=127 B` packet) |
 
-The SX1281 modules are configured as transparent UART bridges in the same RF
-mode. The protocol has no dependency on LoRa packet boundaries: framing is
-self-synchronising on every layer.
+Both `DX-LR42-24T12D` modules operate in continuous transparent mode
+(`AT+MODE0`, `AT+SLEEP2`, `AT+DRSSI0`). Every valid wire frame is `13..=62`
+bytes long (compile-time checked in `gse_proto::radio`), fitting inside a single
+air packet across all nine modulation levels (`0..=8`) without sub-packet
+splitting. On receive, `DxLr42Receiver` (`crates/gse-fw-core/src/radio.rs`)
+absorbs local module status lines (`"Power On\r\n"`, `"Exit AT\r\n"`) before COBS
+decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
+`"ERROR=104"`) via `"+++"`.
 
 ## Frame
 
@@ -27,41 +35,35 @@ self-synchronising on every layer.
 | Offset | Size | Field | Notes |
 |---|---|---|---|
 | 0 | 2 | `MAGIC` | `0xA5 0x5A` |
-| 2 | 1 | `VERSION` | 1 |
+| 2 | 1 | `VERSION` | `1` |
 | 3 | 1 | `TYPE` | message type (table below) |
 | 4 | 1 | `SRC` | sender endpoint |
 | 5 | 1 | `DST` | destination endpoint |
 | 6 | 1 | `SEQ` | free-running per-sender counter (diagnostics only) |
-| 7 | 1 | `LEN` | body length, 0…48 |
+| 7 | 1 | `LEN` | body length, `0..=48` |
 | 8 | `LEN` | `BODY` | message payload, little-endian |
 | 8+`LEN` | 2 | `CRC` | CRC-16/CCITT-FALSE, little-endian |
 
-- **CRC** covers `MAGIC` through the last body byte. Parameters: poly `0x1021`,
-  init `0xFFFF`, no reflection, no final XOR (check value `0x29B1` for
+- **CRC** covers `MAGIC` through the last body byte (`poly = 0x1021`,
+  `init = 0xFFFF`, no reflection, no final XOR; check value `0x29B1` for
   `"123456789"`).
-- **COBS** removes every `0x00` inside the frame; the two delimiters are the
-  only zero bytes on the wire. The maximum encoded frame is 62 bytes.
-- **Resynchronisation**: the decoder discards bytes until a delimiter, then
-  fails a frame on a short payload, bad magic, unknown version, oversized
-  length or CRC mismatch and waits for the next delimiter. Truncated frames,
-  line noise and a receiver that powered up mid-frame therefore cost at most
-  one frame.
-- **Deduplication** uses `cmd_id` inside `COMMAND`, not `SEQ`: a retransmitted
-  command with the same `cmd_id` produces exactly one ACK (the cached ACK is
-  repeated) and never a second actuation.
+- **COBS** removes every `0x00` inside the frame so `0x00` delimiters uniquely
+  mark frame boundaries. Maximum wire frame length is 62 bytes.
+- **Resynchronisation**: invalid frames (short payload, bad magic, unknown
+  version, length > 48, bad COBS, CRC mismatch) are discarded and decoding
+  resumes cleanly at the next `0x00` delimiter.
+- **Deduplication** uses `cmd_id` inside `COMMAND`, not `SEQ`: retransmitting a
+  command with the same `cmd_id` replays the cached `ACK` without actuating
+  hardware twice.
 
 ## Endpoints
 
 | Value | Name | Description |
 |---|---|---|
-| `0x01` | Host | laptop application |
-| `0x10` | Ground | ground bridge board |
-| `0x20` | Vehicle | onboard board |
-| `0xFF` | Broadcast | everyone (accepted as a destination, never as a source) |
-
-The ground board forwards frames between USB and radio without interpreting
-vehicle traffic. It answers `PING` addressed to itself so the host can detect
-it independently of the radio link.
+| `0x01` | `Host` | laptop ground-station application |
+| `0x10` | `Ground` | ground USB ↔ LoRa bridge board |
+| `0x20` | `Vehicle` | onboard vehicle control board |
+| `0xFF` | `Broadcast` | accepted as destination only, never valid as source |
 
 ## Messages
 
@@ -97,36 +99,46 @@ Capabilities: `RADIO` 1, `SERVOS` 2, `IGNITER` 4, `WATCHDOG` 8,
 
 `PING`: `nonce: u32`, `host_ms: u32`.
 
-`PONG`: `nonce: u32` (echoed), `uptime_ms: u32`, `state: StateSnapshot`
-(16 B). The ground board answers with an all-safe snapshot; the vehicle
-answers with its live state.
+`PONG`: `nonce: u32` (echoed), `uptime_ms: u32`, `state: StateSnapshot` (16 B).
 
 ### COMMAND (7 B)
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 2 | `cmd_id` (dedupe key) |
-| 2 | 1 | control (`SYSTEM` 0, `FILL` 1, `SRV` 2, `IGN` 3) |
-| 3 | 1 | action (0 = OFF/SAFE, 1 = ON/PWR; system actions below) |
-| 4 | 2 | `arg_s` (fill duration in seconds for `FILL ON`, else 0) |
-| 6 | 1 | flags |
+| 2 | 1 | `control` (`SYSTEM` 0, `FILL` 1, `SRV` 2, `IGN` 3, `SRV+IGN` 4) |
+| 3 | 1 | `action` (`0` = `OFF`/`SAFE`, `1` = `ON`/`PWR`; `SYSTEM` actions below) |
+| 4 | 2 | `arg_s` (fill duration in seconds for `FILL ON`, else `0`) |
+| 6 | 1 | `flags` |
 
-System actions: `SAFE_ALL` 0, `RESET_FILL` 1, `CLEAR_FAULTS` 2.
-
-Command flags: `AUTO` 1 (generated by a timer, not the operator), `ESTOP` 2,
-`IMMEDIATE` 4 (do not wait for the servo settle time before acknowledging).
+- **`SYSTEM` actions (`control = 0`)**:
+  - `SAFE_ALL` (`0`) — de-energise `IGN`, `SRV`, and `FILL` immediately.
+  - `RESET_FILL` (`1`) — clear `FILL_SEQ_COMPLETE`, `FILL_SEQ_ABORTED`,
+    `ESTOP`, `INHIBITED`, and `LINK_LOSS_SAFE` (requires `FILL = OFF` and
+    `IGN = SAFE`).
+  - `CLEAR_FAULTS` (`2`) — clear latched fault bits and inhibit/E-STOP flags.
+- **`SRV+IGN` combined launch control (`control = 4`)**:
+  - `ACTION_ON` (`1`) — used by `LIVE` launch mode after the host countdown
+    reaches `T-0`: re-verifies `!fill_open && fill_seq_complete &&
+    !fill_seq_aborted && !inhibited && !estop`, drives `SRV = true` and
+    `IGN = true`, waits `SETTLE_SERVO_MS` (`350 ms`), emits `EventCode::SrvOn`
+    + `EventCode::IgnPwr`, and replies `ACK` with `SRV_ON | IGN_PWR`.
+  - `ACTION_OFF` (`0`) — safes `IGN = false` first, then drives `SRV = false`,
+    waits `SETTLE_SERVO_MS` (`350 ms`), emits `EventCode::IgnSafe` +
+    `EventCode::SrvOff`, and replies `ACK` with all outputs `OFF/SAFE`.
+- **Command flags**: `AUTO` (`1`), `ESTOP` (`2`), `IMMEDIATE` (`4`).
 
 ### ACK (24 B)
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 2 | `cmd_id` |
-| 2 | 1 | control |
-| 3 | 1 | action |
-| 4 | 1 | result |
-| 5 | 1 | reason |
+| 2 | 1 | `control` |
+| 3 | 1 | `action` |
+| 4 | 1 | `result` |
+| 5 | 1 | `reason` |
 | 6 | 2 | execute time, ms |
-| 8 | 16 | state after execution |
+| 8 | 16 | `state` after execution |
 
 Results: `Ok` 0, `RejectedSafety` 1, `RejectedState` 2, `Busy` 3,
 `UnknownControl` 4, `UnknownAction` 5, `BadArgument` 6, `HardwareFault` 7.
@@ -140,12 +152,12 @@ Reasons: `None` 0, `FillSrvExclusive` 1, `FillActive` 2, `SrvRequired` 3,
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 2 | flags |
-| 2 | 2 | latched faults |
-| 4 | 4 | fill remaining, ms |
-| 8 | 2 | fill duration, s |
-| 10 | 2 | last command id |
-| 12 | 4 | uptime, ms |
+| 0 | 2 | `flags` |
+| 2 | 2 | `faults` (latched fault bitmap) |
+| 4 | 4 | `fill_remaining_ms` |
+| 8 | 2 | `fill_duration_s` |
+| 10 | 2 | `last_cmd_id` |
+| 12 | 4 | `uptime_ms` |
 
 Flags:
 
@@ -154,15 +166,15 @@ Flags:
 | 0 | `FILL_OPEN` | fill valve open |
 | 1 | `SRV_ON` | servo power on |
 | 2 | `IGN_PWR` | igniter powered |
-| 3 | `FILL_TIMER_ACTIVE` | countdown running |
-| 4 | `FILL_SEQ_COMPLETE` | a full fill cycle completed |
-| 5 | `FILL_SEQ_ABORTED` | cycle ended early |
-| 6 | `LINK_LOSS_SAFE` | outputs forced safe after link loss |
-| 7 | `LAST_REJECTED` | last command was rejected |
-| 8 | `FILL_AUTO_OFF` | last close came from the fill timer |
-| 9 | `BOOT_SAFE` | no command accepted since boot |
-| 10 | `ESTOP` | emergency stop asserted |
-| 11 | `INHIBITED` | ignition inhibited until a reset |
+| 3 | `FILL_TIMER_ACTIVE` | onboard fill countdown running |
+| 4 | `FILL_SEQ_COMPLETE` | full timed fill cycle completed |
+| 5 | `FILL_SEQ_ABORTED` | fill closed before timer expiry |
+| 6 | `LINK_LOSS_SAFE` | outputs forced safe on link timeout |
+| 7 | `LAST_REJECTED` | previous command was rejected |
+| 8 | `FILL_AUTO_OFF` | last close was triggered by the fill timer |
+| 9 | `BOOT_SAFE` | no actuating command accepted since boot |
+| 10 | `ESTOP` | emergency stop latched |
+| 11 | `INHIBITED` | ignition inhibited until reset |
 
 Faults: `UART_OVERRUN` 0, `CRC_ERROR` 1, `LINK_TIMEOUT` 2, `WATCHDOG_RESET` 3,
 `RADIO_ERROR` 4, `CONFIG_ERROR` 5, `OUTPUT_FAULT` 6.
@@ -177,140 +189,74 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 `RadioFault` 15, `GroundDetected` 16, `GroundLost` 17, `BridgeReady` 18,
 `FaultsCleared` 19.
 
-`detail` carries the `Reason` value for `SafetyReject`, the fill duration for
-`FillAutoOff`, and 0 otherwise.
+### LINKSTAT (20 B) & HEARTBEAT (5 B)
 
-### LINKSTAT (20 B)
-
-`frames_from_radio: u32`, `frames_to_radio: u32`, `crc_errors: u16`,
-`uart_errors: u16`, `bridge_uptime_ms: u32`, `last_radio_age_ms: u16`,
-`drops: u16`.
-
-### HEARTBEAT (5 B)
-
-`uptime_ms: u32`, `mode: u8` (0 = normal).
+- `LINKSTAT`: `frames_from_radio: u32`, `frames_to_radio: u32`,
+  `crc_errors: u16`, `uart_errors: u16`, `bridge_uptime_ms: u32`,
+  `last_radio_age_ms: u16`, `drops: u16`.
+- `HEARTBEAT`: `uptime_ms: u32`, `mode: u8` (`0` = normal).
 
 ## Behaviour
 
-### Connection detection
+### Liveness & timers
 
-1. The host opens the serial port and sends `PING` to `GROUND` every 500 ms.
-2. The ground bridge replies `PONG` with an all-safe snapshot and starts
-   emitting `HELLO` and `LINKSTAT` once per second.
-3. The host then pings the vehicle every 500 ms until the first `PONG`, then
-   every 2 s. A `PONG` from the vehicle marks it online and gives the
-   round-trip time.
-
-### Liveness
-
-| Watchdog | Timeout | Consequence |
+| Mechanism | Interval / Limit | Consequence |
 |---|---|---|
-| Host → ground | 3 s | host declares the ground board offline, closes the port |
-| Host → vehicle | 2 s without state/pong | vehicle marked offline, pending command abandoned |
-| Vehicle ↔ host | 5 s (`LINK_TIMEOUT_MS`) | vehicle forces all outputs safe, sets `LINK_LOSS_SAFE`, emits `LinkTimeoutSafe` |
-| Host heartbeat | every 1 s | keeps the vehicle's link-loss timer quiet |
-| Vehicle state | every 250 ms | host telemetry |
-| Host ping | every 2 s online, 500 ms while connecting | liveness and RTT |
-| Ground HELLO / LINKSTAT | every 1 s | board identification and counters |
+| Host → ground `PING` | every 500 ms (connecting), 3 s timeout | ground marked `offline`, serial port closed |
+| Host → vehicle `PING` | every 500 ms (connecting), 2 s (online); 2 s timeout | vehicle marked `pinging`, in-flight command & active countdown aborted |
+| Host → vehicle `HEARTBEAT` | every 1 s | resets vehicle's link-loss timer |
+| Vehicle `LINK_TIMEOUT_MS` | 5 s without host frame | vehicle forces all outputs `OFF/SAFE`, sets `LINK_LOSS_SAFE` + `INHIBITED`, emits `LinkTimeoutSafe` |
+| Vehicle `STATE` telemetry | every 250 ms | updates host snapshot and board-driven fill remaining time |
+| Timed `FILL` (`DEFAULT_FILL_SECONDS = 60`) | `1..=600 s` | board counts down `fill_remaining_ms`; at `0 ms` host sends `FILL OFF (AUTO)` (with 5 s host backstop and 2 s autonomous vehicle close backstop) |
+| `LIVE` `SRV+IGN` countdown (`DEFAULT_COUNTDOWN_SECONDS = 5`) | `1..=600 s` | host counts down on `snapshot.countdown`, re-validating every safety gate on every tick before sending `COMMAND(SrvIgn, ON)` at `T-0` |
 
-### Commands and acknowledgements
+### Control state machine (`gse-proto/src/fsm.rs`)
 
-1. The host evaluates the operator interlocks. A blocked action never reaches
-   the wire; the console disables the tile and shows the reason.
-2. `COMMAND` is sent to the vehicle. The host expects `ACK` within 800 ms and
-   retries up to five times with the same `cmd_id`.
-3. The vehicle evaluates the same interlocks, applies the action, waits for the
-   actuator to settle (350 ms servos, 40 ms relay) and replies `ACK` with the
-   resulting state. A repeated `cmd_id` triggers the cached `ACK`.
-4. If no `ACK` arrives after five attempts the host logs *command state
-   unknown* and clears the pending gate. Nothing is ever assumed to have worked.
-5. `ESTOP` bypasses the pending gate on the host and is never refused by the
-   vehicle while a command is in flight. It clears all outputs and latches the
-   `ESTOP` flag.
+Both ends evaluate the exact same transition table over `(FILL, SRV, IGN)`
+starting at `FILL OFF · SRV OFF · IGN SAFE`:
 
-### Fill timer, enforced twice
-
-- On `FILL ON` the host sends `arg_s = configured fill seconds` (1…600, default
-  60). The vehicle runs the authoritative timer from the moment the valve opens
-  and reports the remaining time in every `STATE` frame.
-- The board's countdown reaching zero is what triggers the host's automatic
-  `FILL OFF` (with the `AUTO` flag); the operator is notified in the log and
-  with a toast. The host's own deadline is only a backstop with a 5 s grace,
-  because the laptop clock and the board's SysTick are independent: cutting the
-  fill on host time can reach the board *before* the configured duration and
-  abort a good sequence.
-- The vehicle also closes the valve itself with `FILL_AUTO_OFF`/`FillAutoOff`
-  two seconds after its deadline even if the host disappears, so the automatic
-  close does not depend on the link.
-- A fill cycle counts as complete when the valve stayed open for the full
-  duration (500 ms tolerance), which sets `FILL_SEQ_COMPLETE` and unlocks IGN.
-- Closing early with any other command sets `FILL_SEQ_ABORTED`; the operator
-  must run *Reset fill sequence* before another fill.
-
-### Control state machine
-
-Both ends run the identical transition table from `gse-proto/src/fsm.rs`. The
-machine has three axes — `FILL OFF|ON`, `SRV OFF|ON`, `IGN SAFE|PWR` — and
-starts at `FILL OFF · SRV OFF · IGN SAFE`. Each command is an event; the
-outcome is `Allowed(next)`, `NoOp` (already there) or `Blocked(reason)`. The
-confirmed state changes only when the resulting `ACK` arrives.
-
-| Current state | Event | Result |
+| Current state / condition | Event | Outcome |
 |---|---|---|
-| FILL OFF, SRV OFF, IGN SAFE | `FILL ON` | Allowed → FILL ON |
-| FILL open | `FILL ON` | No-op (`AlreadyInState`) |
-| IGN PWR | `FILL ON` | `RejectedSafety` / `IgnPowered` |
-| SRV ON | `FILL ON` | `RejectedSafety` / `FillSrvExclusive` |
-| FILL OFF | `FILL OFF` | No-op (`NotActive`) |
-| FILL open | `SRV ON` | `RejectedSafety` / `FillActive` |
-| IGN PWR | `SRV ON` / `SRV OFF` | `RejectedSafety` / `IgnPowered` |
-| SRV OFF | `SRV OFF` | No-op (`NotActive`) |
-| FILL open | `IGN PWR` | `RejectedSafety` / `FillActive` |
-| SRV OFF | `IGN PWR` | `RejectedSafety` / `SrvRequired` |
-| no completed fill, aborted fill | `IGN PWR` | `RejectedSafety` / `FillSeqIncomplete` |
-| inhibited, E-STOP latched | `IGN PWR` | `RejectedSafety` / `NotPermitted` |
-| IGN SAFE | `IGN SAFE` | No-op (`NotActive`) |
-| any | `SAFE_ALL` | Allowed → `FILL OFF · SRV OFF · IGN SAFE` |
-| any | duplicate `cmd_id` | cached `ACK`, no second actuation |
+| `FILL=OFF, SRV=OFF, IGN=SAFE` | `FILL ON` | `Allowed` → `FILL ON` |
+| `FILL=ON` | `FILL ON` | `NoOp` (`AlreadyInState`) |
+| `IGN=PWR` | `FILL ON` | `Blocked` (`IgnPowered`) |
+| `SRV=ON` | `FILL ON` | `Blocked` (`FillSrvExclusive`) |
+| `FILL=OFF` | `FILL OFF` | `NoOp` (`NotActive`) |
+| `FILL=ON` | `SRV ON` | `Blocked` (`FillActive`) |
+| `IGN=PWR` | `SRV ON` / `SRV OFF` | `Blocked` (`IgnPowered`) |
+| `SRV=OFF` | `SRV OFF` | `NoOp` (`NotActive`) |
+| `FILL=ON` | `IGN PWR` | `Blocked` (`FillActive`) |
+| `SRV=OFF` | `IGN PWR` | `Blocked` (`SrvRequired`) |
+| `!fill_seq_complete` or `fill_seq_aborted` | `IGN PWR` | `Blocked` (`FillSeqIncomplete`) |
+| `inhibited` or `estop` | `IGN PWR` | `Blocked` (`NotPermitted`) |
+| `IGN=SAFE` | `IGN SAFE` | `NoOp` (`NotActive`) |
+| `SRV=ON` and `IGN=PWR` | `SRV+IGN ON` | `NoOp` (`AlreadyInState`) |
+| `FILL=ON` | `SRV+IGN ON` | `Blocked` (`FillActive`) |
+| `!fill_seq_complete` or `fill_seq_aborted` | `SRV+IGN ON` | `Blocked` (`FillSeqIncomplete`) |
+| `inhibited` or `estop` | `SRV+IGN ON` | `Blocked` (`NotPermitted`) |
+| `FILL=OFF`, `fill_seq_complete`, no latches | `SRV+IGN ON` | `Allowed` → `FILL OFF · SRV ON · IGN PWR` |
+| `SRV=OFF` and `IGN=SAFE` | `SRV+IGN OFF` | `NoOp` (`NotActive`) |
+| `SRV=ON` or `IGN=PWR` | `SRV+IGN OFF` | `Allowed` → `FILL OFF · SRV OFF · IGN SAFE` |
+| any state | `SAFE_ALL` / `RESET` | `Allowed` → `FILL OFF · SRV OFF · IGN SAFE` |
 
-Notes:
+### Host state snapshot (`/api/state` & SSE `state` event)
 
-- `FILL ON` is rejected with `IgnPowered` before `FillSrvExclusive` when the
-  igniter is powered, so the operator is told to SAFE it first.
-- A command that is a no-op is still acknowledged `OK`; the host greys the tile
-  instead of transmitting it.
-- `SAFE_ALL` is the only command that is legal from every state. With the
-  `ESTOP` flag it also latches the `ESTOP` state bit; the igniter then rejects
-  `IGN PWR` with `NotPermitted` until `RESET_FILL` clears the latch.
-- `RESET_FILL` is legal only while FILL is closed and IGN is SAFE; it clears
-  `FILL_SEQ_COMPLETE`, `FILL_SEQ_ABORTED`, `ESTOP`, `INHIBITED` and
-  `LINK_LOSS_SAFE`. The ground app implements *Reset controls* as `SAFE_ALL`
-  followed by `RESET_FILL`, so the machine returns to its initial state.
+`gse-app` exposes the combined host + vehicle view at `GET /api/state` and on
+every `event: state` frame on `/api/events`:
 
-### Initialisation and shutdown (host)
-
-- On every new link the host enters `INIT` and disables every control. It
-  leaves `INIT` only when the vehicle reports `FILL OFF · SRV OFF · IGN SAFE`.
-  If an output is active (the vehicle was left on, or the session was restarted
-  during a run) the host sends `SAFE_ALL` first, then `RESET_FILL` if a latch is
-  set, and logs `Control state machine initialised`.
-- On shutdown (Ctrl+C, SIGTERM, `POST /api/shutdown`) the host sends `SAFE_ALL`,
-  retries with the normal 800 ms cadence, and waits up to 2.5 s for the ACK. If
-  the link is down or the ACK never arrives, the process still exits but logs
-  that OFF/SAFE could not be confirmed. The vehicle's 5 s link-loss failsafe is
-  the independent backstop.
-- The console exposes the machine at `/api/state` → `controls`
-  (`fill`, `srv`, `ign`, `safe`, `ready`, `target`, `last_event`,
-  `last_result`). `fill`/`srv`/`ign` and `safe` are the *confirmed* state: they
-  follow the last vehicle snapshot when no command is in flight, and are frozen
-  at the previous value until the in-flight command's ACK arrives (a `STATE`
-  frame reporting the servo moving during its settle time does not confirm the
-  transition). `target` is the state the in-flight command will reach;
-  `last_result` is `pending`, then `acknowledged`, `rejected` or `timeout`.
+- `config`: `{op_mode: "live"|"test", fill_seconds, countdown_seconds, port, baud, confirm_ign, sound, host, http_port, shortcuts}`
+- `controls`: confirmed state (`fill`, `srv`, `ign`, `safe`, `summary`, `ready`,
+  `target`, `last_event`, `last_result`) — updates only when a vehicle `ACK`
+  lands.
+- `fill`: `{active, duration_s, remaining_ms, ends_at, seq_complete, seq_aborted, auto_off_pending}`
+- `countdown`: `{active, duration_ms, remaining_ms, ends_at}` — active during
+  the `LIVE` `SRV+IGN` countdown prior to transmitting `Control::SrvIgn` (`ON`).
+- `actions`: per-action `{enabled, reason}` map for `fill_on`, `fill_off`,
+  `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`,
+  `reset_controls`, `reset_fill`, `clear_faults`, and `estop`.
 
 ## Versioning
 
-`VERSION` is bumped for incompatible changes. The decoders reject unknown
-versions instead of guessing. New message types and new trailing body fields
-are additive: bodies shorter than the current `WIRE_LEN` are rejected, longer
-bodies are accepted and the extra bytes ignored.
+`PROTOCOL_VERSION` is incremented on incompatible wire changes; frames with an
+unknown version are rejected immediately. New message types or trailing payload
+bytes remain backwards-compatible within a version.

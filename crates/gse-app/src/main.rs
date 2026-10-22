@@ -36,7 +36,7 @@ const SIM_ADDR: &str = "127.0.0.1:8787";
 const SIM_SPEC: &str = "tcp:127.0.0.1:8787";
 
 const USAGE: &str = "\
-GSE - ground support equipment for the NUCLEO-H753ZI + SX1281 rocket link
+GSE - ground support equipment for the NUCLEO-H753ZI + DX-LR42-24T12D (SX1281) link
 
 USAGE:
     gse-app [OPTIONS]
@@ -56,9 +56,11 @@ OPTIONS:
     -V, --version         Show the version
 
 SAFETY:
-    FILL and SRV are interlocked; IGN PWR requires a completed fill sequence
-    and SRV on. The vehicle firmware re-checks every command and can always
-    refuse one.
+    Supports selectable LIVE (FILL -> configurable countdown -> combined
+    SRV+IGN) and TEST (independent FILL, SRV, IGN) operating modes in Settings.
+    FILL and SRV are interlocked; neither IGN PWR nor SRV+IGN ON can activate
+    without a completed fill sequence. The vehicle firmware independently
+    re-checks every command and can always refuse one.
 
 EXAMPLES:
     gse-app                          scan every serial port for the ground board

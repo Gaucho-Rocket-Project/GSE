@@ -1,91 +1,107 @@
 # Control-state trace
 
-`scripts/state_trace.py` drives a running console through one complete, safe
-scenario and prints every distinct machine state it observes, so the
-deterministic behaviour can be checked against the specification rather than
-taken on trust. It only ever talks to the HTTP API with the same token and the
-same commands the operator uses, so it exercises exactly the production path:
-`/api/command` → link → vehicle `fsm` → ACK → `/api/state`.
+`scripts/state_trace.py` spawns isolated `gse-sim` and `gse-app` processes on
+ephemeral TCP ports, subscribes to the live SSE stream (`/api/events`), and
+drives both operating modes (**`LIVE`** and **`TEST`**) end-to-end over the real
+HTTP API (`/api/config` + `/api/command` → link → vehicle `fsm` → `ACK` → SSE
+`state`).
 
 ## Running it
 
 ```bash
-./target/debug/gse-sim --listen 127.0.0.1:8787 --latency 10 &
-./target/debug/gse-app --port tcp:127.0.0.1:8787 --http-port 8765 \
-    --no-browser --config /tmp/trace.json &
-
-TOKEN=$(curl -s http://127.0.0.1:8765/ \
-    | sed -n 's/.*name="gse-token" content="\([a-f0-9]*\)".*/\1/p')
-scripts/state_trace.py http://127.0.0.1:8765 "$TOKEN" [--shutdown]
+cargo build --workspace
+python3 scripts/state_trace.py ./target/debug/gse-app
 ```
 
-The script sets the fill time to 3 s so the whole scenario takes about five
-seconds, then:
+The script walks through eight phases automatically:
 
-1. waits until both boards report `online` and the controls are `ready`,
-2. commands **FILL ON**, samples the machine while the command is in flight and
-   asserts that the confirmed state is still OFF with FILL ON only as a target,
-   then waits for the ACK,
-3. waits for the timed auto-close and for the fill sequence to be marked
-   complete,
-4. checks that `ign_pwr` is still refused,
-5. commands **SRV ON**, makes the same in-flight assertion, then checks that
-   `ign_pwr` becomes enabled,
-6. commands **RESET CONTROLS** and checks that every control is back at
-   OFF/SAFE and that the fill-sequence and E-STOP latches are cleared,
-7. with `--shutdown`, requests shutdown and greps the session log for
-   `ALL SAFE acknowledged`.
+### Phase A — `LIVE` launch mode (`op_mode: "live"`, default)
 
-Every line is printed only when the state changes. `pending` is the moment a
-command is sent and the target appears (the confirmed state is untouched),
-`state` is a change in the confirmed state, `ack` is the ACK landing and the
-pending target disappearing. A `STATE` frame that reports the servo moving
-during its settle time is telemetry, not confirmation: the confirmed state and
-the console LEDs only change when the ACK arrives.
+1. **`A1`** — Waits for the startup `INIT` handshake to confirm
+   `FILL=OFF SRV=OFF IGN=SAFE`, and checks that `SRV+IGN`, `SRV`, and `IGN` are
+   all disabled at rest.
+2. **`A2`** — Opens `FILL` and closes it manually early; verifies
+   `fill_seq_aborted = true` and confirms `SRV+IGN` remains greyed out.
+3. **`A3`** — Clears the fill latch (`reset_fill`), runs a complete timed `FILL`
+   cycle (`fill_seconds = 3`) through automatic `FILL OFF`, and verifies
+   `fill_seq_complete = true` unlocks `SRV+IGN` (`srv_ign = True`).
+4. **`A4`** — Arms `SRV+IGN` (`cd = True`) to start the on-screen launch
+   countdown, then fires `E-STOP` mid-countdown and verifies the countdown is
+   cancelled immediately without `SRV` or `IGN` ever turning on.
+5. **`A5`** — Resets controls, completes another timed fill, runs the full `5 s`
+   countdown to `T-0`, verifies atomic transition to `FILL=OFF SRV=ON IGN=PWR`,
+   commands `SRV+IGN OFF` back to `FILL=OFF SRV=OFF IGN=SAFE`, and resets cleanly.
+
+### Phase B — `TEST` checkout mode (`op_mode: "test"`)
+
+6. **`B1`** — Switches `op_mode` to `"test"` via `POST /api/config` and checks
+   that independent `SRV` is enabled while combined `SRV+IGN` is disabled.
+7. **`B2`** — Verifies an aborted manual fill + `SRV ON` still keeps `IGN PWR`
+   locked (`ign = False`).
+8. **`B3`** — Runs a full timed fill → `SRV ON` (`ign = True`) → `IGN PWR` →
+   `RESET CONTROLS` back to `FILL=OFF SRV=OFF IGN=SAFE` with all latches clear.
 
 ## Recorded run
 
-Console `http://127.0.0.1:8798`, simulator with 10 ms radio latency,
-`fill_seconds = 3`, `--shutdown`:
+Captured directly from `python3 scripts/state_trace.py ./target/debug/gse-app`:
 
 ```text
-GSE control-state trace
-  + 0.003s  state    FILL OFF · SRV OFF · IGN SAFE
-  initial  FILL=OFF SRV=OFF IGN=SAFE  (ready)
-  action   FILL ON (3 s fill)
-  + 0.016s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL ON  · SRV OFF · IGN SAFE  [pending fill_on]
-  ack-gate confirmed FILL stayed OFF while the command was in flight
-  + 0.426s  ack      FILL ON  · SRV OFF · IGN SAFE
-  + 3.323s  pending  FILL ON  · SRV OFF · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending fill_off]
-  + 3.724s  ack      FILL OFF · SRV OFF · IGN SAFE
-  gates    enabled: fill_on, srv_on, reset_controls, reset_fill, estop
-  action   SRV ON
-  + 3.738s  pending  FILL OFF · SRV OFF · IGN SAFE -> FILL OFF · SRV ON  · IGN SAFE  [pending srv_on]
-  ack-gate confirmed SRV stayed OFF while the command was in flight
-  + 4.140s  ack      FILL OFF · SRV ON  · IGN SAFE
-  gates    IGN PWR is now enabled (SRV ON + completed fill)
-  action   RESET CONTROLS
-  + 4.154s  pending  FILL OFF · SRV ON  · IGN SAFE -> FILL OFF · SRV OFF · IGN SAFE  [pending reset_controls]
-  + 4.188s  ack      FILL OFF · SRV OFF · IGN SAFE  [pending reset_fill]
-  + 4.211s  ack      FILL OFF · SRV OFF · IGN SAFE
-  final    FILL=OFF SRV=OFF IGN=SAFE  (latches cleared)
-  shutdown -> ALL SAFE
-  verified ALL SAFE was acknowledged before exit
-TRACE OK
+--- A1. Wait for startup SAFE handshake in default LIVE mode ---
+  0.00s  [LIVE]  ready=False  FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+
+--- A2. LIVE: Early manual FILL OFF aborts fill and keeps SRV+IGN greyed out ---
+  0.10s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  0.51s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  1.32s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+
+--- A3. LIVE: Reset fill, run full timed FILL -> auto FILL OFF -> SRV+IGN unlocks ---
+  1.63s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+  1.73s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  2.14s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  4.88s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+
+--- A4. LIVE: Start 5 s SRV+IGN countdown, then abort mid-countdown via E-STOP ---
+  5.19s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=True   seq_ok=True   abort=False  srv_ign=False  ign=False
+  6.27s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=True   ign=False
+  6.31s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+
+--- A5. LIVE: Reset controls, re-run timed FILL, run full 5 s countdown -> SRV+IGN ON -> SRV+IGN OFF ---
+  6.41s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  6.82s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+  8.65s  [LIVE]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+  8.95s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=True   seq_ok=True   abort=False  srv_ign=False  ign=False
+ 13.96s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+ 14.34s  [LIVE]  ready=True   FILL=OFF SRV=ON IGN=PWR   cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+ 14.84s  [LIVE]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+
+--- B1. Switch to TEST mode in Settings ---
+ 14.95s  [TEST]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+
+--- B2. TEST: Early manual FILL OFF aborts fill and keeps IGN locked ---
+ 15.35s  [TEST]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+ 16.27s  [TEST]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+ 16.58s  [TEST]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+ 16.98s  [TEST]  ready=True   FILL=OFF SRV=ON IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+ 17.39s  [TEST]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=True   srv_ign=False  ign=False
+
+--- B3. TEST: Full timed FILL -> auto FILL OFF -> SRV ON -> IGN PWR -> RESET CONTROLS ---
+ 17.49s  [TEST]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+ 17.90s  [TEST]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=False  abort=False  srv_ign=False  ign=False
+ 20.64s  [TEST]  ready=True   FILL=ON SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+ 20.94s  [TEST]  ready=True   FILL=OFF SRV=OFF IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+ 21.35s  [TEST]  ready=True   FILL=OFF SRV=ON IGN=SAFE  cd=False  seq_ok=True   abort=False  srv_ign=False  ign=True 
+ 21.45s  [TEST]  ready=True   FILL=OFF SRV=ON IGN=PWR   cd=False  seq_ok=True   abort=False  srv_ign=False  ign=False
+
+ALL ASSERTIONS PASSED (LIVE + TEST MODES)
 ```
 
 ## What the run demonstrates
 
 | Requirement | Where it shows up |
 |---|---|
-| everything starts OFF/SAFE | first line, `ready` after both boards answered the handshake |
-| a control only changes after the ACK | `pending` line keeps `FILL OFF` confirmed with `-> FILL ON` as target; `ack-gate confirmed FILL stayed OFF while the command was in flight`; the confirmed `FILL ON` appears on the `ack` line ~390 ms later, even though the vehicle had already reported the valve open |
-| FILL auto-closes at the configured time | second `pending`/`ack` pair at ~3.4 s, `fill_off` issued by the app, not the operator |
-| IGN stays greyed until the fill sequence is complete *and* SRV is ON | `gates enabled:` after the fill omits `ign_pwr`; it appears only after the `srv_on` ACK |
-| no unsafe transition is reachable | FILL/SRV were never both ON; the vehicle would reject the command with `RejectedSafety` even if the console were bypassed |
-| reset returns everything to OFF/SAFE | `reset_controls` target drops SRV, and the final state is `FILL=OFF SRV=OFF IGN=SAFE` with `fill_seq_complete` and `estop` cleared |
-| shutdown leaves every control OFF/SAFE | `shutdown -> ALL SAFE`, and the log line `ALL SAFE acknowledged - every control is OFF/SAFE` |
-
-The same guarantees are covered automatically by `scripts/smoke.sh` (API level,
-including rejected commands and the reconnect-forced-safe case) and by the unit
-tests over `gse_proto::fsm` (every event from every reachable state).
+| Startup always initialises safe | `0.00s` (`ready=False`) → `0.10s` (`ready=True`, `FILL=OFF SRV=OFF IGN=SAFE`) |
+| `LIVE` `SRV+IGN` stays greyed out prior to completed fill | `srv_ign=False` at rest (`0.10s`) and after an aborted manual fill (`1.63s`) |
+| Completed timed `FILL` unlocks `SRV+IGN` in `LIVE` mode | `4.88s` (`seq_ok=True`, `abort=False`) followed by `FILL OFF` `ACK` unlocking `SRV+IGN` |
+| Mid-countdown `E-STOP` cancels countdown with zero actuation | `5.19s` (`cd=True`) → `6.31s` (`cd=False`, outputs remain `FILL=OFF SRV=OFF IGN=SAFE`) |
+| Full `SRV+IGN` countdown energises after configured duration and allows operator `OFF` | `8.95s` (`cd=True`) → `13.96s` (`T-0` command sent) → `14.34s` (`SRV=ON IGN=PWR` `ACK`) → `14.84s` (`SRV=OFF IGN=SAFE` `ACK`) |
+| `TEST` mode preserves independent `FILL`, `SRV`, `IGN` interlocks | `14.95s`–`21.45s`: aborted fill keeps `ign=False` even with `SRV=ON` (`16.98s`), while completed fill + `SRV=ON` enables `ign=True` (`21.35s`) → `IGN=PWR` (`21.45s`) → `RESET CONTROLS` returns to `OFF/SAFE` |

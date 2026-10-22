@@ -1,4 +1,4 @@
-//! Ground board image: USB CDC (USART3) <-> SX1281 (USART6) bridge.
+//! Ground board image: USB CDC (`USART3`) <-> `DX-LR42-24T12D` SX1281 (`USART6`) bridge.
 //!
 //! The bridge never interprets operator commands; it forwards frames and
 //! answers PING/HELLO/LINKSTAT so the host can detect it. All safety decisions
