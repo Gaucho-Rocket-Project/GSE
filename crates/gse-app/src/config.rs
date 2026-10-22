@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use gse_proto::{MAX_FILL_SECONDS, MIN_FILL_SECONDS};
+use gse_proto::{MAX_COUNTDOWN_SECONDS, MAX_FILL_SECONDS, MIN_COUNTDOWN_SECONDS, MIN_FILL_SECONDS};
 
 use crate::json::{self, Value};
 
@@ -65,6 +65,7 @@ pub const BAUDS: &[u32] = &[9_600, 19_200, 38_400, 57_600, 115_200, 230_400];
 pub struct Config {
     pub op_mode: OperationMode,
     pub fill_seconds: u16,
+    pub countdown_seconds: u16,
     /// `"auto"` for protocol-based port detection, otherwise a device path.
     pub port: String,
     pub baud: u32,
@@ -80,6 +81,7 @@ impl Default for Config {
         Config {
             op_mode: OperationMode::Live,
             fill_seconds: gse_proto::DEFAULT_FILL_SECONDS,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             port: "auto".to_string(),
             baud: gse_proto::USB_BAUD,
             confirm_ign: true,
@@ -140,6 +142,9 @@ impl Config {
     /// Clamp/repair values that came from disk or the browser.
     pub fn sanitize(&mut self) {
         self.fill_seconds = self.fill_seconds.clamp(MIN_FILL_SECONDS, MAX_FILL_SECONDS);
+        self.countdown_seconds = self
+            .countdown_seconds
+            .clamp(MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
         if !BAUDS.contains(&self.baud) {
             self.baud = gse_proto::USB_BAUD;
         }
@@ -177,6 +182,11 @@ impl Config {
         let mut out = String::from("{");
         json::field(&mut out, "op_mode", &json::quoted(self.op_mode.as_str()));
         json::field(&mut out, "fill_seconds", &self.fill_seconds.to_string());
+        json::field(
+            &mut out,
+            "countdown_seconds",
+            &self.countdown_seconds.to_string(),
+        );
         json::field(&mut out, "port", &json::quoted(&self.port));
         json::field(&mut out, "baud", &self.baud.to_string());
         json::field(&mut out, "confirm_ign", json::bool_json(self.confirm_ign));
@@ -202,6 +212,10 @@ impl Config {
         }
         if let Some(v) = value.get("fill_seconds").and_then(Value::as_i64) {
             cfg.fill_seconds = v.clamp(MIN_FILL_SECONDS as i64, MAX_FILL_SECONDS as i64) as u16;
+        }
+        if let Some(v) = value.get("countdown_seconds").and_then(Value::as_i64) {
+            cfg.countdown_seconds =
+                v.clamp(MIN_COUNTDOWN_SECONDS as i64, MAX_COUNTDOWN_SECONDS as i64) as u16;
         }
         if let Some(v) = value.get("port").and_then(Value::as_str) {
             cfg.port = v.to_string();
@@ -272,6 +286,10 @@ impl Config {
             json::quoted(self.op_mode.as_str())
         ));
         out.push_str(&format!("  \"fill_seconds\": {},\n", self.fill_seconds));
+        out.push_str(&format!(
+            "  \"countdown_seconds\": {},\n",
+            self.countdown_seconds
+        ));
         out.push_str(&format!("  \"port\": {},\n", json::quoted(&self.port)));
         out.push_str(&format!("  \"baud\": {},\n", self.baud));
         out.push_str(&format!("  \"confirm_ign\": {},\n", self.confirm_ign));
@@ -305,6 +323,7 @@ mod tests {
         let mut cfg = Config {
             op_mode: OperationMode::Test,
             fill_seconds: 42,
+            countdown_seconds: 12,
             port: "/dev/ttyACM0".into(),
             confirm_ign: false,
             ..Config::default()
@@ -318,12 +337,13 @@ mod tests {
     #[test]
     fn clamping_and_repair() {
         let value = json::parse(
-            r#"{"op_mode":"test","fill_seconds":9999,"baud":1234,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
+            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
         )
         .unwrap();
         let cfg = Config::from_json(&value).unwrap();
         assert_eq!(cfg.op_mode, OperationMode::Test);
         assert_eq!(cfg.fill_seconds, MAX_FILL_SECONDS);
+        assert_eq!(cfg.countdown_seconds, MIN_COUNTDOWN_SECONDS);
         assert_eq!(cfg.baud, 115_200);
         assert_eq!(cfg.port, "auto");
         assert_eq!(cfg.host, "127.0.0.1");

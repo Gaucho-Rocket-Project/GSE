@@ -377,10 +377,12 @@ impl AppState {
                 .saturating_sub(now)
                 .min(u32::MAX as u64) as u32;
         } else {
+            self.countdown.duration_ms = (self.config.countdown_seconds as u32) * 1000;
             self.countdown.remaining_ms = 0;
         }
         self.actions = safety::evaluate(&safety::Inputs {
             mode: self.config.op_mode,
+            countdown_seconds: self.config.countdown_seconds,
             ground_online: self.ground.status == GroundStatus::Online,
             vehicle_online: self.vehicle.status == VehicleStatus::Online,
             pending: self.pending.is_some(),

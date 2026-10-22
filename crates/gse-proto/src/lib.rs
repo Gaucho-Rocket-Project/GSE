@@ -56,9 +56,17 @@ pub const DEFAULT_FILL_SECONDS: u16 = 60;
 pub const MIN_FILL_SECONDS: u16 = 1;
 pub const MAX_FILL_SECONDS: u16 = 600;
 
+/// Default LIVE launch countdown before `SRV+IGN` energises. The operator can
+/// adjust it in Settings with the same bounds and clamping as `fill_seconds`.
+pub const DEFAULT_COUNTDOWN_SECONDS: u16 = 5;
+pub const MIN_COUNTDOWN_SECONDS: u16 = 1;
+pub const MAX_COUNTDOWN_SECONDS: u16 = 600;
+
 const _: () = {
     assert!(MIN_FILL_SECONDS <= DEFAULT_FILL_SECONDS);
     assert!(DEFAULT_FILL_SECONDS <= MAX_FILL_SECONDS);
+    assert!(MIN_COUNTDOWN_SECONDS <= DEFAULT_COUNTDOWN_SECONDS);
+    assert!(DEFAULT_COUNTDOWN_SECONDS <= MAX_COUNTDOWN_SECONDS);
 };
 
 /// USB CDC / ST-LINK virtual COM port baud rate. Both ends use 8N1.

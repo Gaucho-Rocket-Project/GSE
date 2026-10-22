@@ -13,7 +13,7 @@
     srv_off: "SRV OFF",
     ign_pwr: "IGN PWR",
     ign_safe: "IGN SAFE",
-    srv_ign_on: "SRV+IGN ON (5 s COUNTDOWN)",
+    srv_ign_on: "SRV+IGN ON",
     srv_ign_off: "SRV+IGN OFF",
     reset_controls: "RESET CONTROLS",
     reset_fill: "RESET FILL SEQ",
@@ -75,6 +75,17 @@
   function isLiveMode() {
     var mode = (config && config.op_mode) || "live";
     return String(mode).toLowerCase() !== "test";
+  }
+
+  function countdownSecondsCfg() {
+    return (config && config.countdown_seconds) ? config.countdown_seconds : 5;
+  }
+
+  function actionLabel(action) {
+    if (action === "srv_ign_on") {
+      return "SRV+IGN ON (" + countdownSecondsCfg() + " s COUNTDOWN)";
+    }
+    return ACTION_LABELS[action] || action;
   }
 
   function toast(msg, kind, ms) {
@@ -319,7 +330,7 @@
     var nextAction = cfg.active ? cfg.offAction : cfg.onAction;
     var gate = cfg.actions[nextAction] || { enabled: false, reason: "" };
     btn.disabled = !gate.enabled;
-    btn.title = gate.enabled ? (ACTION_LABELS[nextAction] || nextAction) : (gate.reason || "");
+    btn.title = gate.enabled ? actionLabel(nextAction) : (gate.reason || "");
     btn.classList.toggle("is-on", !!cfg.active && !cfg.danger);
     btn.classList.toggle("is-pwr", !!cfg.active && !!cfg.danger);
     btn.classList.toggle("is-counting", !!cfg.counting);
@@ -362,7 +373,7 @@
       return;
     }
     banner.hidden = false;
-    var duration = cd.duration_ms || 5000;
+    var duration = cd.duration_ms || (countdownSecondsCfg() * 1000);
     var remaining = countdownRemainingMs(s);
     var wholeSec = Math.ceil(remaining / 1000);
     if (wholeSec > 0 && wholeSec !== lastCountdownSec) {
@@ -471,7 +482,7 @@
         : (srvIgnActive
             ? "ENERGISED (ON/PWR) · click → OFF"
             : (actions.srv_ign_on && actions.srv_ign_on.enabled
-                ? "Ready · press for 5 s countdown → ON"
+                ? ("Ready · press for " + countdownSecondsCfg() + " s countdown → ON")
                 : "Combined launch channel · locked"))
     });
 
@@ -562,7 +573,8 @@
 
     $("scan-note").textContent = s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : ""));
     $("foot-config").textContent = "mode " + (live ? "LIVE" : "TEST") + " · fill " +
-      (s.config ? s.config.fill_seconds : "?") + " s · " +
+      (s.config ? s.config.fill_seconds : "?") + " s" +
+      (live ? (" · countdown " + countdownSecondsCfg() + " s") : "") + " · " +
       (s.config ? s.config.port + " @" + s.config.baud : "") + (s.sim ? " · simulator" : "");
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
@@ -818,11 +830,13 @@
   function updateModeHint() {
     var hint = $("mode-hint");
     var sel = $("cfg-mode");
+    var cdInput = $("cfg-countdown");
+    var cdVal = (cdInput && parseInt(cdInput.value, 10)) || countdownSecondsCfg();
     if (!hint || !sel) { return; }
     if (sel.value === "test") {
       hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls for bench/pad checkout.";
     } else {
-      hint.textContent = "LIVE combines SRV+IGN into one button locked until fill completes, with a 5 s launch countdown.";
+      hint.textContent = "LIVE combines SRV+IGN into one button locked until fill completes, with a " + cdVal + " s launch countdown.";
     }
   }
 
@@ -830,8 +844,9 @@
     if (snapshot && snapshot.config) { config = snapshot.config; }
     var cfg = config || {};
     $("cfg-mode").value = (cfg.op_mode === "test") ? "test" : "live";
-    updateModeHint();
     $("cfg-fill").value = cfg.fill_seconds || 60;
+    $("cfg-countdown").value = cfg.countdown_seconds || 5;
+    updateModeHint();
     $("cfg-confirm").checked = !!cfg.confirm_ign;
     $("cfg-sound").checked = !!cfg.sound;
     var bauds = [9600, 19200, 38400, 57600, 115200, 230400];
@@ -962,6 +977,7 @@
     $("btn-settings").addEventListener("click", openSettings);
     $("pill-opmode").addEventListener("click", openSettings);
     $("cfg-mode").addEventListener("change", updateModeHint);
+    $("cfg-countdown").addEventListener("input", updateModeHint);
     $("btn-settings-close").addEventListener("click", function () { stopRecording(); $("settings").close(); });
     $("settings").addEventListener("close", stopRecording);
     $("btn-refresh-ports").addEventListener("click", refreshPorts);
@@ -971,6 +987,7 @@
       var payload = {
         op_mode: $("cfg-mode").value,
         fill_seconds: parseInt($("cfg-fill").value, 10),
+        countdown_seconds: parseInt($("cfg-countdown").value, 10),
         port: $("cfg-port").value,
         baud: parseInt($("cfg-baud").value, 10),
         confirm_ign: $("cfg-confirm").checked,

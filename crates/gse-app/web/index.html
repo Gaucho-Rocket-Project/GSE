@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=4">
+<link rel="stylesheet" href="/app.css?v=5">
 </head>
 <body>
 <div class="crt">
@@ -280,7 +280,7 @@
         <legend>operating mode</legend>
         <label>control setup
           <select id="cfg-mode">
-            <option value="live">LIVE — Launch setup (FILL → 5 s countdown → SRV+IGN)</option>
+            <option value="live">LIVE — Launch setup (FILL → countdown → SRV+IGN)</option>
             <option value="test">TEST — Vehicle control test (independent FILL, SRV, IGN)</option>
           </select>
         </label>
@@ -305,6 +305,9 @@
         <legend>sequence</legend>
         <label>fill duration (seconds)
           <input type="number" id="cfg-fill" min="1" max="600" step="1">
+        </label>
+        <label>srv+ign countdown (seconds)
+          <input type="number" id="cfg-countdown" min="1" max="600" step="1">
         </label>
         <label class="check"><input type="checkbox" id="cfg-confirm"> ask before IGN PWR (TEST mode)</label>
         <label class="check"><input type="checkbox" id="cfg-sound"> audible alerts</label>
@@ -341,6 +344,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=4"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

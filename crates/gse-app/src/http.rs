@@ -589,6 +589,21 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
         }
         patch.fill_seconds = Some(seconds as u16);
     }
+    if let Some(v) = body.get("countdown_seconds") {
+        let seconds = v
+            .as_i64()
+            .ok_or_else(|| "countdown_seconds must be a number".to_string())?;
+        if seconds < gse_proto::MIN_COUNTDOWN_SECONDS as i64
+            || seconds > gse_proto::MAX_COUNTDOWN_SECONDS as i64
+        {
+            return Err(format!(
+                "countdown_seconds must be between {} and {}",
+                gse_proto::MIN_COUNTDOWN_SECONDS,
+                gse_proto::MAX_COUNTDOWN_SECONDS
+            ));
+        }
+        patch.countdown_seconds = Some(seconds as u16);
+    }
     if let Some(v) = body.get("port") {
         let port = v
             .as_str()
@@ -786,13 +801,18 @@ mod tests {
     #[test]
     fn config_validation() {
         let mut r = request("POST", "/api/config");
-        r.body = br#"{"op_mode":"test","fill_seconds":90,"baud":115200,"port":"auto"}"#.to_vec();
+        r.body = br#"{"op_mode":"test","fill_seconds":90,"countdown_seconds":8,"baud":115200,"port":"auto"}"#.to_vec();
         let patch = parse_config_patch(&r).unwrap();
         assert_eq!(patch.op_mode, Some(OperationMode::Test));
         assert_eq!(patch.fill_seconds, Some(90));
+        assert_eq!(patch.countdown_seconds, Some(8));
         r.body = br#"{"op_mode":"nope"}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"fill_seconds":9999}"#.to_vec();
+        assert!(parse_config_patch(&r).is_err());
+        r.body = br#"{"countdown_seconds":0}"#.to_vec();
+        assert!(parse_config_patch(&r).is_err());
+        r.body = br#"{"countdown_seconds":9999}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"baud":1234}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());

@@ -100,6 +100,12 @@ def main():
         "controls initialised OFF/SAFE",
     )
     check(s["config"]["op_mode"] == "live", "default operating mode is LIVE")
+    check(
+        s["config"]["countdown_seconds"] == 5 and s["countdown"]["duration_ms"] == 5000,
+        "default SRV+IGN countdown is 5 seconds",
+    )
+    bad_cd, _ = request_status("/api/config", {"countdown_seconds": 0})
+    check(bad_cd == 400, "out-of-range countdown_seconds is rejected")
     check(s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE", "startup state is OFF/SAFE")
     check(not s["vehicle"]["state"]["fill"], "vehicle FILL off at initialisation")
     check(not s["vehicle"]["state"]["srv"], "vehicle SRV off at initialisation")
@@ -177,6 +183,35 @@ def main():
         s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE",
         "operator SRV+IGN -> OFF returned vehicle cleanly to OFF/SAFE",
     )
+
+    # Also verify modifying countdown_seconds in Settings (e.g. 2 s, same as fill_seconds).
+    request("/api/config", {"countdown_seconds": 2})
+    s = wait_for(
+        lambda st: st["config"]["countdown_seconds"] == 2 and st["countdown"]["duration_ms"] == 2000,
+        "custom 2 s countdown_seconds applied",
+    )
+    t_custom = time.monotonic()
+    request("/api/command", {"action": "srv_ign_on"})
+    s = wait_for(lambda st: st["countdown"]["active"], "2 s custom countdown active")
+    check(
+        s["countdown"]["duration_ms"] == 2000 and 500 <= s["countdown"]["remaining_ms"] <= 2000,
+        f"custom 2 s countdown exposed to UI (remaining={s['countdown']['remaining_ms']} ms)",
+    )
+    s = wait_for(
+        lambda st: st["controls"]["srv"] == "ON"
+        and st["controls"]["ign"] == "PWR"
+        and st["actions"]["srv_ign_off"]["enabled"],
+        "SRV+IGN -> ON acknowledged after modified 2 s countdown",
+        timeout=6,
+    )
+    elapsed_custom = time.monotonic() - t_custom
+    check(
+        1.9 <= elapsed_custom < 4.0,
+        f"modified 2 s countdown fired SRV+IGN -> ON on schedule ({elapsed_custom:.2f} s)",
+    )
+    request("/api/command", {"action": "srv_ign_off"})
+    wait_for(lambda st: st["controls"]["safe"], "SRV+IGN -> OFF after custom countdown")
+    request("/api/config", {"countdown_seconds": 5})
 
     # Clear completed-fill latch before switching to TEST mode.
     request("/api/command", {"action": "reset_controls"})

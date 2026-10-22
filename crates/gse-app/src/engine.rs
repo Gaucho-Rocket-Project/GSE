@@ -45,8 +45,6 @@ const SHUTDOWN_CANCEL_AFTER_MS: u64 = 500;
 /// anyway. The board owns the fill timer (see [`auto_off_due`]); this only
 /// matters if its countdown never reaches zero.
 const AUTO_OFF_HOST_GRACE: Duration = Duration::from_secs(5);
-/// Mandatory on-screen countdown before `SRV+IGN` energises in `LIVE` mode.
-pub const LIVE_SRV_IGN_COUNTDOWN: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserAction {
@@ -254,6 +252,7 @@ impl Origin {
 pub struct ConfigPatch {
     pub op_mode: Option<OperationMode>,
     pub fill_seconds: Option<u16>,
+    pub countdown_seconds: Option<u16>,
     pub port: Option<String>,
     pub baud: Option<u32>,
     pub confirm_ign: Option<bool>,
@@ -501,6 +500,17 @@ impl Engine {
                 }
                 notes.push(format!("fill time set to {secs} s"));
             }
+            if let Some(secs) = patch.countdown_seconds {
+                let secs = secs.clamp(
+                    gse_proto::MIN_COUNTDOWN_SECONDS,
+                    gse_proto::MAX_COUNTDOWN_SECONDS,
+                );
+                st.config.countdown_seconds = secs;
+                if !st.countdown.active {
+                    st.countdown.duration_ms = (secs as u32) * 1000;
+                }
+                notes.push(format!("SRV+IGN countdown time set to {secs} s"));
+            }
             if let Some(port) = patch.port {
                 if port != st.config.port {
                     st.config.port = port;
@@ -608,10 +618,11 @@ impl Engine {
             return;
         }
         let countdown_active = self.live_countdown_deadline.is_some();
-        let (gate, fill_seconds) = {
+        let (gate, fill_seconds, countdown_seconds) = {
             let st = self.shared.lock();
             let inputs = safety::Inputs {
                 mode: st.config.op_mode,
+                countdown_seconds: st.config.countdown_seconds,
                 ground_online: st.ground.status == GroundStatus::Online,
                 vehicle_online: st.vehicle_online(),
                 pending: st.pending.is_some(),
@@ -623,6 +634,7 @@ impl Engine {
             (
                 gates.get(action.id()).cloned().unwrap_or_default(),
                 st.config.fill_seconds,
+                st.config.countdown_seconds,
             )
         };
 
@@ -687,7 +699,7 @@ impl Engine {
         }
 
         if action == UserAction::SrvIgnOn {
-            let duration = LIVE_SRV_IGN_COUNTDOWN;
+            let duration = Duration::from_secs(countdown_seconds as u64);
             let duration_ms = duration.as_millis() as u64;
             self.live_countdown_deadline = Some(Instant::now() + duration);
             {

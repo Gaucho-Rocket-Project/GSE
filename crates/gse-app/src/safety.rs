@@ -31,10 +31,11 @@ use crate::state::{ActionState, Actions};
 
 pub struct Inputs {
     pub mode: OperationMode,
+    pub countdown_seconds: u16,
     pub ground_online: bool,
     pub vehicle_online: bool,
     pub pending: bool,
-    /// True during the 5-second LIVE launch countdown before `SRV+IGN ON`.
+    /// True during the LIVE launch countdown before `SRV+IGN ON`.
     pub countdown_active: bool,
     /// The startup/reset handshake confirmed FILL OFF, SRV OFF, IGN SAFE.
     pub controls_ready: bool,
@@ -135,7 +136,10 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
     };
 
     let countdown_gate = if inputs.countdown_active {
-        Some(blocked("SRV+IGN 5 s countdown in progress"))
+        Some(blocked(format!(
+            "SRV+IGN {} s countdown in progress",
+            inputs.countdown_seconds
+        )))
     } else {
         None
     };
@@ -239,6 +243,7 @@ mod tests {
     fn online(state: StateSnapshot) -> Inputs {
         Inputs {
             mode: OperationMode::Test,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             ground_online: true,
             vehicle_online: true,
             pending: false,
@@ -259,6 +264,7 @@ mod tests {
     fn everything_blocked_when_offline() {
         let actions = evaluate(&Inputs {
             mode: OperationMode::Test,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             ground_online: false,
             vehicle_online: false,
             pending: false,
@@ -278,6 +284,7 @@ mod tests {
     fn controls_wait_for_the_startup_safe_handshake() {
         let actions = evaluate(&Inputs {
             mode: OperationMode::Live,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             ground_online: true,
             vehicle_online: true,
             pending: false,
@@ -423,6 +430,7 @@ mod tests {
     fn estop_available_during_pending() {
         let actions = evaluate(&Inputs {
             mode: OperationMode::Live,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             ground_online: true,
             vehicle_online: true,
             pending: true,
@@ -451,6 +459,7 @@ mod tests {
         // A greyed-out control must always explain itself.
         let actions = evaluate(&Inputs {
             mode: OperationMode::Test,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             ground_online: true,
             vehicle_online: true,
             pending: false,
