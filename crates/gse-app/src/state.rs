@@ -30,6 +30,8 @@ pub struct Actions {
     pub srv_off: ActionState,
     pub ign_pwr: ActionState,
     pub ign_safe: ActionState,
+    pub srv_ign_on: ActionState,
+    pub srv_ign_off: ActionState,
     pub reset_controls: ActionState,
     pub reset_fill: ActionState,
     pub clear_faults: ActionState,
@@ -45,6 +47,8 @@ impl Actions {
             "srv_off" => &self.srv_off,
             "ign_pwr" => &self.ign_pwr,
             "ign_safe" => &self.ign_safe,
+            "srv_ign_on" => &self.srv_ign_on,
+            "srv_ign_off" => &self.srv_ign_off,
             "reset_controls" => &self.reset_controls,
             "reset_fill" => &self.reset_fill,
             "clear_faults" => &self.clear_faults,
@@ -62,6 +66,8 @@ impl Actions {
             ("srv_off", &self.srv_off),
             ("ign_pwr", &self.ign_pwr),
             ("ign_safe", &self.ign_safe),
+            ("srv_ign_on", &self.srv_ign_on),
+            ("srv_ign_off", &self.srv_ign_off),
             ("reset_controls", &self.reset_controls),
             ("reset_fill", &self.reset_fill),
             ("clear_faults", &self.clear_faults),
@@ -179,6 +185,15 @@ pub struct FillUi {
     pub completed_at_epoch_ms: u64,
 }
 
+/// Live-mode 5 s `SRV+IGN` countdown projection for the UI and SSE stream.
+#[derive(Clone, Default)]
+pub struct CountdownUi {
+    pub active: bool,
+    pub duration_ms: u32,
+    pub remaining_ms: u32,
+    pub ends_at_epoch_ms: u64,
+}
+
 /// Projection of the deterministic control machine for the UI.
 #[derive(Clone, Debug)]
 pub struct ControlsUi {
@@ -276,6 +291,7 @@ pub struct AppState {
     pub actions: Actions,
     pub controls: ControlsUi,
     pub fill: FillUi,
+    pub countdown: CountdownUi,
     pub pending: Option<PendingInfo>,
     pub log: VecDeque<LogEntry>,
     pub next_log_id: u64,
@@ -304,6 +320,7 @@ impl AppState {
             vehicle: VehicleInfo::default(),
             actions: Actions::default(),
             controls: ControlsUi::default(),
+            countdown: CountdownUi::default(),
             pending: None,
             log: VecDeque::new(),
             next_log_id: 1,
@@ -353,10 +370,23 @@ impl AppState {
         let now = clock::unix_ms();
         self.now_epoch_ms = now;
         self.host_uptime_ms = now.saturating_sub(self.started_epoch_ms);
+        if self.countdown.active {
+            self.countdown.remaining_ms = self
+                .countdown
+                .ends_at_epoch_ms
+                .saturating_sub(now)
+                .min(u32::MAX as u64) as u32;
+        } else {
+            self.countdown.duration_ms = (self.config.countdown_seconds as u32) * 1000;
+            self.countdown.remaining_ms = 0;
+        }
         self.actions = safety::evaluate(&safety::Inputs {
+            mode: self.config.op_mode,
+            countdown_seconds: self.config.countdown_seconds,
             ground_online: self.ground.status == GroundStatus::Online,
             vehicle_online: self.vehicle.status == VehicleStatus::Online,
             pending: self.pending.is_some(),
+            countdown_active: self.countdown.active,
             controls_ready: self.controls.ready,
             state: self.vehicle.state,
         });
@@ -720,6 +750,31 @@ impl AppState {
         );
         fill.push('}');
         json::field(&mut out, "fill", &fill);
+
+        let mut countdown = String::from("{");
+        json::field(
+            &mut countdown,
+            "active",
+            json::bool_json(self.countdown.active),
+        );
+        json::field(
+            &mut countdown,
+            "duration_ms",
+            &self.countdown.duration_ms.to_string(),
+        );
+        json::field(
+            &mut countdown,
+            "remaining_ms",
+            &self.countdown.remaining_ms.to_string(),
+        );
+        json::field(
+            &mut countdown,
+            "ends_at",
+            &self.countdown.ends_at_epoch_ms.to_string(),
+        );
+        countdown.push('}');
+        json::field(&mut out, "countdown", &countdown);
+
         json::field(&mut out, "actions", &self.actions.to_json());
 
         match &self.pending {

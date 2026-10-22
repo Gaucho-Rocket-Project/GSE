@@ -108,7 +108,8 @@ impl fmt::Display for MsgType {
     }
 }
 
-/// The three vehicle controls, plus a system pseudo-control.
+/// The vehicle controls (three individual channels, the combined live-launch
+/// `SRV+IGN` pair, plus a system pseudo-control).
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Control {
@@ -116,6 +117,7 @@ pub enum Control {
     Fill = 1,
     Srv = 2,
     Ign = 3,
+    SrvIgn = 4,
 }
 
 impl Control {
@@ -129,6 +131,7 @@ impl Control {
             1 => Some(Control::Fill),
             2 => Some(Control::Srv),
             3 => Some(Control::Ign),
+            4 => Some(Control::SrvIgn),
             _ => None,
         }
     }
@@ -139,6 +142,7 @@ impl Control {
             Control::Fill => "FILL",
             Control::Srv => "SRV",
             Control::Ign => "IGN",
+            Control::SrvIgn => "SRV+IGN",
         }
     }
 }
@@ -459,11 +463,12 @@ mod tests {
 
     #[test]
     fn control_roundtrip() {
-        for value in 0..=3u8 {
+        for value in 0..=4u8 {
             let c = Control::from_u8(value).unwrap();
             assert_eq!(c.as_u8(), value);
         }
-        assert!(Control::from_u8(4).is_none());
+        assert!(Control::from_u8(5).is_none());
+        assert_eq!(Control::SrvIgn.label(), "SRV+IGN");
     }
 
     #[test]

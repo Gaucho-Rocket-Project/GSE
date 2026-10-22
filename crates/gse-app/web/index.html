@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=3">
+<link rel="stylesheet" href="/app.css?v=5">
 </head>
 <body>
 <div class="crt">
@@ -39,9 +39,14 @@
         <span class="pill-label">LINK</span>
         <span class="pill-value" id="rtt-text">–</span>
       </div>
+      <div class="pill clickable" id="pill-opmode" data-state="live" title="Click to switch LIVE / TEST in Settings">
+        <span class="dot"></span>
+        <span class="pill-label">SETUP</span>
+        <span class="pill-value" id="opmode-text">LIVE</span>
+      </div>
       <div class="pill" id="pill-mode" data-state="live">
         <span class="dot"></span>
-        <span class="pill-label">MODE</span>
+        <span class="pill-label">TARGET</span>
         <span class="pill-value" id="mode-text">LIVE</span>
       </div>
     </div>
@@ -49,7 +54,7 @@
     <div class="term-actions">
       <button class="btn ghost" id="btn-connect" type="button" title="Scan for the ground board">connect</button>
       <button class="btn ghost" id="btn-disconnect" type="button" title="Close the serial link">disconnect</button>
-      <button class="btn ghost" id="btn-settings" type="button" title="Configuration and key bindings">settings</button>
+      <button class="btn ghost" id="btn-settings" type="button" title="Configuration, operating mode and key bindings">settings</button>
     </div>
   </header>
 
@@ -64,6 +69,7 @@
 
       <div class="rail-block">
         <div class="rail-k">PROCESSES</div>
+        <div class="rail-line"><span class="rail-name">setup</span><span class="rail-v hot" id="proc-opmode">LIVE</span></div>
         <div class="rail-line"><span class="rail-name">gse-app</span><span class="rail-v ok" id="proc-app">ONLINE</span></div>
         <div class="rail-line"><span class="rail-name">gse-sim</span><span class="rail-v" id="proc-sim">STANDBY</span></div>
         <div class="rail-line"><span class="rail-name">sx1281-rf</span><span class="rail-v" id="proc-lora">OFFLINE</span></div>
@@ -74,7 +80,7 @@
         <div class="rail-line"><span class="rail-name">init safe</span><span class="rail-v" id="gate-init">WAIT</span></div>
         <div class="rail-line"><span class="rail-name">fill ↔ srv</span><span class="rail-v" id="gate-interlock">CLEAR</span></div>
         <div class="rail-line"><span class="rail-name">fill seq</span><span class="rail-v" id="gate-fill">IDLE</span></div>
-        <div class="rail-line"><span class="rail-name">ign gate</span><span class="rail-v" id="gate-ign">LOCKED</span></div>
+        <div class="rail-line"><span class="rail-name" id="gate-ign-name">srv+ign</span><span class="rail-v" id="gate-ign">LOCKED</span></div>
       </div>
 
       <div class="rail-block">
@@ -89,16 +95,16 @@
       <!-- control console -->
       <section class="console-pane controls-pane" id="pane-controls" aria-labelledby="h-controls">
         <div class="pane-head">
-          <h2 class="pane-k" id="h-controls">CONTROL CONSOLE</h2>
+          <h2 class="pane-k" id="h-controls">CONTROL CONSOLE // LIVE</h2>
           <span class="pane-v" id="pending-text">No command in flight</span>
         </div>
         <div class="pane-body">
           <div class="machine-line" id="machine-line" aria-live="polite">
-            <span class="machine-k">CTRL STATE</span>
+            <span class="machine-k" id="machine-k">CTRL STATE [LIVE]</span>
             <span class="machine-v" id="machine-text">INIT · FILL OFF · SRV OFF · IGN SAFE</span>
           </div>
 
-          <div class="control-grid">
+          <div class="control-grid is-live" id="control-grid">
             <button class="control toggle-ctl" id="btn-fill" data-toggle="fill_toggle" type="button">
               <span class="ctl-top">
                 <span class="ctl-head">
@@ -114,7 +120,22 @@
               <span class="ctl-why" id="why-fill"></span>
             </button>
 
-            <button class="control toggle-ctl" id="btn-srv" data-toggle="srv_toggle" type="button">
+            <button class="control toggle-ctl danger" id="btn-srv-ign" data-toggle="srv_ign_toggle" type="button">
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">SRV+IGN</span><span class="ctl-switch">[<span class="sw-opt sw-pwr" id="sw-srv-ign-on">ON</span>/<span class="sw-opt sw-safe active" id="sw-srv-ign-off">OFF</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="srv_ign_on">L</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-srv-ign">OFF/SAFE</span>
+                <span class="ctl-desc" id="desc-srv-ign">Combined launch channel · gated</span>
+              </span>
+              <span class="ctl-why" id="why-srv-ign"></span>
+            </button>
+
+            <button class="control toggle-ctl" id="btn-srv" data-toggle="srv_toggle" type="button" hidden>
               <span class="ctl-top">
                 <span class="ctl-head">
                   <span class="prompt">&gt;</span>
@@ -129,7 +150,7 @@
               <span class="ctl-why" id="why-srv"></span>
             </button>
 
-            <button class="control toggle-ctl danger" id="btn-ign" data-toggle="ign_toggle" type="button">
+            <button class="control toggle-ctl danger" id="btn-ign" data-toggle="ign_toggle" type="button" hidden>
               <span class="ctl-top">
                 <span class="ctl-head">
                   <span class="prompt">&gt;</span>
@@ -143,6 +164,18 @@
               </span>
               <span class="ctl-why" id="why-ign"></span>
             </button>
+          </div>
+
+          <div class="countdown-banner" id="countdown-banner" hidden role="status" aria-live="assertive">
+            <div class="cd-head">
+              <span class="cd-title">&gt;&gt; LIVE LAUNCH COUNTDOWN · SRV+IGN -&gt; ON/PWR</span>
+              <span class="cd-time" id="countdown-time">T - 5.0 s</span>
+            </div>
+            <div class="cd-bar"><div class="cd-bar-fill" id="countdown-fill"></div></div>
+            <div class="cd-foot">
+              <span>Outputs remain OFF/SAFE until T-0.0 s</span>
+              <span>Press E-STOP [E] or RESET [Shift+R] to abort</span>
+            </div>
           </div>
 
           <div class="fill-bar-wrap">
@@ -235,13 +268,24 @@
   <footer class="term-foot">
     <span id="foot-config">config: –</span>
     <span id="foot-session">log: –</span>
-    <span id="foot-keys">keys: F fill · S srv · I ign · E e-stop · Shift+R reset · R reset fill · Shift+C faults</span>
+    <span id="foot-keys">keys: F fill · L srv+ign · E e-stop · Shift+R reset · R reset fill · Shift+C faults</span>
   </footer>
 
   <!-- settings dialog -->
   <dialog id="settings" class="settings">
     <form method="dialog" class="settings-inner" id="settings-form">
       <h2>settings</h2>
+
+      <fieldset>
+        <legend>operating mode</legend>
+        <label>control setup
+          <select id="cfg-mode">
+            <option value="live">LIVE — Launch setup (FILL → countdown → SRV+IGN)</option>
+            <option value="test">TEST — Vehicle control test (independent FILL, SRV, IGN)</option>
+          </select>
+        </label>
+        <p class="hint" id="mode-hint">LIVE combines SRV+IGN after a completed fill with a 5 s launch countdown.</p>
+      </fieldset>
 
       <fieldset>
         <legend>link</legend>
@@ -262,7 +306,10 @@
         <label>fill duration (seconds)
           <input type="number" id="cfg-fill" min="1" max="600" step="1">
         </label>
-        <label class="check"><input type="checkbox" id="cfg-confirm"> ask before IGN PWR</label>
+        <label>srv+ign countdown (seconds)
+          <input type="number" id="cfg-countdown" min="1" max="600" step="1">
+        </label>
+        <label class="check"><input type="checkbox" id="cfg-confirm"> ask before IGN PWR (TEST mode)</label>
         <label class="check"><input type="checkbox" id="cfg-sound"> audible alerts</label>
       </fieldset>
 
@@ -297,6 +344,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=3"></script>
+<script src="/app.js?v=5"></script>
 </body>
 </html>

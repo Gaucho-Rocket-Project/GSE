@@ -18,10 +18,11 @@ use gse_proto::{
 };
 
 use crate::clock;
+use crate::config::OperationMode;
 use crate::logging::{Level, Source};
 use crate::safety;
 use crate::serial;
-use crate::state::{GroundStatus, PendingInfo, Shared, VehicleStatus};
+use crate::state::{CountdownUi, GroundStatus, PendingInfo, Shared, VehicleStatus};
 use crate::transport::{is_tcp_spec, open_link, ByteLink};
 
 const TICK_MS: u64 = 10;
@@ -53,6 +54,8 @@ pub enum UserAction {
     SrvOff,
     IgnPwr,
     IgnSafe,
+    SrvIgnOn,
+    SrvIgnOff,
     ResetControls,
     ResetFill,
     ClearFaults,
@@ -68,6 +71,8 @@ impl UserAction {
             "srv_off" => UserAction::SrvOff,
             "ign_pwr" => UserAction::IgnPwr,
             "ign_safe" => UserAction::IgnSafe,
+            "srv_ign_on" => UserAction::SrvIgnOn,
+            "srv_ign_off" => UserAction::SrvIgnOff,
             "reset_controls" => UserAction::ResetControls,
             "reset_fill" => UserAction::ResetFill,
             "clear_faults" => UserAction::ClearFaults,
@@ -84,6 +89,8 @@ impl UserAction {
             UserAction::SrvOff => "srv_off",
             UserAction::IgnPwr => "ign_pwr",
             UserAction::IgnSafe => "ign_safe",
+            UserAction::SrvIgnOn => "srv_ign_on",
+            UserAction::SrvIgnOff => "srv_ign_off",
             UserAction::ResetControls => "reset_controls",
             UserAction::ResetFill => "reset_fill",
             UserAction::ClearFaults => "clear_faults",
@@ -99,6 +106,8 @@ impl UserAction {
             UserAction::SrvOff => "SRV OFF",
             UserAction::IgnPwr => "IGN PWR",
             UserAction::IgnSafe => "IGN SAFE",
+            UserAction::SrvIgnOn => "SRV+IGN ON",
+            UserAction::SrvIgnOff => "SRV+IGN OFF",
             UserAction::ResetControls => "RESET CONTROLS",
             UserAction::ResetFill => "RESET FILL SEQ",
             UserAction::ClearFaults => "CLEAR FAULTS",
@@ -150,6 +159,20 @@ impl UserAction {
                 arg_s: 0,
                 flags,
             },
+            UserAction::SrvIgnOn => Command {
+                cmd_id,
+                control: Control::SrvIgn,
+                action: ACTION_ON,
+                arg_s: 0,
+                flags,
+            },
+            UserAction::SrvIgnOff => Command {
+                cmd_id,
+                control: Control::SrvIgn,
+                action: ACTION_OFF,
+                arg_s: 0,
+                flags,
+            },
             UserAction::ResetControls => Command {
                 cmd_id,
                 control: Control::System,
@@ -193,6 +216,8 @@ impl UserAction {
             UserAction::SrvOff => Some(ControlEvent::SrvOff),
             UserAction::IgnPwr => Some(ControlEvent::IgnPwr),
             UserAction::IgnSafe => Some(ControlEvent::IgnSafe),
+            UserAction::SrvIgnOn => Some(ControlEvent::SrvIgnOn),
+            UserAction::SrvIgnOff => Some(ControlEvent::SrvIgnOff),
             UserAction::ResetControls => Some(ControlEvent::Reset),
             UserAction::Estop => Some(ControlEvent::SafeAll),
             UserAction::ResetFill | UserAction::ClearFaults => None,
@@ -205,6 +230,8 @@ impl UserAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
     Operator,
+    /// Dispatched automatically when the 5 s LIVE `SRV+IGN` countdown hits T-0.
+    LiveCountdown,
     /// Automatic FILL OFF at the configured deadline.
     AutoFill,
     /// Startup handshake: force everything OFF/SAFE before enabling controls.
@@ -217,13 +244,15 @@ enum Origin {
 
 impl Origin {
     fn is_operator(self) -> bool {
-        matches!(self, Origin::Operator)
+        matches!(self, Origin::Operator | Origin::LiveCountdown)
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigPatch {
+    pub op_mode: Option<OperationMode>,
     pub fill_seconds: Option<u16>,
+    pub countdown_seconds: Option<u16>,
     pub port: Option<String>,
     pub baud: Option<u32>,
     pub confirm_ign: Option<bool>,
@@ -282,6 +311,7 @@ pub struct Engine {
     fill_deadline: Option<Instant>,
     fill_started: Option<Instant>,
     auto_off_sent: bool,
+    live_countdown_deadline: Option<Instant>,
     prev_state: StateSnapshot,
     prev_vehicle_uptime: Option<u32>,
     ground_announced: bool,
@@ -329,6 +359,7 @@ impl Engine {
             fill_deadline: None,
             fill_started: None,
             auto_off_sent: false,
+            live_countdown_deadline: None,
             prev_state: StateSnapshot::default(),
             prev_vehicle_uptime: None,
             ground_announced: false,
@@ -436,6 +467,31 @@ impl Engine {
         {
             let mut st = self.shared.lock();
             let old = st.config.clone();
+            if let Some(mode) = patch.op_mode {
+                if mode != st.config.op_mode {
+                    let target_unsafe = st.controls.target.is_some_and(|target| !target.is_safe());
+                    if !st.vehicle.state.outputs_safe()
+                        || target_unsafe
+                        || self.live_countdown_deadline.is_some()
+                    {
+                        drop(st);
+                        self.shared.log(
+                            Level::Warn,
+                            Source::Operator,
+                            "Cannot change operating mode while controls or countdown are active"
+                                .to_string(),
+                            Some("mode_blocked"),
+                        );
+                        return;
+                    }
+                    st.config.op_mode = mode;
+                    st.refresh();
+                    notes.push(format!(
+                        "operating mode set to {}",
+                        mode.as_str().to_uppercase()
+                    ));
+                }
+            }
             if let Some(secs) = patch.fill_seconds {
                 let secs = secs.clamp(gse_proto::MIN_FILL_SECONDS, gse_proto::MAX_FILL_SECONDS);
                 st.config.fill_seconds = secs;
@@ -443,6 +499,17 @@ impl Engine {
                     st.fill.duration_s = secs;
                 }
                 notes.push(format!("fill time set to {secs} s"));
+            }
+            if let Some(secs) = patch.countdown_seconds {
+                let secs = secs.clamp(
+                    gse_proto::MIN_COUNTDOWN_SECONDS,
+                    gse_proto::MAX_COUNTDOWN_SECONDS,
+                );
+                st.config.countdown_seconds = secs;
+                if !st.countdown.active {
+                    st.countdown.duration_ms = (secs as u32) * 1000;
+                }
+                notes.push(format!("SRV+IGN countdown time set to {secs} s"));
             }
             if let Some(port) = patch.port {
                 if port != st.config.port {
@@ -519,6 +586,27 @@ impl Engine {
         }
     }
 
+    fn cancel_live_countdown(&mut self, reason: Option<&str>) {
+        if self.live_countdown_deadline.take().is_none() {
+            return;
+        }
+        {
+            let mut st = self.shared.lock();
+            st.countdown = CountdownUi::default();
+            st.refresh();
+            st.revision = st.revision.wrapping_add(1);
+        }
+        if let Some(msg) = reason {
+            self.shared.log(
+                Level::Warn,
+                Source::App,
+                msg.to_string(),
+                Some("countdown_cancelled"),
+            );
+        }
+        self.shared.publish();
+    }
+
     fn user_action(&mut self, action: UserAction) {
         if self.shutting_down {
             self.shared.log(
@@ -529,12 +617,16 @@ impl Engine {
             );
             return;
         }
-        let (gate, fill_seconds) = {
+        let countdown_active = self.live_countdown_deadline.is_some();
+        let (gate, fill_seconds, countdown_seconds) = {
             let st = self.shared.lock();
             let inputs = safety::Inputs {
+                mode: st.config.op_mode,
+                countdown_seconds: st.config.countdown_seconds,
                 ground_online: st.ground.status == GroundStatus::Online,
                 vehicle_online: st.vehicle_online(),
                 pending: st.pending.is_some(),
+                countdown_active,
                 controls_ready: st.controls.ready,
                 state: st.vehicle.state,
             };
@@ -542,10 +634,12 @@ impl Engine {
             (
                 gates.get(action.id()).cloned().unwrap_or_default(),
                 st.config.fill_seconds,
+                st.config.countdown_seconds,
             )
         };
 
         if action == UserAction::Estop {
+            self.cancel_live_countdown(Some("SRV+IGN countdown aborted by E-STOP"));
             // Never blocked by a pending command, but requires a live link.
             if self.link.is_none() || !gate.enabled {
                 self.shared.log(
@@ -581,6 +675,10 @@ impl Engine {
             return;
         }
 
+        if action == UserAction::ResetControls {
+            self.cancel_live_countdown(Some("SRV+IGN countdown cancelled by RESET CONTROLS"));
+        }
+
         if !gate.enabled {
             self.shared.log(
                 Level::Warn,
@@ -599,6 +697,34 @@ impl Engine {
             );
             return;
         }
+
+        if action == UserAction::SrvIgnOn {
+            let duration = Duration::from_secs(countdown_seconds as u64);
+            let duration_ms = duration.as_millis() as u64;
+            self.live_countdown_deadline = Some(Instant::now() + duration);
+            {
+                let mut st = self.shared.lock();
+                st.countdown = CountdownUi {
+                    active: true,
+                    duration_ms: duration_ms as u32,
+                    remaining_ms: duration_ms as u32,
+                    ends_at_epoch_ms: clock::unix_ms() + duration_ms,
+                };
+                st.controls.last_event = Some("srv_ign_countdown");
+                st.controls.last_result = Some("countdown");
+                st.refresh();
+                st.revision = st.revision.wrapping_add(1);
+            }
+            self.shared.log(
+                Level::Warn,
+                Source::Operator,
+                format!("SRV+IGN armed - {} s countdown started", duration.as_secs()),
+                Some("srv_ign_countdown"),
+            );
+            self.shared.publish();
+            return;
+        }
+
         self.send_action(action, fill_seconds, 0, Origin::Operator);
     }
 
@@ -623,7 +749,7 @@ impl Engine {
             Origin::StartupSafe => "STARTUP ALL SAFE".to_string(),
             Origin::ShutdownSafe => "SHUTDOWN ALL SAFE".to_string(),
             Origin::ResetFollowUp => "RESET FILL SEQ (auto)".to_string(),
-            Origin::Operator => action.label().to_string(),
+            Origin::Operator | Origin::LiveCountdown => action.label().to_string(),
         };
         if !self.send(Message::Command(command), Endpoint::Vehicle) {
             self.shared.log(
@@ -830,6 +956,7 @@ impl Engine {
         self.fill_deadline = None;
         self.fill_started = None;
         self.auto_off_sent = false;
+        self.live_countdown_deadline = None;
         self.prev_state = StateSnapshot::default();
         self.prev_vehicle_uptime = None;
         // A new link starts a new session: the machine goes back to INIT and
@@ -841,6 +968,7 @@ impl Engine {
             st.controls.ready = false;
             st.controls.target = None;
             st.controls.state = ControlState::SAFE;
+            st.countdown = CountdownUi::default();
             st.ground.status = GroundStatus::Connecting;
             st.ground.port = port.to_string();
             st.ground.error = None;
@@ -880,6 +1008,7 @@ impl Engine {
         self.fill_deadline = None;
         self.auto_off_sent = false;
         self.fill_started = None;
+        self.live_countdown_deadline = None;
         self.controls_ready = false;
         self.startup_safe_sent = false;
         self.decoder.reset();
@@ -887,6 +1016,7 @@ impl Engine {
             let mut st = self.shared.lock();
             st.controls.ready = false;
             st.controls.target = None;
+            st.countdown = CountdownUi::default();
             st.ground.status = if level == Level::Error {
                 GroundStatus::Error
             } else {
@@ -1050,6 +1180,9 @@ impl Engine {
         // Fill auto-off (host side, authoritative at the configured deadline).
         self.service_fill_auto_off(now);
 
+        // Live-mode 5 s SRV+IGN countdown -> atomic SRV+IGN ON at T-0.
+        self.service_live_countdown(now);
+
         // Ground board liveness.
         if let Some(last) = self.last_ground_rx {
             if now.duration_since(last) > Duration::from_millis(GROUND_TIMEOUT_MS) {
@@ -1072,12 +1205,21 @@ impl Engine {
             let pending_label = {
                 let mut st = self.shared.lock();
                 st.vehicle.status = VehicleStatus::Pinging;
+                st.countdown = CountdownUi::default();
                 st.revision = st.revision.wrapping_add(1);
                 let label = st.pending.as_ref().map(|p| p.label.clone());
                 st.pending = None;
                 label
             };
             self.pending = None;
+            if self.live_countdown_deadline.take().is_some() {
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    "SRV+IGN countdown aborted: vehicle link lost".to_string(),
+                    Some("countdown_cancelled"),
+                );
+            }
             if let Some(label) = pending_label {
                 self.shared.log(
                     Level::Warn,
@@ -1149,6 +1291,57 @@ impl Engine {
         drop(st);
         let _ = fill_seconds;
         self.send_action(UserAction::FillOff, 0, cmd_flags::AUTO, Origin::AutoFill);
+    }
+
+    fn service_live_countdown(&mut self, now: Instant) {
+        let deadline = match self.live_countdown_deadline {
+            Some(d) => d,
+            None => return,
+        };
+        if self.shutting_down {
+            self.cancel_live_countdown(Some("SRV+IGN countdown cancelled for shutdown"));
+            return;
+        }
+        let (mode, ground_online, vehicle_online, pending, state) = {
+            let st = self.shared.lock();
+            (
+                st.config.op_mode,
+                st.ground.status == GroundStatus::Online,
+                st.vehicle.status == VehicleStatus::Online,
+                st.pending.is_some(),
+                st.vehicle.state,
+            )
+        };
+        let allowed = mode == OperationMode::Live
+            && ground_online
+            && vehicle_online
+            && self.controls_ready
+            && !pending
+            && ControlState::from_snapshot(&state)
+                .transition(ControlEvent::SrvIgnOn, Interlocks::from_snapshot(&state))
+                .is_allowed();
+        if !allowed {
+            self.cancel_live_countdown(Some(
+                "SRV+IGN countdown aborted because a safety interlock changed",
+            ));
+            return;
+        }
+        if now < deadline {
+            return;
+        }
+        self.live_countdown_deadline = None;
+        {
+            let mut st = self.shared.lock();
+            st.countdown = CountdownUi::default();
+            st.revision = st.revision.wrapping_add(1);
+        }
+        self.send_action(UserAction::SrvIgnOn, 0, 0, Origin::LiveCountdown);
+        {
+            let mut st = self.shared.lock();
+            st.refresh();
+            st.revision = st.revision.wrapping_add(1);
+        }
+        self.shared.publish();
     }
 
     fn send_ping(&mut self, dst: Endpoint) {
@@ -1446,11 +1639,13 @@ impl Engine {
                 self.fill_deadline = None;
                 self.fill_started = None;
                 self.auto_off_sent = false;
+                self.live_countdown_deadline = None;
                 self.controls_ready = false;
                 self.startup_safe_sent = false;
                 let mut st = self.shared.lock();
                 st.controls.ready = false;
                 st.controls.target = None;
+                st.countdown = CountdownUi::default();
             }
         }
         self.prev_vehicle_uptime = Some(state.uptime_ms);
@@ -1908,6 +2103,7 @@ impl Engine {
         if self.shutting_down {
             return;
         }
+        self.cancel_live_countdown(Some("SRV+IGN countdown cancelled for shutdown"));
         self.shutting_down = true;
         self.shutdown = Some(ShutdownSeq {
             started: now,
@@ -2181,6 +2377,8 @@ mod tests {
         assert_eq!(UserAction::SrvOff.event(), Some(ControlEvent::SrvOff));
         assert_eq!(UserAction::IgnPwr.event(), Some(ControlEvent::IgnPwr));
         assert_eq!(UserAction::IgnSafe.event(), Some(ControlEvent::IgnSafe));
+        assert_eq!(UserAction::SrvIgnOn.event(), Some(ControlEvent::SrvIgnOn));
+        assert_eq!(UserAction::SrvIgnOff.event(), Some(ControlEvent::SrvIgnOff));
         assert_eq!(UserAction::ResetControls.event(), Some(ControlEvent::Reset));
         assert_eq!(UserAction::Estop.event(), Some(ControlEvent::SafeAll));
         // Latch-only commands must never move an output.
@@ -2204,6 +2402,13 @@ mod tests {
         assert_eq!(fill.control, Control::Fill);
         assert_eq!(fill.action, ACTION_ON);
         assert_eq!(fill.arg_s, 42);
+
+        let live_on = UserAction::SrvIgnOn.command(12, 0, 0);
+        assert_eq!(live_on.control, Control::SrvIgn);
+        assert_eq!(live_on.action, ACTION_ON);
+        let live_off = UserAction::SrvIgnOff.command(13, 0, 0);
+        assert_eq!(live_off.control, Control::SrvIgn);
+        assert_eq!(live_off.action, ACTION_OFF);
     }
 
     #[test]
@@ -2241,6 +2446,8 @@ mod tests {
             "srv_off",
             "ign_pwr",
             "ign_safe",
+            "srv_ign_on",
+            "srv_ign_off",
             "reset_controls",
             "reset_fill",
             "clear_faults",

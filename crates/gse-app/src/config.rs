@@ -2,15 +2,46 @@
 
 use std::path::Path;
 
-use gse_proto::{MAX_FILL_SECONDS, MIN_FILL_SECONDS};
+use gse_proto::{MAX_COUNTDOWN_SECONDS, MAX_FILL_SECONDS, MIN_COUNTDOWN_SECONDS, MIN_FILL_SECONDS};
 
 use crate::json::{self, Value};
+
+/// Operator control setup selected in Settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OperationMode {
+    /// Live launch sequence: `FILL` -> 5 s countdown -> `SRV+IGN` (`OFF/SAFE` <-> `ON/PWR`).
+    #[default]
+    Live,
+    /// Vehicle control checkout: independent `FILL`, `SRV`, and `IGN` controls.
+    Test,
+}
+
+impl OperationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            OperationMode::Live => "live",
+            OperationMode::Test => "test",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("live") {
+            Some(OperationMode::Live)
+        } else if v.eq_ignore_ascii_case("test") {
+            Some(OperationMode::Test)
+        } else {
+            None
+        }
+    }
+}
 
 /// Action ids used by the keyboard shortcut system.
 pub const SHORTCUT_ACTIONS: &[(&str, &str)] = &[
     ("fill_toggle", "FILL ON / OFF"),
-    ("srv_toggle", "SRV ON / OFF"),
-    ("ign_toggle", "IGN PWR / SAFE"),
+    ("srv_ign_toggle", "SRV+IGN ON / OFF (LIVE)"),
+    ("srv_toggle", "SRV ON / OFF (TEST)"),
+    ("ign_toggle", "IGN PWR / SAFE (TEST)"),
     ("estop", "All safe (E-STOP)"),
     ("reset_controls", "Reset all controls to OFF/SAFE"),
     ("reset_fill", "Reset fill sequence"),
@@ -19,6 +50,7 @@ pub const SHORTCUT_ACTIONS: &[(&str, &str)] = &[
 
 pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
     ("fill_toggle", "F"),
+    ("srv_ign_toggle", "L"),
     ("srv_toggle", "S"),
     ("ign_toggle", "I"),
     ("estop", "E"),
@@ -31,7 +63,9 @@ pub const BAUDS: &[u32] = &[9_600, 19_200, 38_400, 57_600, 115_200, 230_400];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
+    pub op_mode: OperationMode,
     pub fill_seconds: u16,
+    pub countdown_seconds: u16,
     /// `"auto"` for protocol-based port detection, otherwise a device path.
     pub port: String,
     pub baud: u32,
@@ -45,7 +79,9 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            op_mode: OperationMode::Live,
             fill_seconds: gse_proto::DEFAULT_FILL_SECONDS,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             port: "auto".to_string(),
             baud: gse_proto::USB_BAUD,
             confirm_ign: true,
@@ -106,6 +142,9 @@ impl Config {
     /// Clamp/repair values that came from disk or the browser.
     pub fn sanitize(&mut self) {
         self.fill_seconds = self.fill_seconds.clamp(MIN_FILL_SECONDS, MAX_FILL_SECONDS);
+        self.countdown_seconds = self
+            .countdown_seconds
+            .clamp(MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
         if !BAUDS.contains(&self.baud) {
             self.baud = gse_proto::USB_BAUD;
         }
@@ -141,7 +180,13 @@ impl Config {
 
     pub fn to_json(&self) -> String {
         let mut out = String::from("{");
+        json::field(&mut out, "op_mode", &json::quoted(self.op_mode.as_str()));
         json::field(&mut out, "fill_seconds", &self.fill_seconds.to_string());
+        json::field(
+            &mut out,
+            "countdown_seconds",
+            &self.countdown_seconds.to_string(),
+        );
         json::field(&mut out, "port", &json::quoted(&self.port));
         json::field(&mut out, "baud", &self.baud.to_string());
         json::field(&mut out, "confirm_ign", json::bool_json(self.confirm_ign));
@@ -160,8 +205,17 @@ impl Config {
 
     pub fn from_json(value: &Value) -> Result<Config, String> {
         let mut cfg = Config::default();
+        if let Some(v) = value.get("op_mode").and_then(Value::as_str) {
+            if let Some(mode) = OperationMode::parse(v) {
+                cfg.op_mode = mode;
+            }
+        }
         if let Some(v) = value.get("fill_seconds").and_then(Value::as_i64) {
             cfg.fill_seconds = v.clamp(MIN_FILL_SECONDS as i64, MAX_FILL_SECONDS as i64) as u16;
+        }
+        if let Some(v) = value.get("countdown_seconds").and_then(Value::as_i64) {
+            cfg.countdown_seconds =
+                v.clamp(MIN_COUNTDOWN_SECONDS as i64, MAX_COUNTDOWN_SECONDS as i64) as u16;
         }
         if let Some(v) = value.get("port").and_then(Value::as_str) {
             cfg.port = v.to_string();
@@ -227,7 +281,15 @@ impl Config {
 
     pub fn to_pretty_json(&self) -> String {
         let mut out = String::from("{\n");
+        out.push_str(&format!(
+            "  \"op_mode\": {},\n",
+            json::quoted(self.op_mode.as_str())
+        ));
         out.push_str(&format!("  \"fill_seconds\": {},\n", self.fill_seconds));
+        out.push_str(&format!(
+            "  \"countdown_seconds\": {},\n",
+            self.countdown_seconds
+        ));
         out.push_str(&format!("  \"port\": {},\n", json::quoted(&self.port)));
         out.push_str(&format!("  \"baud\": {},\n", self.baud));
         out.push_str(&format!("  \"confirm_ign\": {},\n", self.confirm_ign));
@@ -259,7 +321,9 @@ mod tests {
     #[test]
     fn json_roundtrip() {
         let mut cfg = Config {
+            op_mode: OperationMode::Test,
             fill_seconds: 42,
+            countdown_seconds: 12,
             port: "/dev/ttyACM0".into(),
             confirm_ign: false,
             ..Config::default()
@@ -273,11 +337,13 @@ mod tests {
     #[test]
     fn clamping_and_repair() {
         let value = json::parse(
-            r#"{"fill_seconds":9999,"baud":1234,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
+            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
         )
         .unwrap();
         let cfg = Config::from_json(&value).unwrap();
+        assert_eq!(cfg.op_mode, OperationMode::Test);
         assert_eq!(cfg.fill_seconds, MAX_FILL_SECONDS);
+        assert_eq!(cfg.countdown_seconds, MIN_COUNTDOWN_SECONDS);
         assert_eq!(cfg.baud, 115_200);
         assert_eq!(cfg.port, "auto");
         assert_eq!(cfg.host, "127.0.0.1");
@@ -285,6 +351,7 @@ mod tests {
         // Empty binding dropped and replaced with the default.
         assert_eq!(cfg.shortcut("fill_toggle"), "F");
         assert_eq!(cfg.shortcut("srv_toggle"), "G");
+        assert_eq!(cfg.shortcut("srv_ign_toggle"), "L");
     }
 
     #[test]
@@ -308,6 +375,7 @@ mod tests {
     fn pretty_json_is_valid() {
         let cfg = Config::default();
         let parsed = json::parse(&cfg.to_pretty_json()).unwrap();
+        assert_eq!(parsed.get("op_mode").unwrap().as_str(), Some("live"));
         assert_eq!(parsed.get("fill_seconds").unwrap().as_u64(), Some(60));
     }
 }
