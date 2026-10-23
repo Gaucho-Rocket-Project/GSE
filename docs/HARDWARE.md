@@ -7,7 +7,8 @@ Two identical **STMicroelectronics `NUCLEO-H753ZI`** boards, two **DX-SMART `DX-
 | Qty | Component | Part number | Supplier reference |
 |---|---|---|---|
 | 2 | Ground & vehicle MCU development boards | STMicroelectronics **`NUCLEO-H753ZI`** (`STM32H753ZIT6`, board rev `MB1364`) | [DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937) |
-| 2 | Ground & vehicle 2.4 GHz LoRa/FLRC transceivers | DX-SMART **`DX-LR42-24T12D`** (`DX-LR42-24T12D(T0)`, Semtech SX1281, `+13 dBm`, 7-pin `2.54 mm` header, 2.4 GHz IPEX/SMA antenna) | [Amazon ASIN `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0) |
+| 2 | Ground & vehicle 2.4 GHz UART transceivers *(option A, default)* | DX-SMART **`DX-LR42-24T12D`** (`DX-LR42-24T12D(T0)`, Semtech SX1281, `+13 dBm`, 7-pin `2.54 mm` header, 2.4 GHz IPEX/SMA antenna) | [Amazon ASIN `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0) |
+| 2 | Ground & vehicle 2.4 GHz `500 mW` SPI + PA/LNA transceivers *(option B)* | CDEBYTE **`E28-2G4M27S`** (`SX1280`/`SX1281` + PA/LNA, **`+27 dBm` / `500 mW`**, `-132 dBm` RX, `52 MHz` TCXO, `SPI1` `4 MHz`, `3.3 V` **only**) | [CDEBYTE `E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads) |
 
 ## Critical electrical rules (`DX-LR42-24T12D` + `NUCLEO-H753ZI`)
 
@@ -128,6 +129,41 @@ python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --preset long-range --c
 - **Clean boot-banner filtering:** On power-up or `AT+RESET`, each `DX-LR42-24T12D` outputs `"Power On\r\n"` locally on `TX`. `DxLr42Receiver` (`crates/gse-fw-core/src/radio.rs`) absorbs local status banners cleanly before COBS decoding so `LINKSTAT.uart_errors` stays `0` and the ground bridge never mistakes a local boot banner for remote RF link activity.
 - **Automatic AT-mode self-recovery:** If a `DX-LR42-24T12D` module on either board is accidentally left in AT command mode (`"Entry AT\r\n"` / `"ERROR=104\r\n"`), both `gse-ground` and `gse-vehicle` automatically pause UART TX for `80 ms`, assert `(M0=0, M1=0)`, send `"+++"` to reboot the module into transparent mode, flag `RADIO_ERROR` for operator visibility, and resume normal framing within `200 ms`.
 - **Inter-frame `AUX` pacing with failsafe:** `DxLr42Port` pumps bytes within each COBS frame back-to-back without splitting packets across UART idle windows, pauses at `0x00` frame boundaries while `AUX` (`PG10`) is `HIGH`, and falls back after `250 ms` if `AUX` is ever shorted high so safety commands can never stall.
+
+## CDEBYTE `E28-2G4M27S` (`500 mW` / `+27 dBm` `SPI1` LoRa option)
+
+Both `gse-ground` and `gse-vehicle` include a built-in `DualRadioPort` (`firmware/stm32h753/src/hw.rs`) + `E28Driver` (`crates/gse-fw-core/src/e28.rs`) supporting **live runtime switching** between `DX-LR42-24T12D` (`USART6`) and [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads) (`SPI1`) from **Settings → Link & Radio Hardware**, with automatic persistence to **STM32 Bank 2 Sector 7 internal flash (`0x081E_0000`, 128 KB)** across power cycles.
+
+### Critical electrical rules (`E28-2G4M27S` + `NUCLEO-H753ZI`)
+
+1. **`VCC` IS STRICTLY `3.3 V` (`2.5–3.6 V` MAX — NEVER CONNECT `5 V`!):**
+   - Unlike `DX-LR42-24T12D` (which has an onboard `5 V` LDO), connecting `5 V` to `E28-2G4M27S` permanently destroys the `SX1280`/`SX1281` and PA/LNA ICs.
+   - Because `E28-2G4M27S` draws **`~580 mA` peak at `3.3 V`** during `+27 dBm` (`500 mW`) TX bursts, feed `VCC` (Pin 1) from a dedicated **`3.3 V >= 1 A` buck/LDO rail** with **`220 µF` low-ESR electrolytic + `10 µF` + `0.1 µF` ceramic** decoupling directly at Pins 1–2 (do not power full `+27 dBm` TX solely from the ST-LINK `3V3` regulator without external `3.3 V` supply capacity).
+2. **Mandatory `50 Ω` `2.4 GHz` antenna / load BEFORE applying power:** firing the `+27 dBm` external PA into an open IPEX/SMA port risks damaging the PA FET.
+3. **SX1280/SX1281 drive level (`0 dBm` -> `+27 dBm`):** `E28Driver` automatically sets `SetTxParams(power = 18 -> 0 dBm, RAMP_20_US)` so the external PA operates cleanly at rated `+27 dBm` without compression, and drives `RX_EN` (`PG12`) / `TX_EN` (`PG13`) break-before-make.
+
+### `E28-2G4M27S` 16-pin mapping to `NUCLEO-H753ZI`
+
+| `E28-2G4M27S` pin | Signal | STM32 pin | `NUCLEO-H753ZI` header | Electrical config |
+|---|---|---|---|---|
+| **Pin 1** | `VCC` | `3V3` (`>= 1 A` rail) | Dedicated `3.3 V` regulator (`CN8` pin 7 ref) | **`3.3 V` ONLY** + `220 µF` + `0.1 µF` bypass |
+| **Pins 2, 7, 10, 16** | `GND` | `GND` | `CN8` pin 11 / `CN10` pin 63 / `CN7` pin 8 | Common RF & logic ground |
+| **Pin 3** | `MISO` | **`PA6`** | **`CN7` pin 12** (`D12`) | `SPI1_MISO`, `AF5`, pull-down |
+| **Pin 4** | `MOSI` | **`PA7`** | **`CN7` pin 14** (`D11`) | `SPI1_MOSI`, `AF5`, high-speed |
+| **Pin 5** | `SCK` | **`PA5`** | **`CN7` pin 10** (`D13`) | `SPI1_SCK`, `AF5`, **`4 MHz` Mode 0** (`per_ck = 64 MHz / 16`) |
+| **Pin 6** | `NSS` | **`PD14`** | **`CN7` pin 16** (`D10`) | Active-low GPIO CS output (high idle) |
+| **Pin 8** | `RX_EN` | **`PG12`** | **`CN9` pin 65** | LNA enable (`HIGH` in RX, `LOW` in TX/standby) |
+| **Pin 9** | `TX_EN` | **`PG13`** | **`CN9` pin 68** | `500 mW` PA enable (`HIGH` in TX, `LOW` in RX/standby) |
+| **Pin 11** | `NRESET` | **`PG11`** | **`CN9` pin 70** | Active-low hardware reset output (`HIGH` run) |
+| **Pin 12** | `BUSY` | **`PG10`** | **`CN9` pin 66** | Active-high busy input (`15 ms` timeout guard) |
+| **Pin 13** | `DIO1` | **`PF13`** | **`CN10` pin 2** (`D7`) | IRQ status input (`TX_DONE` / `RX_DONE` / `CRC_ERROR`) |
+
+To compile firmware defaulting to `E28-2G4M27S` on fresh blank flash (before any Settings flash save):
+
+```bash
+cd firmware/stm32h753
+cargo build --release --bins --no-default-features --features radio-e28-2g4m27s
+```
 
 ## Build and flash
 

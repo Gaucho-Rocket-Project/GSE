@@ -36,7 +36,7 @@ const SIM_ADDR: &str = "127.0.0.1:8787";
 const SIM_SPEC: &str = "tcp:127.0.0.1:8787";
 
 const USAGE: &str = "\
-GSE - ground support equipment for the NUCLEO-H753ZI + DX-LR42-24T12D (SX1281) link
+GSE - ground support equipment for NUCLEO-H753ZI + DX-LR42-24T12D / E28-2G4M27S
 
 USAGE:
     gse-app [OPTIONS]
@@ -45,7 +45,9 @@ OPTIONS:
     --sim                 Use the built-in TCP simulator (gse-sim)
     --port <PORT>         Serial port: COM5, /dev/ttyACM0, /dev/tty.usbmodem1234,
                           tcp:host:port, or 'auto' (default)
-    --baud <RATE>         Serial baud rate (default 115200)
+    --baud <RATE>         USB CDC serial baud rate (default 115200)
+    --uart-baud <RATE>    MCU <-> UART radio baud rate (default 9600)
+    --radio <MODULE>      Radio module: dx-lr42-24t12d (default) or e28-2g4m27s
     --config <PATH>       Configuration file
     --host <ADDR>         Console bind address (default 127.0.0.1)
     --http-port <PORT>    Console HTTP port (default 8765)
@@ -73,6 +75,8 @@ struct Options {
     sim: bool,
     port: Option<String>,
     baud: Option<u32>,
+    uart_baud: Option<u32>,
+    radio: Option<gse_proto::radio::RadioModule>,
     config: Option<PathBuf>,
     host: Option<String>,
     http_port: Option<u16>,
@@ -113,6 +117,23 @@ impl Options {
                         text.parse::<u32>()
                             .map_err(|_| format!("invalid baud rate '{text}'"))?,
                     );
+                }
+                "--uart-baud" => {
+                    let text = value("--uart-baud")?;
+                    opts.uart_baud = Some(
+                        text.parse::<u32>()
+                            .map_err(|_| format!("invalid UART baud rate '{text}'"))?,
+                    );
+                }
+                "--radio" => {
+                    let text = value("--radio")?;
+                    opts.radio = Some(gse_proto::radio::RadioModule::parse(&text).ok_or_else(
+                        || {
+                            format!(
+                                "invalid radio module '{text}' (expected dx-lr42-24t12d or e28-2g4m27s)"
+                            )
+                        },
+                    )?);
                 }
                 "--config" => opts.config = Some(PathBuf::from(value("--config")?)),
                 "--host" => opts.host = Some(value("--host")?),
@@ -169,6 +190,12 @@ fn run(opts: Options) -> Result<(), String> {
     }
     if let Some(baud) = opts.baud {
         config.baud = baud;
+    }
+    if let Some(uart_baud) = opts.uart_baud {
+        config.uart_baud = uart_baud;
+    }
+    if let Some(radio) = opts.radio {
+        config.radio = radio;
     }
     if let Some(host) = &opts.host {
         config.host = host.clone();

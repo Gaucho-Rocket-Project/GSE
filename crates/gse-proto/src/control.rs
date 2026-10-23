@@ -65,6 +65,8 @@ pub enum MsgType {
     Event = 0x07,
     LinkStat = 0x08,
     Heartbeat = 0x09,
+    LinkConfig = 0x0A,
+    LinkConfigAck = 0x0B,
 }
 
 impl MsgType {
@@ -83,6 +85,8 @@ impl MsgType {
             0x07 => Some(MsgType::Event),
             0x08 => Some(MsgType::LinkStat),
             0x09 => Some(MsgType::Heartbeat),
+            0x0A => Some(MsgType::LinkConfig),
+            0x0B => Some(MsgType::LinkConfigAck),
             _ => None,
         }
     }
@@ -98,6 +102,8 @@ impl MsgType {
             MsgType::Event => "EVENT",
             MsgType::LinkStat => "LINKSTAT",
             MsgType::Heartbeat => "HEARTBEAT",
+            MsgType::LinkConfig => "LINKCFG",
+            MsgType::LinkConfigAck => "LINKCFG_ACK",
         }
     }
 }
@@ -369,6 +375,7 @@ pub enum EventCode {
     GroundLost = 17,
     BridgeReady = 18,
     FaultsCleared = 19,
+    LinkReconfigured = 20,
 }
 
 impl EventCode {
@@ -393,6 +400,7 @@ impl EventCode {
             17 => Some(EventCode::GroundLost),
             18 => Some(EventCode::BridgeReady),
             19 => Some(EventCode::FaultsCleared),
+            20 => Some(EventCode::LinkReconfigured),
             _ => None,
         }
     }
@@ -423,6 +431,7 @@ impl EventCode {
             EventCode::GroundLost => "ground_lost",
             EventCode::BridgeReady => "bridge_ready",
             EventCode::FaultsCleared => "faults_cleared",
+            EventCode::LinkReconfigured => "link_reconfigured",
         }
     }
 
@@ -447,6 +456,7 @@ impl EventCode {
             EventCode::GroundLost => "Ground board lost",
             EventCode::BridgeReady => "Ground board ready",
             EventCode::FaultsCleared => "Faults cleared",
+            EventCode::LinkReconfigured => "Link configuration applied",
         }
     }
 }

@@ -4,6 +4,8 @@
 //! simulator use the mock in [`crate::mock`]. Keeping this trait tiny makes the
 //! safety-critical logic testable on a normal PC.
 
+use gse_proto::{DxLr42Baud, LinkConfig, RadioModule, Reason, UsbBaud};
+
 /// Front-panel LEDs (NUCLEO-H753ZI: green, yellow, red).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Leds {
@@ -13,6 +15,15 @@ pub struct Leds {
     pub activity: bool,
     /// Red: fault or ignition powered.
     pub fault: bool,
+}
+
+/// Active physical link configuration reported by a board.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LinkState {
+    pub usb_baud: UsbBaud,
+    pub uart_baud: DxLr42Baud,
+    pub radio: RadioModule,
+    pub flash_saved: bool,
 }
 
 /// Vehicle (flight) board hardware.
@@ -27,19 +38,38 @@ pub trait VehicleHal {
     /// Drive the ignition output (true = PWR).
     fn set_ign(&mut self, on: bool);
 
-    /// Non-blocking read of bytes received from the `DX-LR42-24T12D` (SX1281) module.
+    /// Non-blocking read of bytes received from the active RF module.
     /// Returns the number of bytes written into `buf` (0 when nothing pending).
     fn read_radio(&mut self, buf: &mut [u8]) -> usize;
-    /// Write bytes to the `DX-LR42-24T12D` module (`USART6`).
+    /// Write bytes to the active RF module (`USART6` `DX-LR42` or `SPI1` `E28-2G4M27S`).
     fn write_radio(&mut self, data: &[u8]);
-    /// True when the TX queue has space and `AUX` (`PG10`) is not asserting busy.
-    /// Returns false if the module is busy; the caller retries on the next poll.
+    /// True when the TX queue has space and the transceiver can accept a frame.
     fn radio_ready(&mut self) -> bool {
         true
     }
+    /// True while previously queued radio TX bytes are still draining onto the air.
+    /// Used so `LinkConfigAck` completes on the old link before switching hardware.
+    fn radio_tx_busy(&self) -> bool {
+        false
+    }
     /// Drive the `DX-LR42-24T12D` hardware mode pins (`PG12` `M0`, `PG13` `M1`)
-    /// to `(0, 0)` (high-efficiency continuous transparent mode).
+    /// to `(0, 0)` when operating in UART radio mode.
     fn set_radio_transparent(&mut self) {}
+
+    /// Current active radio / UART configuration on this board.
+    fn link_state(&self) -> LinkState {
+        LinkState::default()
+    }
+    /// Non-destructively verify that `radio` hardware is present before acknowledging
+    /// a live switchover request.
+    fn probe_radio_module(&mut self, _radio: RadioModule) -> bool {
+        true
+    }
+    /// Apply `cfg` (radio module + UART baud + optional flash persistence) after
+    /// the acknowledgement frame has drained from TX. Returns `Ok(persisted)`.
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        Ok(cfg.persist())
+    }
 
     fn set_leds(&mut self, leds: Leds);
     fn kick_watchdog(&mut self);
@@ -57,13 +87,30 @@ pub trait GroundHal {
     fn usb_tx_pending(&self) -> usize {
         0
     }
+    /// True while queued USB TX bytes or shift register (`USART3` `TC`) are still busy.
+    fn usb_tx_busy(&self) -> bool {
+        self.usb_tx_pending() > 0
+    }
 
     fn read_radio(&mut self, buf: &mut [u8]) -> usize;
     fn write_radio(&mut self, data: &[u8]);
     fn radio_ready(&mut self) -> bool {
         true
     }
+    fn radio_tx_busy(&self) -> bool {
+        false
+    }
     fn set_radio_transparent(&mut self) {}
+
+    fn link_state(&self) -> LinkState {
+        LinkState::default()
+    }
+    fn probe_radio_module(&mut self, _radio: RadioModule) -> bool {
+        true
+    }
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        Ok(cfg.persist())
+    }
 
     fn set_leds(&mut self, leds: Leds);
     fn kick_watchdog(&mut self);

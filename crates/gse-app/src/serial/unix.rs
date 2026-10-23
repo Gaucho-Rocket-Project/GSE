@@ -19,12 +19,15 @@ mod plat {
     pub type Speed = u64;
     pub type CFlag = u64;
 
+    pub const B2400: Speed = 2_400;
+    pub const B4800: Speed = 4_800;
     pub const B9600: Speed = 9_600;
     pub const B19200: Speed = 19_200;
     pub const B38400: Speed = 38_400;
     pub const B57600: Speed = 57_600;
     pub const B115200: Speed = 115_200;
     pub const B230400: Speed = 230_400;
+    pub const B460800: Speed = 460_800;
 
     pub const O_NONBLOCK: i32 = 0x0004;
     pub const O_NOCTTY: i32 = 0x2_0000;
@@ -40,12 +43,15 @@ mod plat {
     pub type Speed = u32;
     pub type CFlag = u32;
 
+    pub const B2400: Speed = 0o13;
+    pub const B4800: Speed = 0o14;
     pub const B9600: Speed = 0o15;
     pub const B19200: Speed = 0o16;
     pub const B38400: Speed = 0o17;
     pub const B57600: Speed = 0o10001;
     pub const B115200: Speed = 0o10002;
     pub const B230400: Speed = 0o10003;
+    pub const B460800: Speed = 0o10004;
 
     pub const O_NONBLOCK: i32 = 0o4000;
     pub const O_NOCTTY: i32 = 0o400;
@@ -101,12 +107,15 @@ extern "C" {
 
 fn speed_constant(baud: u32) -> io::Result<plat::Speed> {
     match baud {
+        2_400 => Ok(plat::B2400),
+        4_800 => Ok(plat::B4800),
         9_600 => Ok(plat::B9600),
         19_200 => Ok(plat::B19200),
         38_400 => Ok(plat::B38400),
         57_600 => Ok(plat::B57600),
         115_200 => Ok(plat::B115200),
         230_400 => Ok(plat::B230400),
+        460_800 => Ok(plat::B460800),
         other => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unsupported baud rate {other}"),
@@ -132,6 +141,10 @@ impl Port {
             return Err(e);
         }
         Ok(port)
+    }
+
+    pub fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+        self.configure(baud)
     }
 
     fn configure(&self, baud: u32) -> io::Result<()> {

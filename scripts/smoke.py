@@ -416,6 +416,63 @@ def main():
     )
     check(True, "reset cleared every latch and re-locked SRV until next FILL")
 
+    # --- Live USB CDC baud, UART baud & E28-2G4M27S module handover -------
+    bad_usb, _ = request_status("/api/config", {"baud": 12345})
+    bad_uart, _ = request_status("/api/config", {"uart_baud": 14400})
+    bad_radio, _ = request_status("/api/config", {"radio": "sx1276"})
+    check(
+        bad_usb == 400 and bad_uart == 400 and bad_radio == 400,
+        "invalid USB baud, UART baud, and radio module values are rejected",
+    )
+
+    # 1) Live switch USB CDC -> 230400 and DX-LR42 UART -> 57600 (saved to STM32 flash)
+    request("/api/config", {"baud": 230400, "uart_baud": 57600, "radio": "dx-lr42-24t12d"})
+    s = wait_for(
+        lambda st: st["link_reconfig"] is None
+        and st["ground"]["link"]["usb_baud"] == 230400
+        and st["ground"]["link"]["uart_baud"] == 57600
+        and st["ground"]["link"]["radio"] == "dx-lr42-24t12d"
+        and st["ground"]["link"]["flash_saved"] is True
+        and st["vehicle"]["status"] == "online",
+        "live handover to USB 230400 + DX-LR42 UART 57600",
+        timeout=10,
+    )
+    check(
+        s["config"]["baud"] == 230400 and s["config"]["uart_baud"] == 57600,
+        "USB 230400 + UART 57600 live handover acknowledged and saved to flash",
+    )
+
+    # 2) Live two-phase handover to E28-2G4M27S (SPI1 500 mW) + USB 460800
+    request("/api/config", {"baud": 460800, "uart_baud": 115200, "radio": "e28-2g4m27s"})
+    s = wait_for(
+        lambda st: st["link_reconfig"] is None
+        and st["ground"]["link"]["radio"] == "e28-2g4m27s"
+        and st["ground"]["link"]["usb_baud"] == 460800
+        and st["ground"]["link"]["flash_saved"] is True
+        and st["vehicle"]["status"] == "online",
+        "live two-phase handover to E28-2G4M27S + USB 460800",
+        timeout=10,
+    )
+    check(
+        s["config"]["radio"] == "e28-2g4m27s" and s["ground"]["link"]["radio_part"] == "E28-2G4M27S",
+        "Vehicle + Ground switched live to E28-2G4M27S (SPI1) without dropping RF link",
+    )
+
+    # Verify live vehicle actuation & safety block over E28-2G4M27S link!
+    request("/api/command", {"action": "fill_on"})
+    wait_for(lambda st: st["controls"]["fill"] == "ON", "FILL ON over E28-2G4M27S")
+    blocked_reconfig, _ = request_status("/api/config", {"radio": "dx-lr42-24t12d"})
+    check(blocked_reconfig == 400, "changing radio/baud is blocked while vehicle output is active")
+    request("/api/command", {"action": "fill_off"})
+    wait_for(lambda st: st["controls"]["fill"] == "OFF", "FILL OFF over E28-2G4M27S")
+    request("/api/command", {"action": "reset_controls"})
+    wait_for(
+        lambda st: st["controls"]["safe"]
+        and not st["vehicle"]["state"]["fill_paused"]
+        and st["actions"]["fill_on"]["enabled"],
+        "controls reset over E28-2G4M27S",
+    )
+
     # --- Reconnect with an output ON: initialisation must force OFF/SAFE. --
     request("/api/command", {"action": "fill_on"})
     wait_for(lambda st: st["controls"]["fill"] == "ON", "FILL on for pause before reconnect")

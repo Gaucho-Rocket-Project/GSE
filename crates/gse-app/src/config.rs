@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use gse_proto::radio::RadioModule;
 use gse_proto::{MAX_COUNTDOWN_SECONDS, MAX_FILL_SECONDS, MIN_COUNTDOWN_SECONDS, MIN_FILL_SECONDS};
 
 use crate::json::{self, Value};
@@ -9,7 +10,7 @@ use crate::json::{self, Value};
 /// Operator control setup selected in Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OperationMode {
-    /// Live launch sequence: `FILL` -> 5 s countdown -> `SRV+IGN` (`OFF/SAFE` <-> `ON/PWR`).
+    /// Live launch sequence: `FILL` -> countdown -> `SRV+IGN` (`OFF/SAFE` <-> `ON/PWR`).
     #[default]
     Live,
     /// Vehicle control checkout: independent `FILL`, `SRV`, and `IGN` controls.
@@ -59,7 +60,11 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
     ("clear_faults", "Shift+C"),
 ];
 
-pub const BAUDS: &[u32] = &[9_600, 19_200, 38_400, 57_600, 115_200, 230_400];
+/// Supported USB CDC (`USART3` host <-> ground board) baud rates.
+pub const USB_BAUDS: &[u32] = &[9_600, 19_200, 38_400, 57_600, 115_200, 230_400, 460_800];
+
+/// Supported MCU <-> UART radio (`USART6` <-> `DX-LR42-24T12D`) baud rates.
+pub const UART_BAUDS: &[u32] = &[2_400, 4_800, 9_600, 19_200, 38_400, 57_600, 115_200];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -68,7 +73,12 @@ pub struct Config {
     pub countdown_seconds: u16,
     /// `"auto"` for protocol-based port detection, otherwise a device path.
     pub port: String,
+    /// USB CDC (`USART3`) baud rate between host computer and Ground board.
     pub baud: u32,
+    /// Board UART (`USART6`) baud rate between MCU and UART radio module.
+    pub uart_baud: u32,
+    /// Active 2.4 GHz radio transceiver module (`DX-LR42-24T12D` or `E28-2G4M27S`).
+    pub radio: RadioModule,
     pub confirm_ign: bool,
     pub sound: bool,
     pub host: String,
@@ -84,6 +94,8 @@ impl Default for Config {
             countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
             port: "auto".to_string(),
             baud: gse_proto::USB_BAUD,
+            uart_baud: gse_proto::RADIO_BAUD,
+            radio: RadioModule::DxLr42,
             confirm_ign: true,
             sound: true,
             host: "127.0.0.1".to_string(),
@@ -145,8 +157,11 @@ impl Config {
         self.countdown_seconds = self
             .countdown_seconds
             .clamp(MIN_COUNTDOWN_SECONDS, MAX_COUNTDOWN_SECONDS);
-        if !BAUDS.contains(&self.baud) {
+        if !USB_BAUDS.contains(&self.baud) {
             self.baud = gse_proto::USB_BAUD;
+        }
+        if !UART_BAUDS.contains(&self.uart_baud) {
+            self.uart_baud = gse_proto::RADIO_BAUD;
         }
         self.port = self.port.trim().to_string();
         if self.port.is_empty() {
@@ -189,6 +204,8 @@ impl Config {
         );
         json::field(&mut out, "port", &json::quoted(&self.port));
         json::field(&mut out, "baud", &self.baud.to_string());
+        json::field(&mut out, "uart_baud", &self.uart_baud.to_string());
+        json::field(&mut out, "radio", &json::quoted(self.radio.id()));
         json::field(&mut out, "confirm_ign", json::bool_json(self.confirm_ign));
         json::field(&mut out, "sound", json::bool_json(self.sound));
         json::field(&mut out, "host", &json::quoted(&self.host));
@@ -222,6 +239,14 @@ impl Config {
         }
         if let Some(v) = value.get("baud").and_then(Value::as_i64) {
             cfg.baud = v as u32;
+        }
+        if let Some(v) = value.get("uart_baud").and_then(Value::as_i64) {
+            cfg.uart_baud = v as u32;
+        }
+        if let Some(v) = value.get("radio").and_then(Value::as_str) {
+            if let Some(radio) = RadioModule::parse(v) {
+                cfg.radio = radio;
+            }
         }
         if let Some(v) = value.get("confirm_ign").and_then(Value::as_bool) {
             cfg.confirm_ign = v;
@@ -292,6 +317,11 @@ impl Config {
         ));
         out.push_str(&format!("  \"port\": {},\n", json::quoted(&self.port)));
         out.push_str(&format!("  \"baud\": {},\n", self.baud));
+        out.push_str(&format!("  \"uart_baud\": {},\n", self.uart_baud));
+        out.push_str(&format!(
+            "  \"radio\": {},\n",
+            json::quoted(self.radio.id())
+        ));
         out.push_str(&format!("  \"confirm_ign\": {},\n", self.confirm_ign));
         out.push_str(&format!("  \"sound\": {},\n", self.sound));
         out.push_str(&format!("  \"host\": {},\n", json::quoted(&self.host)));
@@ -325,6 +355,9 @@ mod tests {
             fill_seconds: 42,
             countdown_seconds: 12,
             port: "/dev/ttyACM0".into(),
+            baud: 230_400,
+            uart_baud: 57_600,
+            radio: RadioModule::E28_2G4M27S,
             confirm_ign: false,
             ..Config::default()
         };
@@ -337,7 +370,7 @@ mod tests {
     #[test]
     fn clamping_and_repair() {
         let value = json::parse(
-            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
+            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"uart_baud":777,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
         )
         .unwrap();
         let cfg = Config::from_json(&value).unwrap();
@@ -345,10 +378,11 @@ mod tests {
         assert_eq!(cfg.fill_seconds, MAX_FILL_SECONDS);
         assert_eq!(cfg.countdown_seconds, MIN_COUNTDOWN_SECONDS);
         assert_eq!(cfg.baud, 115_200);
+        assert_eq!(cfg.uart_baud, 9_600);
+        assert_eq!(cfg.radio, RadioModule::DxLr42);
         assert_eq!(cfg.port, "auto");
         assert_eq!(cfg.host, "127.0.0.1");
         assert_eq!(cfg.http_port, 8765);
-        // Empty binding dropped and replaced with the default.
         assert_eq!(cfg.shortcut("fill_toggle"), "F");
         assert_eq!(cfg.shortcut("srv_toggle"), "G");
         assert_eq!(cfg.shortcut("srv_ign_toggle"), "L");
@@ -377,5 +411,10 @@ mod tests {
         let parsed = json::parse(&cfg.to_pretty_json()).unwrap();
         assert_eq!(parsed.get("op_mode").unwrap().as_str(), Some("live"));
         assert_eq!(parsed.get("fill_seconds").unwrap().as_u64(), Some(60));
+        assert_eq!(parsed.get("uart_baud").unwrap().as_u64(), Some(9_600));
+        assert_eq!(
+            parsed.get("radio").unwrap().as_str(),
+            Some("dx-lr42-24t12d")
+        );
     }
 }

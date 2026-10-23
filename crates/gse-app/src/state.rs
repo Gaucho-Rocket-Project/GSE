@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gse_proto::{faults, flags, ControlState, LinkStat, StateSnapshot};
+use gse_proto::{faults, flags, link_cfg_flags, ControlState, LinkStat, StateSnapshot};
 
 use crate::broadcaster::Broadcaster;
 use crate::clock;
@@ -334,6 +334,7 @@ pub struct AppState {
     pub url: String,
     pub port_hint: String,
     pub scan_note: Option<String>,
+    pub link_reconfig: Option<String>,
     pub log_path: Option<String>,
     pub host_uptime_ms: u64,
 }
@@ -363,6 +364,7 @@ impl AppState {
             url,
             port_hint,
             scan_note: None,
+            link_reconfig: None,
             log_path: None,
             host_uptime_ms: 0,
         }
@@ -632,6 +634,31 @@ impl AppState {
             "bridge_uptime_ms",
             &self.ground.link.bridge_uptime_ms.to_string(),
         );
+        json::field(
+            &mut link,
+            "usb_baud",
+            &self.ground.link.usb_baud.bps().to_string(),
+        );
+        json::field(
+            &mut link,
+            "uart_baud",
+            &self.ground.link.uart_baud.bps().to_string(),
+        );
+        json::field(
+            &mut link,
+            "radio",
+            &json::quoted(self.ground.link.radio.id()),
+        );
+        json::field(
+            &mut link,
+            "radio_part",
+            &json::quoted(self.ground.link.radio.part_number()),
+        );
+        json::field(
+            &mut link,
+            "flash_saved",
+            json::bool_json(self.ground.link.link_flags & link_cfg_flags::FLASH_SAVED != 0),
+        );
         link.push('}');
 
         let mut out = String::from("{");
@@ -754,6 +781,11 @@ impl AppState {
             &mut out,
             "scan_note",
             &json::opt_str_json(self.scan_note.as_deref()),
+        );
+        json::field(
+            &mut out,
+            "link_reconfig",
+            &json::opt_str_json(self.link_reconfig.as_deref()),
         );
         json::field(&mut out, "port_hint", &json::quoted(&self.port_hint));
         json::field(&mut out, "ground", &self.ground_json());
