@@ -15,6 +15,7 @@
     ign_safe: "IGN SAFE",
     srv_ign_on: "SRV+IGN ON",
     srv_ign_off: "SRV+IGN OFF",
+    abort_countdown: "ABORT COUNTDOWN",
     reset_controls: "RESET CONTROLS",
     reset_fill: "RESET FILL SEQ",
     clear_faults: "CLEAR FAULTS",
@@ -47,6 +48,7 @@
   var clockTick = null;
   var lastVehicleOnline = null;
   var lastFillComplete = null;
+  var lastFillPaused = null;
 
   /* ------------------------------------------------------------------ */
   /* helpers                                                            */
@@ -84,6 +86,9 @@
   function actionLabel(action) {
     if (action === "srv_ign_on") {
       return "SRV+IGN ON (" + countdownSecondsCfg() + " s COUNTDOWN)";
+    }
+    if (action === "ign_pwr") {
+      return "IGN PWR (" + countdownSecondsCfg() + " s COUNTDOWN)";
     }
     return ACTION_LABELS[action] || action;
   }
@@ -272,7 +277,7 @@
     }
     if (config && config.confirm_ign) {
       pendingIgn = "ign_pwr";
-      $("confirm-reason").textContent = "SRV is ON and the fill sequence is complete.";
+      $("confirm-reason").textContent = "SRV is ON and FILL is ready (" + countdownSecondsCfg() + " s countdown before IGN PWR).";
       $("confirm").hidden = false;
       $("confirm-ok").focus();
       return;
@@ -327,10 +332,12 @@
     var btn = $(cfg.btnId);
     if (!btn) { return; }
     btn.hidden = !!cfg.hidden;
-    var nextAction = cfg.active ? cfg.offAction : cfg.onAction;
+    var nextAction = (cfg.active || cfg.counting) ? cfg.offAction : cfg.onAction;
     var gate = cfg.actions[nextAction] || { enabled: false, reason: "" };
     btn.disabled = !gate.enabled;
-    btn.title = gate.enabled ? actionLabel(nextAction) : (gate.reason || "");
+    btn.title = gate.enabled
+      ? (cfg.counting ? "ABORT COUNTDOWN" : actionLabel(nextAction))
+      : (gate.reason || "");
     btn.classList.toggle("is-on", !!cfg.active && !cfg.danger);
     btn.classList.toggle("is-pwr", !!cfg.active && !!cfg.danger);
     btn.classList.toggle("is-counting", !!cfg.counting);
@@ -373,6 +380,8 @@
       return;
     }
     banner.hidden = false;
+    var cdTarget = cd.target || (isLiveMode() ? "srv_ign" : "ign");
+    var isSrvIgn = cdTarget === "srv_ign";
     var duration = cd.duration_ms || (countdownSecondsCfg() * 1000);
     var remaining = countdownRemainingMs(s);
     var wholeSec = Math.ceil(remaining / 1000);
@@ -380,20 +389,45 @@
       lastCountdownSec = wholeSec;
       beep(660, 0.07);
     }
+    var titleEl = $("countdown-title");
+    if (titleEl) {
+      titleEl.textContent = isSrvIgn
+        ? ">> LIVE LAUNCH COUNTDOWN · SRV+IGN -> ON/PWR"
+        : ">> IGNITION COUNTDOWN · IGN -> PWR";
+    }
+    var subEl = $("countdown-sub");
+    if (subEl) {
+      subEl.textContent = isSrvIgn
+        ? "Outputs remain OFF/SAFE until T-0.0 s (FILL progress preserved on abort)"
+        : "Aborting cancels IGN and returns SRV -> OFF while preserving FILL progress";
+    }
     $("countdown-time").textContent = "T - " + fmtLaunchSeconds(remaining) + " s";
     var pct = duration > 0 ? Math.min(100, Math.max(0, (remaining / duration) * 100)) : 0;
     $("countdown-fill").style.width = pct.toFixed(1) + "%";
 
-    var led = $("led-srv-ign");
-    if (led) {
-      led.textContent = "OFF/SAFE · " + fmtLaunchSeconds(remaining) + "s";
-      led.className = "ctl-state counting";
+    if (isSrvIgn) {
+      var ledLive = $("led-srv-ign");
+      if (ledLive) {
+        ledLive.textContent = "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
+        ledLive.className = "ctl-state counting";
+      }
+      var descLive = $("desc-srv-ign");
+      if (descLive) {
+        descLive.textContent = "T - " + fmtLaunchSeconds(remaining) + " s · click → ABORT";
+      }
+      $("pending-text").textContent = "SRV+IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
+    } else {
+      var ledTest = $("led-ign");
+      if (ledTest) {
+        ledTest.textContent = "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
+        ledTest.className = "ctl-state counting";
+      }
+      var descTest = $("desc-ign");
+      if (descTest) {
+        descTest.textContent = "T - " + fmtLaunchSeconds(remaining) + " s · click → ABORT";
+      }
+      $("pending-text").textContent = "IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
     }
-    var desc = $("desc-srv-ign");
-    if (desc) {
-      desc.textContent = "Countdown " + fmtLaunchSeconds(remaining) + " s → ON/PWR";
-    }
-    $("pending-text").textContent = "SRV+IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
   }
 
   function render() {
@@ -435,8 +469,10 @@
     var ignPwr = ctl.ign ? ctl.ign === "PWR" : !!vs.ign;
     var srvIgnActive = srvOn || ignPwr;
     var cdActive = !!(s.countdown && s.countdown.active);
+    var cdTarget = (s.countdown && s.countdown.target) || (live ? "srv_ign" : "ign");
+    var fillPaused = !!(s.fill && s.fill.paused);
 
-    setLed("led-fill", fillOn ? "ON" : "OFF", fillOn ? "on" : "");
+    setLed("led-fill", fillOn ? "ON" : (fillPaused ? "PAUSED" : "OFF"), fillOn ? "on" : (fillPaused ? "counting" : ""));
     setLed("led-srv", srvOn ? "ON" : "OFF", srvOn ? "on" : "");
     setLed("led-ign", ignPwr ? "PWR" : "SAFE", ignPwr ? "pwr" : "");
     setLed(
@@ -461,7 +497,11 @@
       actions: actions,
       desc: target && target.fill !== ctl.fill
         ? ("Awaiting ACK → " + target.fill)
-        : (fillOn ? "Fill valve open · click → OFF" : "Fill valve servo · click → ON")
+        : (fillOn
+            ? "Fill valve open · click → PAUSE/OFF"
+            : (fillPaused
+                ? ("Paused (" + fmtLaunchSeconds(s.fill.remaining_ms) + " s left) · click → RESUME")
+                : "Fill valve servo · click → ON"))
     });
 
     renderToggle({
@@ -473,7 +513,7 @@
       hidden: !live,
       active: srvIgnActive,
       danger: true,
-      counting: cdActive,
+      counting: cdActive && cdTarget === "srv_ign",
       onAction: "srv_ign_on",
       offAction: "srv_ign_off",
       actions: actions,
@@ -513,7 +553,7 @@
       hidden: live,
       active: ignPwr,
       danger: true,
-      counting: false,
+      counting: cdActive && cdTarget === "ign",
       onAction: "ign_pwr",
       offAction: "ign_safe",
       actions: actions,
@@ -522,7 +562,7 @@
         : (ignPwr
             ? "IGNITER ENERGISED · click → SAFE"
             : (actions.ign_pwr && actions.ign_pwr.enabled
-                ? "Igniter armed · click → PWR"
+                ? ("Igniter armed · press for " + countdownSecondsCfg() + " s countdown → PWR")
                 : "Igniter power · locked"))
     });
 
@@ -573,8 +613,7 @@
 
     $("scan-note").textContent = s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : ""));
     $("foot-config").textContent = "mode " + (live ? "LIVE" : "TEST") + " · fill " +
-      (s.config ? s.config.fill_seconds : "?") + " s" +
-      (live ? (" · countdown " + countdownSecondsCfg() + " s") : "") + " · " +
+      (s.config ? s.config.fill_seconds : "?") + " s · countdown " + countdownSecondsCfg() + " s · " +
       (s.config ? s.config.port + " @" + s.config.baud : "") + (s.sim ? " · simulator" : "");
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
@@ -599,8 +638,14 @@
       fillOn ? "SRV LOCKED" : (srvOn ? "FILL LOCKED" : "CLEAR"),
       (fillOn || srvOn) ? "warn" : "ok");
     setRailVal("gate-fill",
-      fill.active ? "RUNNING" : (fill.seq_aborted ? "ABORTED" : (fill.seq_complete ? "COMPLETE" : "UNRUN")),
-      fill.seq_aborted ? "hot" : (fill.seq_complete || fill.active ? "ok" : "dim"));
+      fill.active
+        ? "RUNNING"
+        : (fill.seq_aborted
+            ? "ABORTED"
+            : (fill.seq_complete ? "COMPLETE" : (fill.paused ? "PAUSED" : "UNRUN"))),
+      fill.seq_aborted
+        ? "hot"
+        : (fill.seq_complete || fill.active || fill.paused ? "ok" : "dim"));
 
     var ignName = $("gate-ign-name");
     if (ignName) { ignName.textContent = live ? "srv+ign" : "ign gate"; }
@@ -620,8 +665,16 @@
       );
     } else {
       setRailVal("gate-ign",
-        ignPwr ? "ENERGISED" : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ARMED" : "LOCKED"),
-        ignPwr ? "hot" : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ok" : "dim"));
+        cdActive
+          ? ("T-" + fmtLaunchSeconds(countdownRemainingMs(s)) + "s")
+          : (ignPwr
+              ? "ENERGISED"
+              : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ARMED" : "LOCKED")),
+        cdActive
+          ? "warn"
+          : (ignPwr
+              ? "hot"
+              : (s.actions && s.actions.ign_pwr && s.actions.ign_pwr.enabled ? "ok" : "dim")));
     }
     setRailVal(
       "rail-pending",
@@ -644,12 +697,12 @@
       var chip = document.createElement("span");
       chip.className = "chip";
       var name = String(flag);
-      if (name.indexOf("IGN PWR") >= 0 || name.indexOf("ESTOP") >= 0 || name.indexOf("LINK LOSS") >= 0) {
+      if (name.indexOf("IGN PWR") >= 0 || name.indexOf("E-STOP") >= 0 || name.indexOf("ESTOP") >= 0 || name.indexOf("LINK SAFE") >= 0) {
         chip.className += " hot";
+      } else if (name.indexOf("FILL PAUSED") >= 0 || name.indexOf("FILL ABORTED") >= 0 || name.indexOf("REJECT") >= 0 || name.indexOf("INHIB") >= 0) {
+        chip.className += " warn";
       } else if (name.indexOf("FILL") >= 0 || name.indexOf("SRV ON") >= 0) {
         chip.className += " good";
-      } else if (name.indexOf("REJECT") >= 0 || name.indexOf("INHIB") >= 0) {
-        chip.className += " warn";
       }
       chip.textContent = name;
       box.appendChild(chip);
@@ -693,25 +746,42 @@
       remaining = Math.max(0, fill.ends_at - Date.now());
     }
     var pct = 0;
-    if (fill.active && duration > 0) {
+    if ((fill.active || fill.paused) && duration > 0) {
       pct = Math.min(100, Math.max(0, 100 - (remaining / duration) * 100));
     } else if (fill.seq_complete) {
       pct = 100;
     }
     var bar = $("fill-fill");
     bar.style.width = pct.toFixed(1) + "%";
-    bar.className = "fill-fill" + (fill.seq_aborted ? " warn" : (fill.seq_complete && !fill.active ? " done" : ""));
+    bar.className = "fill-fill" + (
+      fill.seq_aborted
+        ? " warn"
+        : (fill.paused ? " paused" : (fill.seq_complete && !fill.active ? " done" : ""))
+    );
 
     var text = "idle";
     if (fill.auto_off_pending) { text = "auto-off sending"; }
     else if (fill.active) { text = fill.remaining_ms > 0 && fill.remaining_ms < 5000 ? "closing soon" : "filling"; }
     else if (fill.seq_aborted) { text = "sequence aborted"; }
+    else if (fill.paused) { text = "paused · channels unlocked"; }
     else if (fill.seq_complete) { text = "sequence complete"; }
     else if (state.fill) { text = "valve open"; }
     $("fill-status").textContent = text;
-    $("fill-remaining").textContent = fill.active ? fmtCountdown(remaining) + " remaining" : "–";
+    $("fill-remaining").textContent = fill.active
+      ? fmtCountdown(remaining) + " remaining"
+      : (fill.paused ? (fmtCountdown(remaining) + " remaining · click FILL to resume") : "–");
     $("fill-duration").textContent = (duration / 1000) + " s configured";
 
+    if (fill.paused && !fill.active && lastFillPaused === false) {
+      beep(580, 0.14);
+      toast(
+        isLiveMode()
+          ? "Fill paused (" + fmtLaunchSeconds(remaining) + " s remaining) – SRV+IGN unlocked; click FILL to resume"
+          : "Fill paused (" + fmtLaunchSeconds(remaining) + " s remaining) – SRV unlocked; click FILL to resume",
+        "ok",
+        5000
+      );
+    }
     if (fill.seq_complete && !fill.active && lastFillComplete === false) {
       beep(760, 0.2);
       toast(
@@ -723,7 +793,8 @@
       );
     }
     if (fill.seq_aborted && !fill.active && lastFillComplete !== null) { beep(340, 0.2); }
-    lastFillComplete = fill.seq_complete;
+    lastFillComplete = !!fill.seq_complete;
+    lastFillPaused = !!fill.paused;
   }
 
   function updateShortcutBadges() {
@@ -834,9 +905,9 @@
     var cdVal = (cdInput && parseInt(cdInput.value, 10)) || countdownSecondsCfg();
     if (!hint || !sel) { return; }
     if (sel.value === "test") {
-      hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls for bench/pad checkout.";
+      hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls (SRV unlocks after FILL pauses or completes; IGN runs a " + cdVal + " s abortable countdown).";
     } else {
-      hint.textContent = "LIVE combines SRV+IGN into one button locked until fill completes, with a " + cdVal + " s launch countdown.";
+      hint.textContent = "LIVE combines SRV+IGN into one button unlocked after FILL pauses or completes, with a " + cdVal + " s abortable launch countdown.";
     }
   }
 
@@ -963,7 +1034,7 @@
       });
     });
 
-    document.querySelectorAll(".control-grid button[data-action], .secondary-row button[data-action]").forEach(function (btn) {
+    document.querySelectorAll(".control-grid button[data-action], .countdown-banner button[data-action], .secondary-row button[data-action]").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var action = btn.dataset.action;
         if (!action || recording) { return; }

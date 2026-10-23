@@ -8,18 +8,20 @@
 //!
 //! Operating modes:
 //! * [`OperationMode::Test`] — vehicle control testing: independent `FILL`,
-//!   `SRV`, and `IGN` channels (`FILL` <-> `SRV` exclusive, `IGN` gated on a
-//!   completed fill + `SRV ON`).
-//! * [`OperationMode::Live`] — live launch sequence: `FILL` unchanged, plus a
-//!   combined `SRV+IGN` channel (`OFF/SAFE` -> 5 s countdown -> `ON/PWR` ->
-//!   `OFF/SAFE`), greyed out until the fill sequence has completed.
+//!   `SRV`, and `IGN` channels (`SRV` unlocked once `FILL` completes or is
+//!   paused `OFF`; `FILL` <-> `SRV` exclusive; `IGN` gated on `SRV ON` +
+//!   `FILL` ready, with an abortable countdown before energizing).
+//! * [`OperationMode::Live`] — live launch sequence: `FILL` with pause/resume,
+//!   plus combined `SRV+IGN` (`OFF/SAFE` -> abortable countdown -> `ON/PWR` ->
+//!   `OFF/SAFE`), unlocked once `FILL` completes or is paused `OFF`.
 //!
 //! Additional app-only gates:
 //!
 //! * nothing is enabled before the ground and vehicle links are up,
 //! * nothing except E-STOP is enabled while a command is awaiting its ACK,
-//! * while the 5 s `SRV+IGN` launch countdown is running, only E-STOP and
-//!   RESET CONTROLS remain active (both immediately cancel the countdown),
+//! * while a launch/test countdown is running, other channels lock while
+//!   `abort_countdown`, the active channel's safe action (`ign_safe` or
+//!   `srv_ign_off`), `RESET CONTROLS`, and `E-STOP` remain active,
 //! * control actions stay locked until the startup handshake has confirmed
 //!   every output is OFF/SAFE ([`Inputs::controls_ready`]).
 
@@ -27,7 +29,7 @@ use gse_proto::fsm::{ControlEvent, ControlState, Interlocks, Transition};
 use gse_proto::{Reason, StateSnapshot};
 
 use crate::config::OperationMode;
-use crate::state::{ActionState, Actions};
+use crate::state::{ActionState, Actions, CountdownTarget};
 
 pub struct Inputs {
     pub mode: OperationMode,
@@ -35,8 +37,8 @@ pub struct Inputs {
     pub ground_online: bool,
     pub vehicle_online: bool,
     pub pending: bool,
-    /// True during the LIVE launch countdown before `SRV+IGN ON`.
-    pub countdown_active: bool,
+    /// Target channel when an ignition countdown is actively ticking.
+    pub countdown_target: Option<CountdownTarget>,
     /// The startup/reset handshake confirmed FILL OFF, SRV OFF, IGN SAFE.
     pub controls_ready: bool,
     pub state: StateSnapshot,
@@ -74,18 +76,24 @@ fn no_op_text(event: ControlEvent) -> &'static str {
 /// Operator text for a refused transition.
 fn blocked_text(event: ControlEvent, interlocks: Interlocks, reason: Reason) -> String {
     match (event, reason) {
-        (ControlEvent::IgnPwr | ControlEvent::SrvIgnOn, Reason::NotPermitted)
-            if interlocks.inhibited =>
-        {
+        (
+            ControlEvent::SrvOn | ControlEvent::IgnPwr | ControlEvent::SrvIgnOn,
+            Reason::NotPermitted,
+        ) if interlocks.inhibited => {
             "Vehicle inhibited - press RESET CONTROLS and run a new fill".to_string()
         }
-        (ControlEvent::IgnPwr | ControlEvent::SrvIgnOn, Reason::NotPermitted)
-            if interlocks.estop =>
-        {
-            "E-STOP is latched - press RESET CONTROLS first".to_string()
+        (
+            ControlEvent::SrvOn | ControlEvent::IgnPwr | ControlEvent::SrvIgnOn,
+            Reason::NotPermitted,
+        ) if interlocks.estop => "E-STOP is latched - press RESET CONTROLS first".to_string(),
+        (ControlEvent::SrvOn, Reason::FillSeqIncomplete) => {
+            "SRV requires FILL to run and turn OFF first".to_string()
+        }
+        (ControlEvent::IgnPwr, Reason::FillSeqIncomplete) => {
+            "IGN requires FILL to run and turn OFF first".to_string()
         }
         (ControlEvent::SrvIgnOn, Reason::FillSeqIncomplete) => {
-            "SRV+IGN requires a completed FILL sequence".to_string()
+            "SRV+IGN requires FILL to run and turn OFF first".to_string()
         }
         (ControlEvent::SrvIgnOn, Reason::FillActive) => {
             "SRV+IGN cannot be enabled while FILL is open".to_string()
@@ -135,14 +143,13 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         None
     };
 
-    let countdown_gate = if inputs.countdown_active {
-        Some(blocked(format!(
-            "SRV+IGN {} s countdown in progress",
+    let countdown_gate = inputs.countdown_target.map(|target| {
+        blocked(format!(
+            "{} {} s countdown in progress",
+            target.label(),
             inputs.countdown_seconds
-        )))
-    } else {
-        None
-    };
+        ))
+    });
     let channel_base = base.as_ref().or(countdown_gate.as_ref());
 
     let fill_on = gate(channel_base, state, interlocks, ControlEvent::FillOn);
@@ -153,7 +160,11 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
             gate(channel_base, state, interlocks, ControlEvent::SrvOn),
             gate(channel_base, state, interlocks, ControlEvent::SrvOff),
             gate(channel_base, state, interlocks, ControlEvent::IgnPwr),
-            gate(channel_base, state, interlocks, ControlEvent::IgnSafe),
+            if inputs.countdown_target == Some(CountdownTarget::Ign) && base.is_none() {
+                allowed()
+            } else {
+                gate(channel_base, state, interlocks, ControlEvent::IgnSafe)
+            },
             blocked("Only available in LIVE mode"),
             blocked("Only available in LIVE mode"),
         ),
@@ -163,8 +174,18 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
             blocked("Disabled in LIVE mode (use SRV+IGN)"),
             blocked("Disabled in LIVE mode (use SRV+IGN)"),
             gate(channel_base, state, interlocks, ControlEvent::SrvIgnOn),
-            gate(channel_base, state, interlocks, ControlEvent::SrvIgnOff),
+            if inputs.countdown_target == Some(CountdownTarget::SrvIgn) && base.is_none() {
+                allowed()
+            } else {
+                gate(channel_base, state, interlocks, ControlEvent::SrvIgnOff)
+            },
         ),
+    };
+
+    let abort_countdown = match (&base, inputs.countdown_target) {
+        (Some(b), _) => b.clone(),
+        (None, Some(_)) => allowed(),
+        (None, None) => blocked("No active countdown"),
     };
 
     // RESET CONTROLS always resolves to OFF/SAFE (and cancels any active
@@ -182,6 +203,7 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
             } else if inputs.state.ign_pwr() {
                 blocked("SAFE the igniter first")
             } else if !(inputs.state.fill_seq_complete()
+                || inputs.state.fill_paused()
                 || inputs.state.fill_seq_aborted()
                 || inputs.state.inhibited()
                 || inputs.state.estop())
@@ -221,6 +243,7 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         ign_safe,
         srv_ign_on,
         srv_ign_off,
+        abort_countdown,
         reset_controls,
         reset_fill,
         clear_faults,
@@ -247,7 +270,7 @@ mod tests {
             ground_online: true,
             vehicle_online: true,
             pending: false,
-            countdown_active: false,
+            countdown_target: None,
             controls_ready: true,
             state,
         }
@@ -268,13 +291,14 @@ mod tests {
             ground_online: false,
             vehicle_online: false,
             pending: false,
-            countdown_active: false,
+            countdown_target: None,
             controls_ready: false,
             state: state(flags::FILL_OPEN),
         });
         assert!(!actions.fill_on.enabled);
         assert!(!actions.fill_off.enabled);
         assert!(!actions.srv_ign_on.enabled);
+        assert!(!actions.abort_countdown.enabled);
         assert!(!actions.reset_controls.enabled);
         assert!(!actions.estop.enabled);
         assert!(actions.fill_on.reason.contains("Ground board"));
@@ -288,7 +312,7 @@ mod tests {
             ground_online: true,
             vehicle_online: true,
             pending: false,
-            countdown_active: false,
+            countdown_target: None,
             controls_ready: false,
             state: StateSnapshot::default(),
         });
@@ -300,7 +324,19 @@ mod tests {
 
     #[test]
     fn fill_and_srv_interlock() {
-        let actions = evaluate(&online(state(flags::SRV_ON)));
+        // SRV is locked before FILL has run.
+        let actions = evaluate(&online(StateSnapshot::default()));
+        assert!(actions.fill_on.enabled);
+        assert!(!actions.srv_on.enabled);
+        assert!(actions.srv_on.reason.contains("FILL"));
+
+        // Paused FILL unlocks SRV AND allows RESET FILL SEQ.
+        let actions = evaluate(&online(state(flags::FILL_PAUSED)));
+        assert!(actions.fill_on.enabled);
+        assert!(actions.srv_on.enabled);
+        assert!(actions.reset_fill.enabled);
+
+        let actions = evaluate(&online(state(flags::SRV_ON | flags::FILL_PAUSED)));
         assert!(!actions.fill_on.enabled);
         assert!(actions.fill_on.reason.contains("interlocked"));
         assert!(!actions.fill_off.enabled);
@@ -313,28 +349,48 @@ mod tests {
     }
 
     #[test]
-    fn ignition_requires_full_sequence() {
-        // SRV on but no completed fill.
+    fn ignition_accepts_completed_or_paused_fill_and_supports_countdown_abort() {
+        // SRV on without a completed/paused fill is blocked.
         let actions = evaluate(&online(state(flags::SRV_ON)));
         assert!(!actions.ign_pwr.enabled);
-        assert!(actions.ign_pwr.reason.contains("FILL sequence"));
+        assert!(actions.ign_pwr.reason.contains("FILL"));
 
-        // Fill complete but SRV off.
+        // Fill complete or paused with SRV off requires SRV first.
         let actions = evaluate(&online(state(flags::FILL_SEQ_COMPLETE)));
         assert!(!actions.ign_pwr.enabled);
         assert!(actions.ign_pwr.reason.contains("SRV"));
 
-        // Both conditions met.
-        let actions = evaluate(&online(state(flags::SRV_ON | flags::FILL_SEQ_COMPLETE)));
-        assert!(actions.ign_pwr.enabled);
+        // Both paused fill + SRV ON and completed fill + SRV ON enable IGN PWR.
+        assert!(
+            evaluate(&online(state(flags::SRV_ON | flags::FILL_PAUSED)))
+                .ign_pwr
+                .enabled
+        );
+        assert!(
+            evaluate(&online(state(flags::SRV_ON | flags::FILL_SEQ_COMPLETE)))
+                .ign_pwr
+                .enabled
+        );
 
-        // Aborted fill never enables ignition.
+        // During TEST IGN countdown, abort_countdown + ign_safe + reset_controls + estop are enabled!
+        let mut counting = online(state(flags::SRV_ON | flags::FILL_PAUSED));
+        counting.countdown_target = Some(CountdownTarget::Ign);
+        let actions = evaluate(&counting);
+        assert!(!actions.ign_pwr.enabled);
+        assert!(actions.ign_safe.enabled);
+        assert!(actions.abort_countdown.enabled);
+        assert!(!actions.srv_off.enabled);
+        assert!(!actions.fill_on.enabled);
+        assert!(actions.reset_controls.enabled);
+        assert!(actions.estop.enabled);
+
+        // Aborted fill never enables SRV or IGN.
         let actions = evaluate(&online(state(flags::SRV_ON | flags::FILL_SEQ_ABORTED)));
         assert!(!actions.ign_pwr.enabled);
     }
 
     #[test]
-    fn live_mode_gates_srv_ign_on_completed_fill_and_blocks_individual_channels() {
+    fn live_mode_gates_srv_ign_on_completed_or_paused_fill_and_supports_countdown_abort() {
         // At rest before fill: FILL ON enabled, SRV+IGN disabled, individual SRV/IGN disabled.
         let actions = evaluate(&online_live(StateSnapshot::default()));
         assert!(actions.fill_on.enabled);
@@ -342,7 +398,7 @@ mod tests {
         assert!(!actions.srv_ign_off.enabled);
         assert!(!actions.srv_on.enabled);
         assert!(!actions.ign_pwr.enabled);
-        assert!(actions.srv_ign_on.reason.contains("completed FILL"));
+        assert!(actions.srv_ign_on.reason.contains("FILL"));
 
         // While filling: FILL OFF enabled, SRV+IGN disabled.
         let actions = evaluate(&online_live(state(flags::FILL_OPEN)));
@@ -353,16 +409,23 @@ mod tests {
         let actions = evaluate(&online_live(state(flags::FILL_SEQ_ABORTED)));
         assert!(!actions.srv_ign_on.enabled);
 
-        // Completed fill: SRV+IGN ON enabled!
+        // Paused fill OR completed fill: SRV+IGN ON enabled!
+        assert!(
+            evaluate(&online_live(state(flags::FILL_PAUSED)))
+                .srv_ign_on
+                .enabled
+        );
         let actions = evaluate(&online_live(state(flags::FILL_SEQ_COMPLETE)));
         assert!(actions.srv_ign_on.enabled);
         assert!(!actions.srv_ign_off.enabled);
 
-        // During 5 s countdown: channel actions locked, RESET CONTROLS + E-STOP stay enabled.
+        // During LIVE countdown: abort_countdown + srv_ign_off + RESET CONTROLS + E-STOP stay enabled!
         let mut counting = online_live(state(flags::FILL_SEQ_COMPLETE));
-        counting.countdown_active = true;
+        counting.countdown_target = Some(CountdownTarget::SrvIgn);
         let actions = evaluate(&counting);
         assert!(!actions.srv_ign_on.enabled);
+        assert!(actions.srv_ign_off.enabled);
+        assert!(actions.abort_countdown.enabled);
         assert!(!actions.fill_on.enabled);
         assert!(actions.reset_controls.enabled);
         assert!(actions.estop.enabled);
@@ -434,7 +497,7 @@ mod tests {
             ground_online: true,
             vehicle_online: true,
             pending: true,
-            countdown_active: false,
+            countdown_target: None,
             controls_ready: true,
             state: StateSnapshot::default(),
         });
@@ -463,7 +526,7 @@ mod tests {
             ground_online: true,
             vehicle_online: true,
             pending: false,
-            countdown_active: false,
+            countdown_target: None,
             controls_ready: true,
             state: state(flags::FILL_OPEN | flags::IGN_PWR),
         });
@@ -476,6 +539,7 @@ mod tests {
             ("ign_safe", &actions.ign_safe),
             ("srv_ign_on", &actions.srv_ign_on),
             ("srv_ign_off", &actions.srv_ign_off),
+            ("abort_countdown", &actions.abort_countdown),
             ("reset_fill", &actions.reset_fill),
         ] {
             if !action.enabled {

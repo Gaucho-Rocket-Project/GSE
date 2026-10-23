@@ -32,6 +32,7 @@ pub struct Actions {
     pub ign_safe: ActionState,
     pub srv_ign_on: ActionState,
     pub srv_ign_off: ActionState,
+    pub abort_countdown: ActionState,
     pub reset_controls: ActionState,
     pub reset_fill: ActionState,
     pub clear_faults: ActionState,
@@ -49,6 +50,7 @@ impl Actions {
             "ign_safe" => &self.ign_safe,
             "srv_ign_on" => &self.srv_ign_on,
             "srv_ign_off" => &self.srv_ign_off,
+            "abort_countdown" => &self.abort_countdown,
             "reset_controls" => &self.reset_controls,
             "reset_fill" => &self.reset_fill,
             "clear_faults" => &self.clear_faults,
@@ -68,6 +70,7 @@ impl Actions {
             ("ign_safe", &self.ign_safe),
             ("srv_ign_on", &self.srv_ign_on),
             ("srv_ign_off", &self.srv_ign_off),
+            ("abort_countdown", &self.abort_countdown),
             ("reset_controls", &self.reset_controls),
             ("reset_fill", &self.reset_fill),
             ("clear_faults", &self.clear_faults),
@@ -179,16 +182,44 @@ pub struct FillUi {
     /// Wall clock time at which the app will send the automatic FILL OFF.
     pub ends_at_epoch_ms: u64,
     pub active: bool,
+    pub paused: bool,
     pub seq_complete: bool,
     pub seq_aborted: bool,
     pub auto_off_pending: bool,
     pub completed_at_epoch_ms: u64,
 }
 
-/// Live-mode 5 s `SRV+IGN` countdown projection for the UI and SSE stream.
+/// Channel targeted by an active ignition countdown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CountdownTarget {
+    /// LIVE mode combined `SRV+IGN -> ON/PWR`.
+    SrvIgn,
+    /// TEST mode `IGN -> PWR` (with `SRV` already `ON`).
+    Ign,
+}
+
+impl CountdownTarget {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            CountdownTarget::SrvIgn => "srv_ign",
+            CountdownTarget::Ign => "ign",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            CountdownTarget::SrvIgn => "SRV+IGN",
+            CountdownTarget::Ign => "IGN",
+        }
+    }
+}
+
+/// Configurable countdown projection (`SRV+IGN` in `LIVE`, `IGN` in `TEST`)
+/// for the UI and SSE stream.
 #[derive(Clone, Default)]
 pub struct CountdownUi {
     pub active: bool,
+    pub target: Option<CountdownTarget>,
     pub duration_ms: u32,
     pub remaining_ms: u32,
     pub ends_at_epoch_ms: u64,
@@ -377,6 +408,7 @@ impl AppState {
                 .saturating_sub(now)
                 .min(u32::MAX as u64) as u32;
         } else {
+            self.countdown.target = None;
             self.countdown.duration_ms = (self.config.countdown_seconds as u32) * 1000;
             self.countdown.remaining_ms = 0;
         }
@@ -386,7 +418,11 @@ impl AppState {
             ground_online: self.ground.status == GroundStatus::Online,
             vehicle_online: self.vehicle.status == VehicleStatus::Online,
             pending: self.pending.is_some(),
-            countdown_active: self.countdown.active,
+            countdown_target: if self.countdown.active {
+                self.countdown.target
+            } else {
+                None
+            },
             controls_ready: self.controls.ready,
             state: self.vehicle.state,
         });
@@ -400,10 +436,11 @@ impl AppState {
         }
         let snap = self.vehicle.state;
         self.fill.active = snap.fill_open();
+        self.fill.paused = snap.fill_paused();
         self.fill.remaining_ms = snap.fill_remaining_ms;
         self.fill.seq_complete = snap.fill_seq_complete();
         self.fill.seq_aborted = snap.fill_seq_aborted();
-        if snap.fill_open() {
+        if snap.fill_open() || snap.fill_paused() {
             self.fill.duration_s = snap.fill_duration_s;
         } else if self.fill.duration_s == 0 {
             self.fill.duration_s = self.config.fill_seconds;
@@ -424,6 +461,11 @@ impl AppState {
             &mut out,
             "fill_timer",
             json::bool_json(snapshot.fill_timer_active()),
+        );
+        json::field(
+            &mut out,
+            "fill_paused",
+            json::bool_json(snapshot.fill_paused()),
         );
         json::field(
             &mut out,
@@ -486,6 +528,9 @@ impl AppState {
         }
         if snapshot.fill_timer_active() {
             names.push("FILL TIMER");
+        }
+        if snapshot.fill_paused() {
+            names.push("FILL PAUSED");
         }
         if snapshot.fill_seq_complete() {
             names.push("FILL SEQ DONE");
@@ -728,6 +773,7 @@ impl AppState {
             &self.fill.ends_at_epoch_ms.to_string(),
         );
         json::field(&mut fill, "active", json::bool_json(self.fill.active));
+        json::field(&mut fill, "paused", json::bool_json(self.fill.paused));
         json::field(
             &mut fill,
             "seq_complete",
@@ -756,6 +802,11 @@ impl AppState {
             &mut countdown,
             "active",
             json::bool_json(self.countdown.active),
+        );
+        json::field(
+            &mut countdown,
+            "target",
+            &json::opt_str_json(self.countdown.target.map(CountdownTarget::as_str)),
         );
         json::field(
             &mut countdown,

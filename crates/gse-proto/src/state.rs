@@ -32,6 +32,9 @@ pub mod flags {
     /// The vehicle is inhibited (e.g. watchdog reset recovery); operator must
     /// reset the fill sequence before ignition.
     pub const INHIBITED: u16 = 1 << 11;
+    /// FILL was manually turned OFF prior to timer expiry; remaining duration
+    /// is preserved for resume and downstream channels (SRV / SRV+IGN) unlock.
+    pub const FILL_PAUSED: u16 = 1 << 12;
 }
 
 /// Fault bits (sticky until cleared with the SYSTEM/CLEAR_FAULTS command).
@@ -121,8 +124,18 @@ impl StateSnapshot {
         self.has(flags::FILL_SEQ_COMPLETE)
     }
 
+    pub const fn fill_paused(&self) -> bool {
+        self.has(flags::FILL_PAUSED)
+    }
+
     pub const fn fill_seq_aborted(&self) -> bool {
         self.has(flags::FILL_SEQ_ABORTED)
+    }
+
+    /// True once `FILL` has completed automatically OR been manually paused
+    /// (`FILL -> OFF`) without an uncommanded abort.
+    pub const fn fill_ready(&self) -> bool {
+        (self.fill_seq_complete() || self.fill_paused()) && !self.fill_seq_aborted()
     }
 
     pub const fn estop(&self) -> bool {
@@ -232,7 +245,36 @@ mod tests {
         let state = StateSnapshot::all_safe();
         assert!(state.outputs_safe());
         assert!(!state.fill_open());
+        assert!(!state.fill_paused());
+        assert!(!state.fill_ready());
         assert!(state.has(flags::BOOT_SAFE));
         assert_eq!(state.summary().to_string(), "FILL=OFF SRV=OFF IGN=SAFE");
+    }
+
+    #[test]
+    fn fill_paused_preserves_remaining_ms_and_marks_fill_ready() {
+        let paused = StateSnapshot {
+            flags: flags::FILL_PAUSED,
+            faults: 0,
+            fill_remaining_ms: 3_450,
+            fill_duration_s: 10,
+            last_cmd_id: 7,
+            uptime_ms: 9_000,
+        };
+        let mut buf = [0u8; 32];
+        let n = paused.encode(&mut buf).unwrap();
+        let decoded = StateSnapshot::decode(&buf[..n]).unwrap();
+        assert_eq!(decoded, paused);
+        assert!(decoded.outputs_safe());
+        assert!(decoded.fill_paused());
+        assert!(!decoded.fill_seq_complete());
+        assert!(decoded.fill_ready());
+        assert_eq!(decoded.fill_remaining_ms, 3_450);
+
+        let aborted = StateSnapshot {
+            flags: flags::FILL_PAUSED | flags::FILL_SEQ_ABORTED,
+            ..paused
+        };
+        assert!(!aborted.fill_ready());
     }
 }

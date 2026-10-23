@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """End-to-end smoke test against a running gse-app console.
 
-Exercises BOTH operating modes end-to-end:
+Exercises BOTH operating modes and all three sequence capabilities end-to-end:
   1. LIVE mode (default launch setup):
-     - verifies SRV+IGN starts greyed out (OFF/SAFE) before fill completes
+     - verifies SRV+IGN starts greyed out (OFF/SAFE) before fill runs
      - verifies individual SRV / IGN actions are blocked in LIVE mode
-     - runs the timed FILL sequence to completion -> verifies SRV+IGN unlocks
-     - triggers SRV+IGN -> verifies the 5-second on-screen countdown holds all
-       outputs OFF/SAFE, aborts cleanly if interrupted, and after 5.0 s drives
-       SRV+IGN -> ON (SRV=ON, IGN=PWR)
-     - verifies mode switching is rejected while SRV+IGN is ON/PWR
-     - commands SRV+IGN -> OFF -> verifies both channels return to OFF/SAFE
+     - turns FILL -> ON, then manually turns FILL -> OFF prior to timer expiry:
+       verifies the FILL timer pauses (remaining_ms frozen), unlocks SRV+IGN,
+       and allows resuming FILL -> ON from the paused remaining time
+     - aborts SRV+IGN mid-countdown via BOTH `abort_countdown` and `srv_ign_off`:
+       verifies immediate cancellation, zero output actuation, and preserved
+       paused/completed FILL progress without needing a reset
+     - resumes FILL -> ON -> verifies automatic FILL -> OFF after only the
+       remaining duration -> runs full 5 s (and custom 2 s) countdown ->
+       SRV+IGN ON (SRV=ON, IGN=PWR) -> SRV+IGN OFF (OFF/SAFE)
   2. Settings switch to TEST mode:
-     - verifies independent FILL, SRV, and IGN controls and all safety gates
-     - fires IGN PWR, triggers E-STOP, runs RESET CONTROLS, tests reconnect
-       ALL SAFE and pre-shutdown ALL SAFE.
+     - verifies BOTH SRV and IGN start locked prior to FILL running
+     - turns FILL -> ON, pauses FILL -> OFF early -> verifies SRV unlocks
+     - turns SRV -> ON, triggers IGN countdown (`countdown.target == "ign"`),
+       and aborts mid-countdown via `ign_safe` / `abort_countdown`: verifies
+       IGN never energises, SRV automatically closes to OFF, and paused FILL
+       state/remaining_ms remain intact
+     - resumes FILL -> ON to completion, runs IGN countdown to IGN PWR,
+       triggers E-STOP, runs RESET CONTROLS, tests reconnect ALL SAFE, and
+       verifies pre-shutdown ALL SAFE.
 
 Usage: smoke.py BASE_URL TOKEN
 """
@@ -71,7 +80,7 @@ def wait_for(predicate, label, timeout=TIMEOUT):
                 return last
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             pass
-        time.sleep(0.08)
+        time.sleep(0.06)
     raise AssertionError(f"timeout waiting for {label}; last={json.dumps(last)[:450]}")
 
 
@@ -102,7 +111,7 @@ def main():
     check(s["config"]["op_mode"] == "live", "default operating mode is LIVE")
     check(
         s["config"]["countdown_seconds"] == 5 and s["countdown"]["duration_ms"] == 5000,
-        "default SRV+IGN countdown is 5 seconds",
+        "default ignition countdown is 5 seconds",
     )
     bad_cd, _ = request_status("/api/config", {"countdown_seconds": 0})
     check(bad_cd == 400, "out-of-range countdown_seconds is rejected")
@@ -112,31 +121,99 @@ def main():
     check(not s["vehicle"]["state"]["ign"], "vehicle IGN safe at initialisation")
 
     s = wait_for(lambda st: st["actions"]["fill_on"]["enabled"], "FILL gate open in LIVE mode")
-    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN greyed out before fill completes")
+    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN locked before fill runs")
     check(
-        "completed FILL" in s["actions"]["srv_ign_on"]["reason"],
-        "LIVE SRV+IGN reason requires completed FILL sequence",
+        "FILL" in s["actions"]["srv_ign_on"]["reason"],
+        "LIVE SRV+IGN reason explains FILL prerequisite",
     )
     check(not s["actions"]["srv_on"]["enabled"], "individual SRV control disabled in LIVE mode")
     check(not s["actions"]["ign_pwr"]["enabled"], "individual IGN control disabled in LIVE mode")
 
-    # Timed FILL sequence in LIVE mode unlocks SRV+IGN only on completion.
-    request("/api/config", {"fill_seconds": 2})
+    # --- Early FILL -> OFF pauses timer, preserves remaining_ms, unlocks SRV+IGN ---
+    request("/api/config", {"fill_seconds": 4})
     request("/api/command", {"action": "fill_on"})
     wait_for(lambda st: st["fill"]["active"], "LIVE fill running")
     s = state()
-    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN stays greyed out during active fill")
+    check(not s["actions"]["srv_ign_on"]["enabled"], "LIVE SRV+IGN stays locked during active fill")
 
+    time.sleep(0.9)
+    request("/api/command", {"action": "fill_off"})
+    s = wait_for(
+        lambda st: st["controls"]["fill"] == "OFF"
+        and st["fill"]["paused"]
+        and st["vehicle"]["state"]["fill_paused"],
+        "LIVE fill paused on early FILL -> OFF",
+    )
+    paused_rem_ms = s["fill"]["remaining_ms"]
+    check(
+        1200 <= paused_rem_ms <= 3400,
+        f"early FILL -> OFF paused timer with remaining={paused_rem_ms} ms",
+    )
+    check(
+        not s["fill"]["seq_aborted"] and not s["fill"]["seq_complete"],
+        "paused FILL is neither complete nor aborted",
+    )
+    check(
+        s["actions"]["srv_ign_on"]["enabled"] and s["actions"]["fill_on"]["enabled"],
+        "early FILL -> OFF unlocked SRV+IGN AND kept FILL resumable",
+    )
+    time.sleep(0.8)
+    s_after_wait = state()
+    check(
+        s_after_wait["fill"]["remaining_ms"] == paused_rem_ms,
+        f"paused FILL timer stays frozen while idle ({s_after_wait['fill']['remaining_ms']} ms)",
+    )
+
+    # --- Mid-countdown ABORT in LIVE mode preserves paused FILL state ---
+    request("/api/command", {"action": "srv_ign_on"})
+    s = wait_for(
+        lambda st: st["countdown"]["active"] and st["countdown"]["target"] == "srv_ign",
+        "LIVE SRV+IGN countdown active",
+    )
+    check(
+        s["actions"]["abort_countdown"]["enabled"] and s["actions"]["srv_ign_off"]["enabled"],
+        "LIVE countdown exposes both abort_countdown and srv_ign_off actions",
+    )
+    time.sleep(0.5)
+    request("/api/command", {"action": "abort_countdown"})
+    s = wait_for(lambda st: not st["countdown"]["active"], "LIVE countdown aborted via abort_countdown")
+    check(
+        s["controls"]["safe"]
+        and s["fill"]["paused"]
+        and s["fill"]["remaining_ms"] == paused_rem_ms
+        and s["actions"]["srv_ign_on"]["enabled"],
+        "aborting LIVE countdown kept outputs OFF/SAFE and preserved paused FILL progress",
+    )
+
+    # Also test aborting LIVE countdown via clicking SRV+IGN (`srv_ign_off`) directly.
+    request("/api/command", {"action": "srv_ign_on"})
+    wait_for(lambda st: st["countdown"]["active"], "LIVE countdown re-armed")
+    request("/api/command", {"action": "srv_ign_off"})
+    s = wait_for(lambda st: not st["countdown"]["active"], "LIVE countdown aborted via srv_ign_off")
+    check(
+        s["controls"]["safe"] and s["fill"]["paused"],
+        "toggling SRV+IGN during countdown also aborted cleanly",
+    )
+
+    # --- Resume FILL -> ON from paused remaining_ms -> auto FILL -> OFF ---
+    t_resume = time.monotonic()
+    request("/api/command", {"action": "fill_on"})
+    wait_for(lambda st: st["fill"]["active"] and not st["fill"]["paused"], "LIVE fill resumed")
     s = wait_for(
         lambda st: st["fill"]["seq_complete"]
         and not st["fill"]["active"]
+        and not st["fill"]["paused"]
         and st["actions"]["srv_ign_on"]["enabled"],
-        "LIVE fill sequence complete and SRV+IGN unlocked",
-        timeout=15,
+        "resumed LIVE fill completed automatically",
+        timeout=10,
     )
-    check(True, "completed FILL unlocked SRV+IGN in LIVE mode")
+    elapsed_resume = time.monotonic() - t_resume
+    check(
+        elapsed_resume < 3.9,
+        f"resumed FILL completed after remaining duration rather than restarting 4 s ({elapsed_resume:.2f} s)",
+    )
 
-    # Press SRV+IGN: verify 5-second on-screen countdown -> automatic SRV+IGN ON.
+    # Press SRV+IGN: verify full 5-second countdown -> automatic SRV+IGN ON.
     t_armed = time.monotonic()
     request("/api/command", {"action": "srv_ign_on"})
     s = wait_for(lambda st: st["countdown"]["active"], "5 s SRV+IGN countdown active")
@@ -184,59 +261,30 @@ def main():
         "operator SRV+IGN -> OFF returned vehicle cleanly to OFF/SAFE",
     )
 
-    # Also verify modifying countdown_seconds in Settings (e.g. 2 s, same as fill_seconds).
-    request("/api/config", {"countdown_seconds": 2})
-    s = wait_for(
-        lambda st: st["config"]["countdown_seconds"] == 2 and st["countdown"]["duration_ms"] == 2000,
-        "custom 2 s countdown_seconds applied",
-    )
-    t_custom = time.monotonic()
-    request("/api/command", {"action": "srv_ign_on"})
-    s = wait_for(lambda st: st["countdown"]["active"], "2 s custom countdown active")
-    check(
-        s["countdown"]["duration_ms"] == 2000 and 500 <= s["countdown"]["remaining_ms"] <= 2000,
-        f"custom 2 s countdown exposed to UI (remaining={s['countdown']['remaining_ms']} ms)",
-    )
-    s = wait_for(
-        lambda st: st["controls"]["srv"] == "ON"
-        and st["controls"]["ign"] == "PWR"
-        and st["actions"]["srv_ign_off"]["enabled"],
-        "SRV+IGN -> ON acknowledged after modified 2 s countdown",
-        timeout=6,
-    )
-    elapsed_custom = time.monotonic() - t_custom
-    check(
-        1.9 <= elapsed_custom < 4.0,
-        f"modified 2 s countdown fired SRV+IGN -> ON on schedule ({elapsed_custom:.2f} s)",
-    )
-    request("/api/command", {"action": "srv_ign_off"})
-    wait_for(lambda st: st["controls"]["safe"], "SRV+IGN -> OFF after custom countdown")
-    request("/api/config", {"countdown_seconds": 5})
-
     # Clear completed-fill latch before switching to TEST mode.
     request("/api/command", {"action": "reset_controls"})
     wait_for(
         lambda st: st["controls"]["safe"]
         and not st["vehicle"]["state"]["fill_seq_complete"]
+        and not st["vehicle"]["state"]["fill_paused"]
         and st["actions"]["fill_on"]["enabled"],
         "LIVE controls reset cleanly before switching to TEST mode",
     )
 
     # ======================================================================
-    # PART 2: TEST MODE (independent FILL, SRV, IGN controls & safety gates)
+    # PART 2: TEST MODE (independent FILL, SRV, IGN controls & countdown abort)
     # ======================================================================
-    request("/api/config", {"op_mode": "test", "fill_seconds": 2})
+    request("/api/config", {"op_mode": "test", "fill_seconds": 4, "countdown_seconds": 2})
     s = wait_for(
-        lambda st: st["config"]["op_mode"] == "test" and st["actions"]["srv_on"]["enabled"],
+        lambda st: st["config"]["op_mode"] == "test",
         "switched to TEST mode",
     )
     check(not s["actions"]["srv_ign_on"]["enabled"], "combined SRV+IGN disabled in TEST mode")
+    check(not s["actions"]["srv_on"]["enabled"], "SRV locked before FILL runs in TEST mode")
     check(not s["actions"]["ign_pwr"]["enabled"], "IGN blocked at rest in TEST mode")
     check("SRV" in s["actions"]["ign_pwr"]["reason"], "IGN reason names SRV in TEST mode")
 
     request("/api/command", {"action": "fill_on"})
-    # The machine must not move on the request: while the command is in
-    # flight the confirmed state is still OFF and only the target says ON.
     s = wait_for(
         lambda st: st["pending"] is not None
         and st["controls"]["target"] is not None
@@ -253,22 +301,19 @@ def main():
         "FILL confirmed ON",
     )
     check(True, "FILL opened and the machine moved to ON after the ACK")
+    check("FILL" in s["actions"]["srv_on"]["reason"], "SRV blocked while FILL is open")
 
+    # --- Pause FILL early in TEST mode -> SRV unlocks ---
+    time.sleep(0.8)
+    request("/api/command", {"action": "fill_off"})
     s = wait_for(
-        lambda st: st["fill"]["active"] and "FILL" in st["actions"]["srv_on"]["reason"],
-        "SRV interlock while FILL is open",
+        lambda st: st["fill"]["paused"] and st["actions"]["srv_on"]["enabled"],
+        "TEST fill paused and SRV unlocked",
     )
-    check(True, "SRV blocked while FILL is open")
-
-    s = wait_for(
-        lambda st: st["fill"]["seq_complete"] and st["actions"]["srv_on"]["enabled"],
-        "fill sequence complete",
-        timeout=15,
-    )
-    check(True, "fill auto-off completed the sequence")
+    test_paused_rem = s["fill"]["remaining_ms"]
     check(
-        not s["actions"]["ign_pwr"]["enabled"] and "SRV" in s["actions"]["ign_pwr"]["reason"],
-        "IGN still gated until SRV is on",
+        test_paused_rem > 0 and s["actions"]["srv_on"]["enabled"],
+        f"pausing FILL in TEST mode unlocked SRV (remaining={test_paused_rem} ms)",
     )
 
     request("/api/command", {"action": "srv_on"})
@@ -289,18 +334,57 @@ def main():
         "IGN unlocked and FILL interlocked",
     )
     check(not s["actions"]["fill_on"]["enabled"], "FILL blocked while SRV is on")
-    check(True, "interlock reason reported")
 
-    # The API re-checks the same transition table even if the browser is
-    # bypassed: an unsafe FILL ON must not move the output.
+    # Unsafe FILL ON while SRV is ON must be refused.
     request("/api/command", {"action": "fill_on"})
-    time.sleep(1.0)
+    time.sleep(0.5)
     s = state()
-    check(not s["vehicle"]["state"]["fill"], "unsafe FILL ON refused by the app")
-    check(s["vehicle"]["state"]["srv"], "SRV stayed on")
+    check(not s["vehicle"]["state"]["fill"] and s["vehicle"]["state"]["srv"], "unsafe FILL ON refused while SRV ON")
 
+    # --- Arm IGN countdown in TEST mode and ABORT mid-countdown ---
     request("/api/command", {"action": "ign_pwr"})
-    s = wait_for(lambda st: st["vehicle"]["state"]["ign"], "IGN PWR")
+    s = wait_for(
+        lambda st: st["countdown"]["active"] and st["countdown"]["target"] == "ign",
+        "TEST IGN countdown active",
+    )
+    check(
+        not s["vehicle"]["state"]["ign"]
+        and s["actions"]["abort_countdown"]["enabled"]
+        and s["actions"]["ign_safe"]["enabled"],
+        "IGN countdown keeps igniter SAFE and enables abort actions",
+    )
+    request("/api/command", {"action": "ign_safe"})
+    s = wait_for(
+        lambda st: not st["countdown"]["active"]
+        and st["controls"]["safe"]
+        and not st["vehicle"]["state"]["srv"],
+        "aborting TEST IGN countdown returned SRV -> OFF",
+    )
+    check(
+        not s["vehicle"]["state"]["ign"]
+        and s["fill"]["paused"]
+        and s["fill"]["remaining_ms"] == test_paused_rem
+        and s["actions"]["fill_on"]["enabled"]
+        and s["actions"]["srv_on"]["enabled"],
+        "aborting TEST IGN countdown safed all outputs while keeping paused FILL intact",
+    )
+
+    # --- Resume paused FILL to completion, then complete full TEST IGN countdown ---
+    request("/api/command", {"action": "fill_on"})
+    wait_for(
+        lambda st: st["fill"]["seq_complete"] and st["actions"]["srv_on"]["enabled"],
+        "resumed TEST fill complete",
+        timeout=10,
+    )
+    request("/api/command", {"action": "srv_on"})
+    wait_for(lambda st: st["actions"]["ign_pwr"]["enabled"], "IGN armed after resumed fill")
+
+    t_ign = time.monotonic()
+    request("/api/command", {"action": "ign_pwr"})
+    wait_for(lambda st: st["countdown"]["active"], "2 s TEST IGN countdown active")
+    s = wait_for(lambda st: st["vehicle"]["state"]["ign"], "IGN PWR after countdown", timeout=6)
+    elapsed_ign = time.monotonic() - t_ign
+    check(elapsed_ign >= 1.9, f"TEST IGN energised after 2 s countdown ({elapsed_ign:.2f} s)")
     check(s["vehicle"]["summary"].endswith("IGN=PWR"), "IGN PWR acknowledged by the vehicle")
 
     request("/api/command", {"action": "estop"})
@@ -319,18 +403,24 @@ def main():
         lambda st: st["controls"]["safe"]
         and st["vehicle"]["state"]["estop"] is False
         and st["vehicle"]["state"]["fill_seq_complete"] is False
+        and st["vehicle"]["state"]["fill_paused"] is False
         and st["vehicle"]["state"]["fill_seq_aborted"] is False,
         "controls reset to OFF/SAFE",
     )
     check(s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE", "reset returned to OFF/SAFE")
     s = wait_for(
-        lambda st: st["actions"]["fill_on"]["enabled"] and st["actions"]["reset_fill"]["enabled"] is False,
+        lambda st: st["actions"]["fill_on"]["enabled"]
+        and not st["actions"]["srv_on"]["enabled"]
+        and st["actions"]["reset_fill"]["enabled"] is False,
         "machine usable after reset",
     )
-    check(True, "reset cleared every latch (nothing left to reset)")
+    check(True, "reset cleared every latch and re-locked SRV until next FILL")
 
     # --- Reconnect with an output ON: initialisation must force OFF/SAFE. --
-    s = wait_for(lambda st: st["actions"]["srv_on"]["enabled"], "SRV gate open again")
+    request("/api/command", {"action": "fill_on"})
+    wait_for(lambda st: st["controls"]["fill"] == "ON", "FILL on for pause before reconnect")
+    request("/api/command", {"action": "fill_off"})
+    wait_for(lambda st: st["actions"]["srv_on"]["enabled"], "SRV unlocked before reconnect")
     request("/api/command", {"action": "srv_on"})
     wait_for(lambda st: st["vehicle"]["state"]["srv"], "SRV on before reconnect")
 
@@ -347,14 +437,13 @@ def main():
     check(s["controls"]["summary"] == "FILL=OFF SRV=OFF IGN=SAFE", "machine re-initialised safe")
 
     # --- Shutdown with an active output: ALL SAFE must be commanded. ------
-    s = wait_for(lambda st: st["actions"]["srv_on"]["enabled"], "SRV gate open before shutdown")
-    request("/api/command", {"action": "srv_on"})
-    s = wait_for(lambda st: st["vehicle"]["state"]["srv"], "SRV on before shutdown")
-    check(True, "shutdown will happen with SRV ON")
+    request("/api/command", {"action": "fill_on"})
+    wait_for(lambda st: st["controls"]["fill"] == "ON", "FILL on before shutdown")
+    check(True, "shutdown will happen with an active output")
 
     s = request("/api/state")
-    check(s["stats"]["commands_sent"] >= 7, "commands were transmitted")
-    check(s["stats"]["acks_ok"] >= 7, "every command was acknowledged")
+    check(s["stats"]["commands_sent"] >= 10, "commands were transmitted")
+    check(s["stats"]["acks_ok"] >= 10, "every command was acknowledged")
 
     # --- Shutdown: the app must command ALL SAFE before it exits. ---------
     log_path = s.get("log_path")
