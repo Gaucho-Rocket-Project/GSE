@@ -37,6 +37,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p gse-fw-check --all-targets --no-default-features --features radio-e28-2g4m27s -- -D warnings
       # Type-check the serial backends for the other supported operating
       # systems on this Linux runner (they are cfg-gated per host OS).
       - run: cargo clippy -p gse-app --all-targets --features check-windows -- -D warnings
@@ -80,6 +81,9 @@ jobs:
           workspaces: firmware/stm32h753
       # Run from inside the package so `firmware/stm32h753/.cargo/config.toml`
       # supplies the Cortex-M target triple and the `-Tlink.x` link argument.
-      - name: Build ground and vehicle firmware
+      - name: Build ground and vehicle firmware (DX-LR42 default)
         working-directory: firmware/stm32h753
         run: cargo build --release --bins
+      - name: Build ground and vehicle firmware (E28-2G4M27S default)
+        working-directory: firmware/stm32h753
+        run: cargo build --release --bins --no-default-features --features radio-e28-2g4m27s

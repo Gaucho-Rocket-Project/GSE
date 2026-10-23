@@ -12,6 +12,10 @@ use crate::serial::SerialPort;
 pub trait ByteLink: Send {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize>;
     fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
+    /// Reconfigure the underlying serial line speed without closing the device.
+    fn set_baud(&mut self, _baud: u32) -> io::Result<()> {
+        Ok(())
+    }
     /// Human readable port description for logs and the console.
     fn name(&self) -> String;
 }
@@ -37,6 +41,10 @@ impl ByteLink for SerialLink {
 
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         self.port.write_all(data)
+    }
+
+    fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+        self.port.set_baud(baud)
     }
 
     fn name(&self) -> String {

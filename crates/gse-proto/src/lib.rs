@@ -32,8 +32,10 @@ pub use control::{
 pub use frame::{DecodeError, DecodeStats, Frame, FrameDecoder};
 pub use fsm::{ControlEvent, ControlState, FillState, IgnState, Interlocks, SrvState, Transition};
 pub use message::{
-    capabilities, Ack, Command, Event, FwVersion, Heartbeat, Hello, LinkStat, Message, Ping, Pong,
+    capabilities, link_cfg_flags, Ack, Command, Event, FwVersion, Heartbeat, Hello, LinkConfig,
+    LinkConfigAck, LinkStat, Message, Ping, Pong,
 };
+pub use radio::{DxLr42Baud, DxLr42Level, RadioModule, UsbBaud};
 pub use state::{faults, flags, StateSnapshot, StateSummary};
 
 /// Increment when the wire format changes in a way older nodes cannot parse.

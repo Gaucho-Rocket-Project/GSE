@@ -12,6 +12,11 @@ publish = false
 name = "gse_fw_check"
 path = "src/lib.rs"
 
+[features]
+default = ["radio-dx-lr42"]
+radio-dx-lr42 = []
+radio-e28-2g4m27s = []
+
 [dependencies]
 gse-proto = { workspace = true }
 gse-fw-core = { workspace = true }

@@ -29,8 +29,8 @@ use gse_proto::control::{cmd_flags, ACTION_ON};
 use gse_proto::fsm::{ControlEvent, ControlState, FillState, IgnState, Interlocks, SrvState};
 use gse_proto::Transition;
 use gse_proto::{
-    encode_message, AckResult, Command, Control, Endpoint, Event, EventCode, Frame, Heartbeat,
-    Hello, Message, Pong, Reason, StateSnapshot,
+    encode_message, link_cfg_flags, AckResult, Command, Control, Endpoint, Event, EventCode, Frame,
+    Heartbeat, Hello, LinkConfig, LinkConfigAck, Message, Pong, Reason, StateSnapshot,
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, Leds, VehicleHal};
@@ -158,6 +158,7 @@ pub struct Vehicle<H: VehicleHal> {
     last_activity: u32,
     crc_errors_seen: u32,
     at_recoveries_seen: u16,
+    pending_link_cfg: Option<LinkConfig>,
 }
 
 impl<H: VehicleHal> Vehicle<H> {
@@ -180,6 +181,7 @@ impl<H: VehicleHal> Vehicle<H> {
             last_activity: now,
             crc_errors_seen: 0,
             at_recoveries_seen: 0,
+            pending_link_cfg: None,
         }
     }
 
@@ -323,6 +325,22 @@ impl<H: VehicleHal> Vehicle<H> {
             self.last_state_tx = now;
         }
 
+        // Complete any staged RF link switchover strictly after `LinkConfigAck`
+        // has drained out of the old radio's TX buffer / shift register.
+        if let Some(cfg) = self.pending_link_cfg {
+            if !self.hal.radio_tx_busy() {
+                self.pending_link_cfg = None;
+                if self.hal.apply_link_config(cfg).is_ok() {
+                    self.decoder = DxLr42Receiver::new();
+                    self.emit_event(EventCode::LinkReconfigured, cfg.radio.code(), now);
+                    self.send_hello(now);
+                    self.send_state(now);
+                } else {
+                    self.state.faults |= gse_proto::faults::CONFIG_ERROR;
+                }
+            }
+        }
+
         let mut buf = [0u8; RX_CHUNK];
         for _ in 0..4 {
             let n = self.hal.read_radio(&mut buf);
@@ -390,6 +408,7 @@ impl<H: VehicleHal> Vehicle<H> {
         }
         match frame.message() {
             Some(Message::Command(cmd)) => self.handle_command(cmd, now),
+            Some(Message::LinkConfig(cfg)) => self.handle_link_config(cfg, now),
             Some(Message::Ping(ping)) => {
                 let state = self.snapshot_at(now);
                 self.send_msg(
@@ -403,6 +422,91 @@ impl<H: VehicleHal> Vehicle<H> {
             }
             Some(Message::Heartbeat(Heartbeat { .. })) => {}
             _ => {}
+        }
+    }
+
+    fn handle_link_config(&mut self, cfg: LinkConfig, now: u32) {
+        let cur = self.hal.link_state();
+        if self.state.ign {
+            self.emit_event(EventCode::SafetyReject, Reason::IgnPowered.as_u8(), now);
+            let _ = self.send_msg(
+                Message::LinkConfigAck(LinkConfigAck {
+                    req_id: cfg.req_id,
+                    result: AckResult::RejectedSafety,
+                    reason: Reason::IgnPowered,
+                    usb_baud: cur.usb_baud,
+                    uart_baud: cur.uart_baud,
+                    radio: cur.radio,
+                    flags: if cur.flash_saved {
+                        link_cfg_flags::PERSIST
+                    } else {
+                        0
+                    },
+                }),
+                Endpoint::Host,
+            );
+            return;
+        }
+        if self.state.fill || self.state.srv {
+            let reason = if self.state.fill {
+                Reason::FillActive
+            } else {
+                Reason::NotPermitted
+            };
+            self.emit_event(EventCode::SafetyReject, reason.as_u8(), now);
+            let _ = self.send_msg(
+                Message::LinkConfigAck(LinkConfigAck {
+                    req_id: cfg.req_id,
+                    result: AckResult::RejectedSafety,
+                    reason,
+                    usb_baud: cur.usb_baud,
+                    uart_baud: cur.uart_baud,
+                    radio: cur.radio,
+                    flags: if cur.flash_saved {
+                        link_cfg_flags::PERSIST
+                    } else {
+                        0
+                    },
+                }),
+                Endpoint::Host,
+            );
+            return;
+        }
+        if !self.hal.probe_radio_module(cfg.radio) {
+            self.state.faults |= gse_proto::faults::RADIO_ERROR;
+            let _ = self.send_msg(
+                Message::LinkConfigAck(LinkConfigAck {
+                    req_id: cfg.req_id,
+                    result: AckResult::HardwareFault,
+                    reason: Reason::HardwareFault,
+                    usb_baud: cur.usb_baud,
+                    uart_baud: cur.uart_baud,
+                    radio: cur.radio,
+                    flags: if cur.flash_saved {
+                        link_cfg_flags::PERSIST
+                    } else {
+                        0
+                    },
+                }),
+                Endpoint::Host,
+            );
+            return;
+        }
+        let ack = LinkConfigAck {
+            req_id: cfg.req_id,
+            result: AckResult::Ok,
+            reason: Reason::None,
+            usb_baud: cur.usb_baud,
+            uart_baud: cfg.uart_baud,
+            radio: cfg.radio,
+            flags: if cfg.persist() {
+                link_cfg_flags::PERSIST
+            } else {
+                0
+            },
+        };
+        if self.send_msg(Message::LinkConfigAck(ack), Endpoint::Host) {
+            self.pending_link_cfg = Some(cfg);
         }
     }
 
@@ -765,7 +869,9 @@ impl<H: VehicleHal> Vehicle<H> {
                 | gse_proto::capabilities::SERVOS
                 | gse_proto::capabilities::IGNITER
                 | gse_proto::capabilities::WATCHDOG
-                | gse_proto::capabilities::FILL_TIMER,
+                | gse_proto::capabilities::FILL_TIMER
+                | gse_proto::capabilities::LINK_CONFIG
+                | gse_proto::capabilities::RADIO_E28_2G4M27S,
         };
         if self.send_msg(Message::Hello(hello), Endpoint::Broadcast) {
             self.last_hello_tx = now;
@@ -1418,5 +1524,92 @@ mod tests {
         let acks = poll_until_ack(&mut vehicle);
         assert!(acks[0].result.is_ok());
         assert!(vehicle.hal().fill);
+    }
+
+    #[test]
+    fn link_config_requires_safe_outputs_probes_spi_and_switches_after_ack() {
+        let mut vehicle = new_vehicle();
+        vehicle.poll();
+        vehicle.hal_mut().drain_frames();
+
+        // 1. Reject live radio reconfiguration while FILL valve is open.
+        send(&mut vehicle, cmd(Control::Fill, 1, 10, 1));
+        let _ = poll_until_ack(&mut vehicle);
+        let req = LinkConfig {
+            req_id: 77,
+            usb_baud: gse_proto::UsbBaud::Baud230400,
+            uart_baud: gse_proto::DxLr42Baud::Baud115200,
+            radio: gse_proto::RadioModule::E28_2G4M27S,
+            flags: link_cfg_flags::PERSIST,
+        };
+        vehicle.hal_mut().feed_frame(
+            &Message::LinkConfig(req),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            2,
+        );
+        vehicle.poll();
+        let frames = vehicle.hal_mut().drain_frames();
+        assert!(frames.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a))
+                if a.req_id == 77
+                    && a.result == AckResult::RejectedSafety
+                    && a.reason == Reason::FillActive
+        )));
+        assert_eq!(vehicle.hal().link.radio, gse_proto::RadioModule::DxLr42);
+
+        // Close FILL so all outputs are SAFE.
+        send(&mut vehicle, cmd(Control::Fill, 0, 0, 2));
+        let _ = poll_until_ack(&mut vehicle);
+
+        // 2. Missing E28 hardware fails pre-flight probe without losing the active link.
+        vehicle.hal_mut().e28_present = false;
+        vehicle.hal_mut().feed_frame(
+            &Message::LinkConfig(req),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            3,
+        );
+        vehicle.poll();
+        let frames = vehicle.hal_mut().drain_frames();
+        assert!(frames.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a))
+                if a.req_id == 77 && a.result == AckResult::HardwareFault
+        )));
+        assert_eq!(vehicle.hal().link.radio, gse_proto::RadioModule::DxLr42);
+
+        // 3. With E28 hardware present, ACK leaves on the old radio BEFORE switchover.
+        vehicle.hal_mut().e28_present = true;
+        vehicle.hal_mut().feed_frame(
+            &Message::LinkConfig(req),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            4,
+        );
+        vehicle.poll();
+        assert_eq!(
+            vehicle.hal().link.radio,
+            gse_proto::RadioModule::DxLr42,
+            "must transmit LinkConfigAck on old radio before switching"
+        );
+        let frames = vehicle.hal_mut().drain_frames();
+        assert!(frames.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a)) if a.req_id == 77 && a.result == AckResult::Ok
+        )));
+
+        // Next poll after radio TX buffer drains commits switch + flash persistence.
+        vehicle.poll();
+        assert_eq!(
+            vehicle.hal().link.radio,
+            gse_proto::RadioModule::E28_2G4M27S
+        );
+        assert_eq!(
+            vehicle.hal().link.uart_baud,
+            gse_proto::DxLr42Baud::Baud115200
+        );
+        assert!(vehicle.hal().link.flash_saved);
     }
 }

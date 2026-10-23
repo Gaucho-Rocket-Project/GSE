@@ -5,11 +5,11 @@
 
 use std::collections::VecDeque;
 
-use gse_proto::{Endpoint, Frame, FrameDecoder, Message};
+use gse_proto::{Endpoint, Frame, FrameDecoder, LinkConfig, Message, RadioModule, Reason};
 
-use crate::hal::{GroundHal, Leds, VehicleHal};
+use crate::hal::{GroundHal, Leds, LinkState, VehicleHal};
 
-/// Fake vehicle board: captures servo/igniter outputs and radio traffic.
+/// Fake vehicle board: captures servo/igniter outputs, radio traffic, and link settings.
 pub struct MockVehicle {
     pub now_ms: u32,
     pub fill: bool,
@@ -21,6 +21,8 @@ pub struct MockVehicle {
     pub watchdog_kicks: u32,
     pub device_id: u32,
     pub radio_ready: bool,
+    pub link: LinkState,
+    pub e28_present: bool,
 }
 
 impl Default for MockVehicle {
@@ -36,6 +38,8 @@ impl Default for MockVehicle {
             watchdog_kicks: 0,
             device_id: 0x5645_4849, // "VEHI"
             radio_ready: true,
+            link: LinkState::default(),
+            e28_present: true,
         }
     }
 }
@@ -110,6 +114,33 @@ impl VehicleHal for MockVehicle {
         self.radio_ready
     }
 
+    fn radio_tx_busy(&self) -> bool {
+        !self.radio_out.is_empty()
+    }
+
+    fn link_state(&self) -> LinkState {
+        self.link
+    }
+
+    fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
+        match radio {
+            RadioModule::DxLr42 => true,
+            RadioModule::E28_2G4M27S => self.e28_present,
+        }
+    }
+
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        if cfg.radio == RadioModule::E28_2G4M27S && !self.e28_present {
+            return Err(Reason::HardwareFault);
+        }
+        self.link.uart_baud = cfg.uart_baud;
+        self.link.radio = cfg.radio;
+        if cfg.persist() {
+            self.link.flash_saved = true;
+        }
+        Ok(cfg.persist())
+    }
+
     fn set_leds(&mut self, leds: Leds) {
         self.leds = leds;
     }
@@ -135,6 +166,8 @@ pub struct MockGround {
     pub device_id: u32,
     pub usb_tx_pending: usize,
     pub radio_ready: bool,
+    pub link: LinkState,
+    pub e28_present: bool,
 }
 
 impl Default for MockGround {
@@ -150,6 +183,8 @@ impl Default for MockGround {
             device_id: 0x4752_4F55, // "GROU"
             usb_tx_pending: 0,
             radio_ready: true,
+            link: LinkState::default(),
+            e28_present: true,
         }
     }
 }
@@ -227,6 +262,10 @@ impl GroundHal for MockGround {
         self.usb_tx_pending
     }
 
+    fn usb_tx_busy(&self) -> bool {
+        self.usb_tx_pending > 0 || !self.usb_out.is_empty()
+    }
+
     fn read_radio(&mut self, buf: &mut [u8]) -> usize {
         let mut n = 0;
         while n < buf.len() {
@@ -249,6 +288,34 @@ impl GroundHal for MockGround {
 
     fn radio_ready(&mut self) -> bool {
         self.radio_ready
+    }
+
+    fn radio_tx_busy(&self) -> bool {
+        !self.radio_out.is_empty()
+    }
+
+    fn link_state(&self) -> LinkState {
+        self.link
+    }
+
+    fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
+        match radio {
+            RadioModule::DxLr42 => true,
+            RadioModule::E28_2G4M27S => self.e28_present,
+        }
+    }
+
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        if cfg.radio == RadioModule::E28_2G4M27S && !self.e28_present {
+            return Err(Reason::HardwareFault);
+        }
+        self.link.usb_baud = cfg.usb_baud;
+        self.link.uart_baud = cfg.uart_baud;
+        self.link.radio = cfg.radio;
+        if cfg.persist() {
+            self.link.flash_saved = true;
+        }
+        Ok(cfg.persist())
     }
 
     fn set_leds(&mut self, leds: Leds) {

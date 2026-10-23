@@ -48,6 +48,10 @@ impl SerialPort {
     pub fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
         self.inner.write_all(data)
     }
+
+    pub fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+        self.inner.set_baud(baud)
+    }
 }
 
 /// Enumerate candidate serial ports. Order is stable (by label).
