@@ -11,9 +11,9 @@
   --text: #d6e1e0;
   --muted: #7d8f8d;
   --dim: #4c5a59;
-  --accent: #00ff41;
+  --accent: #d6e1e0;
   --accent-dim: rgba(0, 255, 65, 0.14);
-  --ok: #00ff41;
+  --ok: #d6e1e0;
   --warn: #ffcc33;
   --danger: #ff4d4d;
   --danger-dim: #2b0d10;
@@ -45,26 +45,6 @@ button:disabled { cursor: not-allowed; }
 [hidden] { display: none !important; }
 
 /* ---------- CRT shell ---------- */
-
-.crt {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 100vh;
-}
-
-.scanlines {
-  position: fixed;
-  inset: 0;
-  background:
-    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.20) 50%),
-    linear-gradient(90deg, rgba(255, 0, 0, 0.03), rgba(0, 255, 65, 0.015), rgba(0, 140, 255, 0.03));
-  background-size: 100% 3px, 100% 100%;
-  pointer-events: none;
-  z-index: 40;
-}
-
 .crt-glow {
   position: fixed;
   inset: 0;

@@ -7,7 +7,7 @@
 pub const INDEX_HTML: &str = include_str!("../web/index.html");
 pub const APP_CSS: &str = include_str!("../web/app.css");
 pub const APP_JS: &str = include_str!("../web/app.js");
-pub const FAVICON: &str = include_str!("../web/favicon.svg");
+pub const FAVICON: &str = include_str!("../web/grp.svg");
 
 pub fn index_html(token: &str) -> String {
     INDEX_HTML.replace("__GSE_TOKEN__", token)
