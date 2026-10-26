@@ -74,6 +74,22 @@
     });
   }
 
+  var USB_BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800];
+  var UART_BAUDS = [2400, 4800, 9600, 19200, 38400, 57600, 115200];
+  var RADIO_PART_NAMES = {
+    "dx-lr42-24t12d": "DX-LR42-24T12D",
+    "e28-2g4m27s": "E28-2G4M27S"
+  };
+
+  function radioIdOf(cfgOrLink) {
+    var r = (cfgOrLink && cfgOrLink.radio) || "dx-lr42-24t12d";
+    return String(r).toLowerCase() === "e28-2g4m27s" ? "e28-2g4m27s" : "dx-lr42-24t12d";
+  }
+
+  function radioPartOf(id) {
+    return RADIO_PART_NAMES[id] || "DX-LR42-24T12D";
+  }
+
   function isLiveMode() {
     var mode = (config && config.op_mode) || "live";
     return String(mode).toLowerCase() !== "test";
@@ -441,11 +457,30 @@
 
     var groundOnline = s.ground.status === "online";
     var vehicleOnline = s.vehicle.status === "online";
+    var gLink = (s.ground && s.ground.link) || {};
+    var activeRadioId = groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config);
+    var activeRadioPart = radioPartOf(activeRadioId);
+    var activeUsbBaud = (groundOnline && gLink.usb_baud) ? gLink.usb_baud : ((config && config.baud) || 115200);
+    var activeUartBaud = (groundOnline && gLink.uart_baud) ? gLink.uart_baud : ((config && config.uart_baud) || 9600);
+    var isE28 = activeRadioId === "e28-2g4m27s";
+
+    var titleBrand = $("term-title");
+    if (titleBrand) {
+      titleBrand.textContent = "GROUND SUPPORT · NUCLEO-H753ZI · " + activeRadioPart;
+    }
+
     var gState = groundOnline ? "online" : (s.ground.status === "error" ? "error" : "scanning");
     pill("pill-ground", gState, s.ground.status + (groundOnline && s.ground.port ? " · " + s.ground.port : ""));
     pill("pill-vehicle", vehicleOnline ? "online" : (s.vehicle.status === "pinging" ? "pinging" : "offline"),
       s.vehicle.status + (vehicleOnline && s.vehicle.rtt_ms !== null ? " · " + s.vehicle.rtt_ms + " ms" : ""));
     pill("pill-link", vehicleOnline ? "online" : "idle", s.vehicle.rtt_ms !== null ? s.vehicle.rtt_ms + " ms" : "–");
+    pill(
+      "pill-radio",
+      s.link_reconfig ? "scanning" : (groundOnline ? "online" : "idle"),
+      s.link_reconfig
+        ? "switching…"
+        : (isE28 ? "E28-2G4M27S · SPI1" : ("DX-LR42 · " + activeUartBaud))
+    );
     pill("pill-opmode", live ? "live" : "test", live ? "LIVE" : "TEST");
     pill("pill-mode", s.sim ? "sim" : "online", s.sim ? "SIMULATOR" : "HARDWARE");
 
@@ -611,10 +646,13 @@
     renderCountdown(s);
     renderRail(s, live, groundOnline, vehicleOnline, fillOn, srvOn, ignPwr, cdActive);
 
-    $("scan-note").textContent = s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : ""));
+    $("scan-note").textContent = s.link_reconfig
+      ? ("Reconfiguring link hardware: " + s.link_reconfig)
+      : (s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : "")));
     $("foot-config").textContent = "mode " + (live ? "LIVE" : "TEST") + " · fill " +
       (s.config ? s.config.fill_seconds : "?") + " s · countdown " + countdownSecondsCfg() + " s · " +
-      (s.config ? s.config.port + " @" + s.config.baud : "") + (s.sim ? " · simulator" : "");
+      activeRadioPart + " (" + (isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud)) + ") · " +
+      (s.config ? s.config.port + " @" + activeUsbBaud : "") + (s.sim ? " · simulator" : "");
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
     updateKeyFooter();
@@ -626,10 +664,20 @@
     setRailVal("proc-opmode", live ? "LIVE" : "TEST", live ? "hot" : "cyan");
     setRailVal("proc-app", "ONLINE", "ok");
     setRailVal("proc-sim", s.sim ? "ACTIVE" : "DISABLED", s.sim ? "ok" : "dim");
+    var gLink = (s.ground && s.ground.link) || {};
+    var activeRadioId = groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config);
+    var isE28 = activeRadioId === "e28-2g4m27s";
+    var activeUsbBaud = (groundOnline && gLink.usb_baud) ? gLink.usb_baud : ((config && config.baud) || 115200);
+    var activeUartBaud = (groundOnline && gLink.uart_baud) ? gLink.uart_baud : ((config && config.uart_baud) || 9600);
+    var procLoraName = $("proc-lora-name");
+    if (procLoraName) { procLoraName.textContent = isE28 ? "e28-spi1-rf" : "dx-lr42-rf"; }
     setRailVal("proc-lora",
       vehicleOnline ? ("ONLINE " + (s.vehicle.rtt_ms !== null ? s.vehicle.rtt_ms + "ms" : "")).trim()
         : (groundOnline ? "PINGING" : "OFFLINE"),
       vehicleOnline ? "ok" : (groundOnline ? "warn" : "dim"));
+    setRailVal("rail-usb", activeUsbBaud + " Bd", "cyan");
+    setRailVal("rail-uart", isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud), isE28 ? "ok" : "cyan");
+    setRailVal("rail-flash", gLink.flash_saved ? "SAVED" : "DEFAULT", gLink.flash_saved ? "ok" : "dim");
 
     var ctl = s.controls || {};
     var fill = s.fill || {};
@@ -911,6 +959,38 @@
     }
   }
 
+  function updateRadioHint() {
+    var hint = $("radio-hint");
+    var radioSel = $("cfg-radio");
+    var uartSel = $("cfg-uart-baud");
+    var usbSel = $("cfg-baud");
+    if (!hint || !radioSel) { return; }
+    var usbVal = (usbSel && usbSel.value) || "115200";
+    var uartVal = (uartSel && uartSel.value) || "9600";
+    if (radioSel.value === "e28-2g4m27s") {
+      hint.textContent =
+        "E28-2G4M27S uses SPI1 (PA5=SCK, PA6=MISO, PA7=MOSI, PD14=NSS @ 4 MHz) + PG10=BUSY, PG11=NRESET, PF13=DIO1, PG12=RX_EN, PG13=TX_EN at 3.3 V ONLY (500 mW PA). Applies live to Vehicle + Ground (USB " +
+        usbVal + " Bd, fallback UART " + uartVal + " Bd) and persists to STM32 flash.";
+    } else {
+      hint.textContent =
+        "DX-LR42-24T12D uses USART6 (PG14=TX, PG9=RX @ " + uartVal +
+        " 8N1) + PG12=M0, PG13=M1, PG10=AUX. Applies live over AT mode to Vehicle + Ground (USB " +
+        usbVal + " Bd) and persists to STM32 flash.";
+    }
+  }
+
+  function populateBaudSelect(selectEl, list, selectedValue, defaultValue) {
+    if (!selectEl) { return; }
+    selectEl.textContent = "";
+    list.forEach(function (b) {
+      var opt = document.createElement("option");
+      opt.value = String(b);
+      opt.textContent = b + " baud" + (b === defaultValue ? " (default)" : "");
+      if (b === selectedValue) { opt.selected = true; }
+      selectEl.appendChild(opt);
+    });
+  }
+
   function openSettings() {
     if (snapshot && snapshot.config) { config = snapshot.config; }
     var cfg = config || {};
@@ -920,16 +1000,10 @@
     updateModeHint();
     $("cfg-confirm").checked = !!cfg.confirm_ign;
     $("cfg-sound").checked = !!cfg.sound;
-    var bauds = [9600, 19200, 38400, 57600, 115200, 230400];
-    var baudSel = $("cfg-baud");
-    baudSel.textContent = "";
-    bauds.forEach(function (b) {
-      var opt = document.createElement("option");
-      opt.value = String(b);
-      opt.textContent = b + " baud";
-      if (b === cfg.baud) { opt.selected = true; }
-      baudSel.appendChild(opt);
-    });
+    populateBaudSelect($("cfg-baud"), USB_BAUDS, cfg.baud || 115200, 115200);
+    populateBaudSelect($("cfg-uart-baud"), UART_BAUDS, cfg.uart_baud || 9600, 9600);
+    $("cfg-radio").value = radioIdOf(cfg);
+    updateRadioHint();
     renderShortcutEditor();
     refreshPorts();
     $("settings").showModal();
@@ -1047,8 +1121,12 @@
     $("btn-disconnect").addEventListener("click", function () { api("/api/disconnect", {}).catch(function (e) { toast(e.message, "error"); }); });
     $("btn-settings").addEventListener("click", openSettings);
     $("pill-opmode").addEventListener("click", openSettings);
+    $("pill-radio").addEventListener("click", openSettings);
     $("cfg-mode").addEventListener("change", updateModeHint);
     $("cfg-countdown").addEventListener("input", updateModeHint);
+    $("cfg-radio").addEventListener("change", updateRadioHint);
+    $("cfg-baud").addEventListener("change", updateRadioHint);
+    $("cfg-uart-baud").addEventListener("change", updateRadioHint);
     $("btn-settings-close").addEventListener("click", function () { stopRecording(); $("settings").close(); });
     $("settings").addEventListener("close", stopRecording);
     $("btn-refresh-ports").addEventListener("click", refreshPorts);
@@ -1061,11 +1139,13 @@
         countdown_seconds: parseInt($("cfg-countdown").value, 10),
         port: $("cfg-port").value,
         baud: parseInt($("cfg-baud").value, 10),
+        uart_baud: parseInt($("cfg-uart-baud").value, 10),
+        radio: $("cfg-radio").value,
         confirm_ign: $("cfg-confirm").checked,
         sound: $("cfg-sound").checked
       };
       api("/api/config", payload).then(function () {
-        toast("Settings applied", "ok");
+        toast("Settings applied — updating boards & saving to flash", "ok");
         $("settings").close();
       }).catch(function (e) { toast(e.message, "error", 5000); });
     });

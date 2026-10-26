@@ -151,6 +151,10 @@ impl Port {
         Ok(port)
     }
 
+    pub fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+        self.configure(baud)
+    }
+
     fn configure(&self, baud: u32) -> io::Result<()> {
         let mut dcb = Dcb {
             dcblength: std::mem::size_of::<Dcb>() as u32,

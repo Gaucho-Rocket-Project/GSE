@@ -3,8 +3,10 @@
 Operator console, wire protocol and flight-hardware firmware for a two-board
 rocket ground support station:
 
-- **Ground board** — STMicroelectronics **`NUCLEO-H753ZI`** ([DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937)) connected to the operator laptop over USB / ST-LINK Virtual COM Port and bridged to a **DX-SMART `DX-LR42-24T12D`** 2.4 GHz Semtech SX1281 LoRa/FLRC transceiver ([Amazon `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0)) over `USART6`.
-- **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
+- **Ground board** — STMicroelectronics **`NUCLEO-H753ZI`** ([DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937)) connected to the operator laptop over USB / ST-LINK Virtual COM Port (`USART3`, configurable **`9600–460800 Bd`**) and bridged to either:
+  - **DX-SMART `DX-LR42-24T12D`** 2.4 GHz Semtech SX1281 UART transceiver ([Amazon `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0)) over `USART6` (configurable **`2400–115200 Bd`**), or
+  - **CDEBYTE [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads)** 2.4 GHz Semtech `SX1280`/`SX1281` **`500 mW` (`+27 dBm`)** SPI + PA/LNA LoRa transceiver over **`SPI1` (`4 MHz`)**.
+- **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** or **`E28-2G4M27S`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
 The host application (`gse-app`) is a single dependency-free Rust binary. It
 serves an embedded terminal-style browser console on port `8765`, speaks a
@@ -52,6 +54,10 @@ trusts the ground station.
     on screen before `SRV+IGN -> ON` (`LIVE`) or `IGN -> PWR` (`TEST`), and can
     be aborted mid-countdown at any time (cancelling ignition immediately,
     returning `SRV -> OFF` if powered, and keeping `FILL` progress intact).
+- **Live dropdown selectors & flash persistence for baud rates and radio modules** in **Settings**:
+  - **USB CDC baud rate** (`USART3` host ↔ ground board: `9600`, `19200`, `38400`, `57600`, `115200`, `230400`, `460800` baud).
+  - **UART baud rate** (`USART6` MCU ↔ UART radio: `2400`, `4800`, `9600`, `19200`, `38400`, `57600`, `115200` baud — live `AT+BAUDx` reconfiguration).
+  - **Radio module selector** (**`DX-LR42-24T12D`** UART LoRa vs **`E28-2G4M27S`** `500 mW` `+27 dBm` `SPI1` LoRa) — non-destructively probes `SX1280`/`SX1281` over `SPI1`, orchestrates an atomic two-phase `Vehicle → Ground → Host` handover with zero lost ACKs, and persists settings to STM32 Bank 2 Sector 7 internal flash (`0x081E_0000`) across power cycles.
 - **Rebindable keyboard shortcuts** — defaults:
   - `F` — `FILL` toggle (`ON` / `OFF`)
   - `L` — `SRV+IGN` toggle (`LIVE` mode)
@@ -217,6 +223,8 @@ Persisted atomically as pretty-printed JSON on every change in **Settings**:
   "countdown_seconds": 5,
   "port": "auto",
   "baud": 115200,
+  "uart_baud": 9600,
+  "radio": "dx-lr42-24t12d",
   "confirm_ign": true,
   "sound": true,
   "host": "127.0.0.1",

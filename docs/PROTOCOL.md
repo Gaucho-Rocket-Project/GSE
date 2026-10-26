@@ -76,8 +76,10 @@ decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
 | `0x05` | `ACK` | vehicle → host | 24 B |
 | `0x06` | `STATE` | vehicle → host | 16 B |
 | `0x07` | `EVENT` | vehicle → host | 22 B |
-| `0x08` | `LINKSTAT` | ground → host | 20 B |
+| `0x08` | `LINKSTAT` | ground → host | 24 B *(v1 `20 B` backwards-compatible)* |
 | `0x09` | `HEARTBEAT` | host → vehicle | 5 B |
+| `0x0A` | `LINK_CONFIG` | host → vehicle / ground | 6 B |
+| `0x0B` | `LINK_CONFIG_ACK` | vehicle / ground → host | 8 B |
 
 All multi-byte integers are little-endian.
 
@@ -190,12 +192,23 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 `RadioFault` 15, `GroundDetected` 16, `GroundLost` 17, `BridgeReady` 18,
 `FaultsCleared` 19.
 
-### LINKSTAT (20 B) & HEARTBEAT (5 B)
+### LINKSTAT (24 B), HEARTBEAT (5 B) & LINK_CONFIG / LINK_CONFIG_ACK
 
-- `LINKSTAT`: `frames_from_radio: u32`, `frames_to_radio: u32`,
-  `crc_errors: u16`, `uart_errors: u16`, `bridge_uptime_ms: u32`,
-  `last_radio_age_ms: u16`, `drops: u16`.
-- `HEARTBEAT`: `uptime_ms: u32`, `mode: u8` (`0` = normal).
+- `LINKSTAT` (`0x08`, `24 B`; `20 B` legacy frames decode cleanly with default `115200 / 9600 / DX-LR42`):
+  `frames_from_radio: u32`, `frames_to_radio: u32`, `crc_errors: u16`,
+  `uart_errors: u16`, `bridge_uptime_ms: u32`, `last_radio_age_ms: u16`,
+  `drops: u16`, `usb_baud: u8` (`0..=6` = `9600..=460800`), `uart_baud: u8`
+  (`0..=6` = `2400..=115200`), `radio: u8` (`0 = DX-LR42-24T12D`,
+  `1 = E28-2G4M27S`), `link_flags: u8` (`bit 1 = FLASH_SAVED`).
+- `HEARTBEAT` (`0x09`, `5 B`): `uptime_ms: u32`, `mode: u8` (`0` = normal).
+- `LINK_CONFIG` (`0x0A`, `6 B`): `req_id: u16`, `usb_baud: u8`, `uart_baud: u8`,
+  `radio: u8`, `flags: u8` (`bit 0 = PERSIST` to STM32 Bank 2 Sector 7 flash).
+- `LINK_CONFIG_ACK` (`0x0B`, `8 B`): `req_id: u16`, `result: u8`, `reason: u8`,
+  `usb_baud: u8`, `uart_baud: u8`, `radio: u8`, `flags: u8` (`FLASH_SAVED`).
+  Both `Vehicle` and `Ground` non-destructively probe `SPI1` `SX1280`/`SX1281`
+  silicon before emitting `LINK_CONFIG_ACK`, wait for their active UART/USB TX
+  shift registers to drain completely, then switch hardware atomically (`Vehicle
+  -> Ground -> Host`).
 
 ## Behaviour
 

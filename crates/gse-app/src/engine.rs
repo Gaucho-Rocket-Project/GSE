@@ -11,10 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gse_proto::fsm::{ControlEvent, ControlState, Interlocks, Transition};
+use gse_proto::radio::{DxLr42Baud, RadioModule};
 use gse_proto::{
-    cmd_flags, encode_message, Ack, Command, Control, DecodeStats, Endpoint, Event, EventCode,
-    Frame, FrameDecoder, Heartbeat, Hello, LinkStat, Message, Ping, Pong, Reason, StateSnapshot,
-    ACTION_OFF, ACTION_ON,
+    cmd_flags, encode_message, link_cfg_flags, Ack, Command, Control, DecodeStats, Endpoint, Event,
+    EventCode, Frame, FrameDecoder, Heartbeat, Hello, LinkConfig, LinkConfigAck, LinkStat, Message,
+    Ping, Pong, Reason, StateSnapshot, UsbBaud, ACTION_OFF, ACTION_ON,
 };
 
 use crate::clock;
@@ -268,8 +269,26 @@ pub struct ConfigPatch {
     pub countdown_seconds: Option<u16>,
     pub port: Option<String>,
     pub baud: Option<u32>,
+    pub uart_baud: Option<u32>,
+    pub radio: Option<RadioModule>,
     pub confirm_ign: Option<bool>,
     pub sound: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandoverPhase {
+    Vehicle,
+    Ground,
+}
+
+struct LinkHandover {
+    req: LinkConfig,
+    prev_baud: u32,
+    prev_uart_baud: u32,
+    prev_radio: RadioModule,
+    phase: HandoverPhase,
+    due: Instant,
+    attempts: u32,
 }
 
 #[derive(Debug)]
@@ -310,7 +329,9 @@ pub struct Engine {
     tx_seq: u8,
     nonce: u32,
     next_cmd_id: u16,
+    next_link_req_id: u16,
     pending: Option<PendingCmd>,
+    link_handover: Option<LinkHandover>,
     started: Instant,
     last_connect_attempt: Option<Instant>,
     last_ground_rx: Option<Instant>,
@@ -358,7 +379,9 @@ impl Engine {
             tx_seq: 0,
             nonce: 1,
             next_cmd_id: 1,
+            next_link_req_id: 1,
             pending: None,
+            link_handover: None,
             started,
             last_connect_attempt: None,
             last_ground_rx: None,
@@ -476,15 +499,23 @@ impl Engine {
 
     fn apply_config(&mut self, patch: ConfigPatch) {
         let mut reconnect = false;
+        let mut usb_changed = false;
+        let mut rf_changed = false;
         let mut notes = Vec::new();
+        let (prev_baud, prev_uart_baud, prev_radio);
         {
             let mut st = self.shared.lock();
             let old = st.config.clone();
+            prev_baud = old.baud;
+            prev_uart_baud = old.uart_baud;
+            prev_radio = old.radio;
+            let target_unsafe = st.controls.target.is_some_and(|target| !target.is_safe());
+            let unsafe_now =
+                !st.vehicle.state.outputs_safe() || target_unsafe || self.countdown.is_some();
+
             if let Some(mode) = patch.op_mode {
                 if mode != st.config.op_mode {
-                    let target_unsafe = st.controls.target.is_some_and(|target| !target.is_safe());
-                    if !st.vehicle.state.outputs_safe() || target_unsafe || self.countdown.is_some()
-                    {
+                    if unsafe_now {
                         drop(st);
                         self.shared.log(
                             Level::Warn,
@@ -503,6 +534,22 @@ impl Engine {
                     ));
                 }
             }
+
+            let link_param_changing = patch.baud.is_some_and(|b| b != st.config.baud)
+                || patch.uart_baud.is_some_and(|b| b != st.config.uart_baud)
+                || patch.radio.is_some_and(|r| r != st.config.radio);
+            if link_param_changing && unsafe_now {
+                drop(st);
+                self.shared.log(
+                    Level::Warn,
+                    Source::Operator,
+                    "Cannot change link baud rate or radio module while outputs or countdown are active"
+                        .to_string(),
+                    Some("link_cfg_blocked"),
+                );
+                return;
+            }
+
             if let Some(secs) = patch.fill_seconds {
                 let secs = secs.clamp(gse_proto::MIN_FILL_SECONDS, gse_proto::MAX_FILL_SECONDS);
                 st.config.fill_seconds = secs;
@@ -531,7 +578,22 @@ impl Engine {
             if let Some(baud) = patch.baud {
                 if baud != st.config.baud {
                     st.config.baud = baud;
-                    reconnect = true;
+                    usb_changed = true;
+                    notes.push(format!("USB CDC baud {baud}"));
+                }
+            }
+            if let Some(uart_baud) = patch.uart_baud {
+                if uart_baud != st.config.uart_baud {
+                    st.config.uart_baud = uart_baud;
+                    rf_changed = true;
+                    notes.push(format!("UART radio baud {uart_baud}"));
+                }
+            }
+            if let Some(radio) = patch.radio {
+                if radio != st.config.radio {
+                    st.config.radio = radio;
+                    rf_changed = true;
+                    notes.push(format!("radio module {}", radio.part_number()));
                 }
             }
             if let Some(confirm) = patch.confirm_ign {
@@ -572,7 +634,76 @@ impl Engine {
                 Level::Info,
             );
             self.last_connect_attempt = None;
+        } else if self.link.is_some() && (usb_changed || rf_changed) {
+            self.start_link_handover(prev_baud, prev_uart_baud, prev_radio, rf_changed);
         }
+        self.shared.publish();
+    }
+
+    fn start_link_handover(
+        &mut self,
+        prev_baud: u32,
+        prev_uart_baud: u32,
+        prev_radio: RadioModule,
+        rf_changed: bool,
+    ) {
+        let (usb_bps, uart_bps, radio, vehicle_online) = {
+            let st = self.shared.lock();
+            (
+                st.config.baud,
+                st.config.uart_baud,
+                st.config.radio,
+                st.vehicle_online(),
+            )
+        };
+        let usb_baud = UsbBaud::from_bps(usb_bps).unwrap_or(UsbBaud::Baud115200);
+        let uart_baud = DxLr42Baud::from_bps(uart_bps).unwrap_or(DxLr42Baud::Baud9600);
+        let req_id = self.next_link_req_id;
+        self.next_link_req_id = self.next_link_req_id.wrapping_add(1);
+        let req = LinkConfig {
+            req_id,
+            usb_baud,
+            uart_baud,
+            radio,
+            flags: link_cfg_flags::PERSIST,
+        };
+        let phase = if rf_changed && vehicle_online {
+            HandoverPhase::Vehicle
+        } else {
+            HandoverPhase::Ground
+        };
+        let dst = match phase {
+            HandoverPhase::Vehicle => Endpoint::Vehicle,
+            HandoverPhase::Ground => Endpoint::Ground,
+        };
+        let status_label = match phase {
+            HandoverPhase::Vehicle => {
+                format!("vehicle -> {} (UART {} Bd)", radio.part_number(), uart_bps)
+            }
+            HandoverPhase::Ground => {
+                format!(
+                    "ground -> {} (USB {} Bd / UART {} Bd)",
+                    radio.part_number(),
+                    usb_bps,
+                    uart_bps
+                )
+            }
+        };
+        {
+            let mut st = self.shared.lock();
+            st.link_reconfig = Some(status_label);
+            st.revision = st.revision.wrapping_add(1);
+        }
+        self.link_handover = Some(LinkHandover {
+            req,
+            prev_baud,
+            prev_uart_baud,
+            prev_radio,
+            phase,
+            due: Instant::now() + Duration::from_millis(ACK_RETRY_MS),
+            attempts: 1,
+        });
+        let _ = self.send(Message::LinkConfig(req), dst);
     }
 
     fn set_shortcut(&mut self, action: &str, combo: &str) {
@@ -969,7 +1100,13 @@ impl Engine {
             let mut tried = Vec::new();
             for port in &ports {
                 tried.push(port.label.clone());
-                if let Some(link) = probe_port(&port.path, baud, Endpoint::Ground, self.verbose) {
+                if let Some((link, matched_baud)) =
+                    probe_port_any_baud(&port.path, baud, Endpoint::Ground, self.verbose)
+                {
+                    if matched_baud != baud {
+                        self.shared.lock().config.baud = matched_baud;
+                        self.shared.save_config();
+                    }
                     self.on_connected(link, &port.path);
                     return;
                 }
@@ -991,8 +1128,14 @@ impl Engine {
                 Err(e) => self.scan_failed(&format!("Cannot connect to {target}: {e}")),
             }
         } else {
-            match probe_port(&target, baud, Endpoint::Ground, self.verbose) {
-                Some(link) => self.on_connected(link, &target),
+            match probe_port_any_baud(&target, baud, Endpoint::Ground, self.verbose) {
+                Some((link, matched_baud)) => {
+                    if matched_baud != baud {
+                        self.shared.lock().config.baud = matched_baud;
+                        self.shared.save_config();
+                    }
+                    self.on_connected(link, &target);
+                }
                 None => self.scan_failed(&format!(
                     "No response from {target}. Check the cable, baud rate and permissions."
                 )),
@@ -1033,6 +1176,7 @@ impl Engine {
         self.vehicle_announced = false;
         self.was_vehicle_online = false;
         self.pending = None;
+        self.link_handover = None;
         self.fill_deadline = None;
         self.fill_started = None;
         self.auto_off_sent = false;
@@ -1056,6 +1200,7 @@ impl Engine {
             st.ground.device_id = None;
             st.ground.link = LinkStat::default();
             st.ground.have_link_stat = false;
+            st.link_reconfig = None;
             st.vehicle.status = VehicleStatus::Offline;
             st.pending = None;
             st.fill.auto_off_pending = false;
@@ -1085,6 +1230,7 @@ impl Engine {
         };
         self.link = None;
         self.pending = None;
+        self.link_handover = None;
         self.fill_deadline = None;
         self.auto_off_sent = false;
         self.fill_started = None;
@@ -1097,6 +1243,7 @@ impl Engine {
             st.controls.ready = false;
             st.controls.target = None;
             st.countdown = CountdownUi::default();
+            st.link_reconfig = None;
             st.ground.status = if level == Level::Error {
                 GroundStatus::Error
             } else {
@@ -1257,6 +1404,9 @@ impl Engine {
             }
         }
 
+        // Link hardware handover retries (`Vehicle -> Ground -> host serial`).
+        self.service_link_handover(now);
+
         // Fill auto-off (host side, authoritative at the configured deadline).
         self.service_fill_auto_off(now);
 
@@ -1329,8 +1479,9 @@ impl Engine {
                     Level::Warn,
                     Source::Ground,
                     format!(
-                        "Radio link quiet for {:.1} s - check the DX-LR42-24T12D (SX1281) modules",
-                        age as f64 / 1000.0
+                        "Radio link quiet for {:.1} s - check the {} (SX1281) modules",
+                        age as f64 / 1000.0,
+                        link_stat.radio.part_number()
                     ),
                     Some("radio_warn"),
                 );
@@ -1338,6 +1489,88 @@ impl Engine {
                 self.radio_warned = false;
             }
         }
+    }
+
+    fn service_link_handover(&mut self, now: Instant) {
+        let Some((due, attempts, phase, req, prev_baud, prev_uart, prev_radio)) =
+            self.link_handover.as_ref().map(|h| {
+                (
+                    h.due,
+                    h.attempts,
+                    h.phase,
+                    h.req,
+                    h.prev_baud,
+                    h.prev_uart_baud,
+                    h.prev_radio,
+                )
+            })
+        else {
+            return;
+        };
+        if now < due {
+            return;
+        }
+        if attempts >= ACK_MAX_ATTEMPTS {
+            self.link_handover = None;
+            match phase {
+                HandoverPhase::Vehicle => {
+                    {
+                        let mut st = self.shared.lock();
+                        st.config.baud = prev_baud;
+                        st.config.uart_baud = prev_uart;
+                        st.config.radio = prev_radio;
+                        st.link_reconfig = None;
+                        st.revision = st.revision.wrapping_add(1);
+                    }
+                    self.shared.save_config();
+                    self.shared.log(
+                        Level::Error,
+                        Source::Vehicle,
+                        format!(
+                            "No LinkConfigAck from vehicle after {ACK_MAX_ATTEMPTS} attempts - keeping {} / USB {} baud / UART {} baud",
+                            prev_radio.part_number(),
+                            prev_baud,
+                            prev_uart
+                        ),
+                        Some("link_cfg_timeout"),
+                    );
+                    self.shared.publish();
+                }
+                HandoverPhase::Ground => {
+                    {
+                        let mut st = self.shared.lock();
+                        st.link_reconfig = None;
+                        st.revision = st.revision.wrapping_add(1);
+                    }
+                    if let Some(link) = self.link.as_mut() {
+                        let _ = link.set_baud(req.usb_baud.bps());
+                    }
+                    self.send_ping(Endpoint::Ground);
+                    self.send_ping(Endpoint::Vehicle);
+                    self.shared.log(
+                        Level::Warn,
+                        Source::Ground,
+                        format!(
+                            "Ground LinkConfigAck timed out - probing ground on {} baud ({})",
+                            req.usb_baud.bps(),
+                            req.radio.part_number()
+                        ),
+                        Some("link_cfg_timeout"),
+                    );
+                    self.shared.publish();
+                }
+            }
+            return;
+        }
+        if let Some(h) = self.link_handover.as_mut() {
+            h.attempts += 1;
+            h.due = now + Duration::from_millis(ACK_RETRY_MS);
+        }
+        let dst = match phase {
+            HandoverPhase::Vehicle => Endpoint::Vehicle,
+            HandoverPhase::Ground => Endpoint::Ground,
+        };
+        let _ = self.send(Message::LinkConfig(req), dst);
     }
 
     fn service_fill_auto_off(&mut self, now: Instant) {
@@ -1557,18 +1790,186 @@ impl Engine {
                     return;
                 }
                 self.last_ground_rx = Some(now);
-                let mut st = self.shared.lock();
-                st.ground.link = stat;
-                st.ground.have_link_stat = true;
-                if st.ground.status != GroundStatus::Online {
-                    st.ground.status = GroundStatus::Online;
+                let mut push_handover = None;
+                let mut saved_adopted = false;
+                {
+                    let mut st = self.shared.lock();
+                    let first_stat = !st.ground.have_link_stat;
+                    st.ground.link = stat;
+                    st.ground.have_link_stat = true;
+                    if st.ground.status != GroundStatus::Online {
+                        st.ground.status = GroundStatus::Online;
+                    }
+                    st.ground.last_seen_epoch_ms = clock::unix_ms();
+                    if first_stat && self.link_handover.is_none() {
+                        let mismatch_usb = stat.usb_baud.bps() != st.config.baud;
+                        let mismatch_rf = stat.uart_baud.bps() != st.config.uart_baud
+                            || stat.radio != st.config.radio;
+                        if mismatch_usb || mismatch_rf {
+                            if stat.link_flags & link_cfg_flags::FLASH_SAVED != 0 {
+                                st.config.baud = stat.usb_baud.bps();
+                                st.config.uart_baud = stat.uart_baud.bps();
+                                st.config.radio = stat.radio;
+                                st.revision = st.revision.wrapping_add(1);
+                                saved_adopted = true;
+                            } else {
+                                push_handover = Some((
+                                    stat.usb_baud.bps(),
+                                    stat.uart_baud.bps(),
+                                    stat.radio,
+                                    mismatch_rf,
+                                ));
+                            }
+                        }
+                    }
                 }
-                st.ground.last_seen_epoch_ms = clock::unix_ms();
+                if saved_adopted {
+                    self.shared.save_config();
+                    self.shared.publish();
+                } else if let Some((prev_baud, prev_uart, prev_radio, rf_changed)) = push_handover {
+                    self.start_link_handover(prev_baud, prev_uart, prev_radio, rf_changed);
+                    self.shared.publish();
+                }
             }
+            Message::LinkConfigAck(ack) => {
+                self.handle_link_config_ack(frame.src, ack, now);
+            }
+            Message::LinkConfig(_) => {}
             Message::Heartbeat(_) => {}
             Message::Ping(_) => {}
             Message::Command(_) => {}
         }
+    }
+
+    fn handle_link_config_ack(&mut self, src: Endpoint, ack: LinkConfigAck, now: Instant) {
+        if src == Endpoint::Vehicle {
+            self.note_vehicle_frame(now);
+        } else if src == Endpoint::Ground {
+            self.last_ground_rx = Some(now);
+        }
+        let matches = self.link_handover.as_ref().is_some_and(|h| {
+            h.req.req_id == ack.req_id
+                && ((h.phase == HandoverPhase::Vehicle && src == Endpoint::Vehicle)
+                    || (h.phase == HandoverPhase::Ground && src == Endpoint::Ground))
+        });
+        if !matches {
+            return;
+        }
+        if !ack.result.is_ok() {
+            let Some(h) = self.link_handover.take() else {
+                return;
+            };
+            {
+                let mut st = self.shared.lock();
+                st.config.baud = h.prev_baud;
+                st.config.uart_baud = h.prev_uart_baud;
+                st.config.radio = h.prev_radio;
+                st.link_reconfig = None;
+                st.revision = st.revision.wrapping_add(1);
+            }
+            self.shared.save_config();
+            self.shared.log(
+                Level::Error,
+                if src == Endpoint::Vehicle {
+                    Source::Vehicle
+                } else {
+                    Source::Ground
+                },
+                format!(
+                    "{src} rejected link reconfiguration: {} ({}) - keeping {}",
+                    ack.result.label(),
+                    ack.reason.label(),
+                    h.prev_radio.part_number()
+                ),
+                Some("link_cfg_rejected"),
+            );
+            self.shared.publish();
+            return;
+        }
+
+        if src == Endpoint::Vehicle {
+            let req = {
+                let Some(h) = self.link_handover.as_mut() else {
+                    return;
+                };
+                h.phase = HandoverPhase::Ground;
+                h.attempts = 1;
+                h.due = now + Duration::from_millis(ACK_RETRY_MS);
+                h.req
+            };
+            {
+                let mut st = self.shared.lock();
+                st.link_reconfig = Some(format!(
+                    "ground -> {} (USB {} Bd / UART {} Bd)",
+                    req.radio.part_number(),
+                    req.usb_baud.bps(),
+                    req.uart_baud.bps()
+                ));
+                st.revision = st.revision.wrapping_add(1);
+            }
+            let saved_note = if ack.flags & link_cfg_flags::FLASH_SAVED != 0 {
+                ", saved to STM32 flash"
+            } else {
+                ""
+            };
+            self.shared.log(
+                Level::Ok,
+                Source::Vehicle,
+                format!(
+                    "Vehicle switched to {} (UART {} baud{saved_note}) - switching ground bridge",
+                    ack.radio.part_number(),
+                    ack.uart_baud.bps()
+                ),
+                Some("vehicle_link_reconfigured"),
+            );
+            let _ = self.send(Message::LinkConfig(req), Endpoint::Ground);
+            self.shared.publish();
+            return;
+        }
+
+        // Phase 2 complete: Ground ACK arrived over USB — allow USART3 TX shift register
+        // to finish draining on the STM32, switch host baud in-place, and ping both boards.
+        let _ = self.link_handover.take();
+        {
+            let mut st = self.shared.lock();
+            st.ground.link.usb_baud = ack.usb_baud;
+            st.ground.link.uart_baud = ack.uart_baud;
+            st.ground.link.radio = ack.radio;
+            st.ground.link.link_flags = ack.flags;
+            st.ground.have_link_stat = true;
+            st.link_reconfig = None;
+            st.revision = st.revision.wrapping_add(1);
+        }
+        thread::sleep(Duration::from_millis(15));
+        if let Some(link) = self.link.as_mut() {
+            if let Err(e) = link.set_baud(ack.usb_baud.bps()) {
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    format!("Host serial baud update reported {e} - reconnecting"),
+                    Some("serial_reopen"),
+                );
+            }
+        }
+        self.send_ping(Endpoint::Ground);
+        self.send_ping(Endpoint::Vehicle);
+        let saved_note = if ack.flags & link_cfg_flags::FLASH_SAVED != 0 {
+            " & saved to STM32 flash"
+        } else {
+            ""
+        };
+        self.shared.log(
+            Level::Ok,
+            Source::Ground,
+            format!(
+                "Link reconfigured live{saved_note}: USB {} baud · {} · UART {} baud",
+                ack.usb_baud.bps(),
+                ack.radio.part_number(),
+                ack.uart_baud.bps()
+            ),
+            Some("link_reconfigured"),
+        );
+        self.shared.publish();
     }
 
     fn handle_hello(&mut self, hello: Hello) {
@@ -2136,6 +2537,14 @@ impl Engine {
                     Some(code.code()),
                 );
             }
+            EventCode::LinkReconfigured => {
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    "Vehicle confirmed live link reconfiguration".to_string(),
+                    Some(code.code()),
+                );
+            }
         }
         self.apply_state(event.state);
     }
@@ -2420,9 +2829,43 @@ fn auto_off_due(vehicle_remaining_ms: u32, host_deadline: Option<Instant>, now: 
         .unwrap_or(false)
 }
 
+/// Probe a hardware port first at `preferred_baud`, falling back across all
+/// supported `UsbBaud` rates so boards with flash-saved custom USB CDC speeds
+/// auto-discover cleanly on any workstation.
+fn probe_port_any_baud(
+    path: &str,
+    preferred_baud: u32,
+    target: Endpoint,
+    verbose: bool,
+) -> Option<(Box<dyn ByteLink>, u32)> {
+    if let Some(link) = probe_port(path, preferred_baud, target, verbose) {
+        return Some((link, preferred_baud));
+    }
+    for preset in UsbBaud::ALL {
+        let candidate = preset.bps();
+        if candidate == preferred_baud {
+            continue;
+        }
+        if let Some(link) = probe_port_timeout(path, candidate, target, 240, verbose) {
+            return Some((link, candidate));
+        }
+    }
+    None
+}
+
 /// Probe a freshly opened port by sending a PING to `target` and waiting for a
 /// valid frame from that endpoint. Returns the link if the board answered.
 fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<Box<dyn ByteLink>> {
+    probe_port_timeout(path, baud, target, PROBE_TIMEOUT_MS, verbose)
+}
+
+fn probe_port_timeout(
+    path: &str,
+    baud: u32,
+    target: Endpoint,
+    timeout_ms: u64,
+    verbose: bool,
+) -> Option<Box<dyn ByteLink>> {
     let mut link = match open_link(path, baud) {
         Ok(link) => link,
         Err(e) => {
@@ -2432,7 +2875,7 @@ fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<
             return None;
         }
     };
-    if probe_existing(&mut *link, target, PROBE_TIMEOUT_MS) {
+    if probe_existing(&mut *link, target, timeout_ms) {
         Some(link)
     } else {
         None

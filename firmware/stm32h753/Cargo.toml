@@ -21,6 +21,14 @@ path = "src/bin/ground.rs"
 name = "gse-vehicle"
 path = "src/bin/vehicle.rs"
 
+[features]
+default = ["radio-dx-lr42"]
+# Boot default radio module when STM32 Bank 2 Sector 7 flash holds no saved override.
+# Both drivers remain linked in (~4 KB) so live switching via the console dropdown
+# always works without reflashing either board.
+radio-dx-lr42 = []
+radio-e28-2g4m27s = []
+
 [dependencies]
 gse-proto = { path = "../../crates/gse-proto", default-features = false }
 gse-fw-core = { path = "../../crates/gse-fw-core", default-features = false }

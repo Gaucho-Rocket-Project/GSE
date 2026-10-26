@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=6">
+<link rel="stylesheet" href="/app.css?v=7">
 </head>
 <body>
 <div class="crt">
@@ -18,7 +18,7 @@
   <header class="term-header">
     <div class="term-brand">
       <span class="prompt">gse@ground:~$</span>
-      <span class="term-title">GROUND SUPPORT · NUCLEO-H753ZI · DX-LR42-24T12D</span>
+      <span class="term-title" id="term-title">GROUND SUPPORT · NUCLEO-H753ZI · DX-LR42-24T12D</span>
     </div>
 
     <div class="term-clock" id="term-clock">--:--:--</div>
@@ -38,6 +38,11 @@
         <span class="dot"></span>
         <span class="pill-label">LINK</span>
         <span class="pill-value" id="rtt-text">–</span>
+      </div>
+      <div class="pill clickable" id="pill-radio" data-state="idle" title="Click to configure radio module, USB CDC baud and UART baud in Settings">
+        <span class="dot"></span>
+        <span class="pill-label">RADIO</span>
+        <span class="pill-value" id="radio-text">DX-LR42 · 9600</span>
       </div>
       <div class="pill clickable" id="pill-opmode" data-state="live" title="Click to switch LIVE / TEST in Settings">
         <span class="dot"></span>
@@ -72,7 +77,7 @@
         <div class="rail-line"><span class="rail-name">setup</span><span class="rail-v hot" id="proc-opmode">LIVE</span></div>
         <div class="rail-line"><span class="rail-name">gse-app</span><span class="rail-v ok" id="proc-app">ONLINE</span></div>
         <div class="rail-line"><span class="rail-name">gse-sim</span><span class="rail-v" id="proc-sim">STANDBY</span></div>
-        <div class="rail-line"><span class="rail-name">dx-lr42-rf</span><span class="rail-v" id="proc-lora">OFFLINE</span></div>
+        <div class="rail-line"><span class="rail-name" id="proc-lora-name">dx-lr42-rf</span><span class="rail-v" id="proc-lora">OFFLINE</span></div>
       </div>
 
       <div class="rail-block">
@@ -85,6 +90,9 @@
 
       <div class="rail-block">
         <div class="rail-k">BUS DISPATCH</div>
+        <div class="rail-line"><span class="rail-name">usb cdc</span><span class="rail-v cyan" id="rail-usb">115200 Bd</span></div>
+        <div class="rail-line"><span class="rail-name">radio bus</span><span class="rail-v cyan" id="rail-uart">UART 9600</span></div>
+        <div class="rail-line"><span class="rail-name">nvm flash</span><span class="rail-v dim" id="rail-flash">DEFAULT</span></div>
         <div class="rail-line"><span class="rail-name">in-flight</span><span class="rail-v" id="rail-pending">IDLE</span></div>
         <div class="rail-line"><span class="rail-name">framing</span><span class="rail-v dim" id="sys-proto">COBS/CRC16</span></div>
       </div>
@@ -291,17 +299,31 @@
       </fieldset>
 
       <fieldset>
-        <legend>link</legend>
+        <legend>link &amp; radio hardware</legend>
         <label>serial port
           <span class="row">
             <select id="cfg-port"></select>
             <button type="button" class="btn tiny ghost" id="btn-refresh-ports">rescan</button>
           </span>
         </label>
-        <label>baud rate
-          <select id="cfg-baud"></select>
-        </label>
         <p class="hint" id="port-hint"></p>
+
+        <div class="settings-grid-2">
+          <label>usb cdc baud rate (host ↔ ground)
+            <select id="cfg-baud"></select>
+          </label>
+          <label>uart baud rate (mcu ↔ radio)
+            <select id="cfg-uart-baud"></select>
+          </label>
+        </div>
+
+        <label>radio module (2.4 ghz transceiver)
+          <select id="cfg-radio">
+            <option value="dx-lr42-24t12d">DX-LR42-24T12D — UART LoRa (+12 dBm · USART6 PG14/PG9)</option>
+            <option value="e28-2g4m27s">E28-2G4M27S — SPI LoRa + PA/LNA (500 mW / +27 dBm · SPI1)</option>
+          </select>
+        </label>
+        <p class="hint" id="radio-hint"></p>
       </fieldset>
 
       <fieldset>
@@ -347,6 +369,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=6"></script>
+<script src="/app.js?v=7"></script>
 </body>
 </html>

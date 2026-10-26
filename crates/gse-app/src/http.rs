@@ -14,12 +14,13 @@ use std::time::Duration;
 
 use crate::broadcaster::EventMsg;
 use crate::clock;
-use crate::config::{Config, OperationMode, BAUDS};
+use crate::config::{Config, OperationMode, UART_BAUDS, USB_BAUDS};
 use crate::engine::{ConfigPatch, Request, UserAction};
 use crate::json::{self, Value};
 use crate::serial;
 use crate::state::Shared;
 use crate::ui;
+use gse_proto::radio::RadioModule;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -304,23 +305,34 @@ fn handle_connection(
             }
             match parse_config_patch(&request) {
                 Ok(patch) => {
-                    if let Some(next_mode) = patch.op_mode {
-                        let blocked_mode_change = {
-                            let st = shared.lock();
-                            let target_unsafe =
-                                st.controls.target.is_some_and(|target| !target.is_safe());
-                            next_mode != st.config.op_mode
-                                && (!st.vehicle.state.outputs_safe()
-                                    || target_unsafe
-                                    || st.countdown.active)
-                        };
-                        if blocked_mode_change {
-                            return write_json(
-                                &mut stream,
-                                400,
-                                "{\"error\":\"Return all controls to OFF/SAFE before switching between LIVE and TEST modes\"}",
-                            );
+                    let blocked_reason = {
+                        let st = shared.lock();
+                        let target_unsafe =
+                            st.controls.target.is_some_and(|target| !target.is_safe());
+                        let unsafe_now = !st.vehicle.state.outputs_safe()
+                            || target_unsafe
+                            || st.countdown.active;
+                        if unsafe_now {
+                            if patch.op_mode.is_some_and(|m| m != st.config.op_mode) {
+                                Some("Return all controls to OFF/SAFE before switching between LIVE and TEST modes")
+                            } else if patch.baud.is_some_and(|b| b != st.config.baud)
+                                || patch.uart_baud.is_some_and(|b| b != st.config.uart_baud)
+                                || patch.radio.is_some_and(|r| r != st.config.radio)
+                            {
+                                Some("Return all controls to OFF/SAFE before changing baud rates or radio module")
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
                         }
+                    };
+                    if let Some(reason) = blocked_reason {
+                        return write_json(
+                            &mut stream,
+                            400,
+                            &format!("{{\"error\":{}}}", json::quoted(reason)),
+                        );
                     }
                     let _ = requests.send(Request::SetConfig(patch));
                     write_json(&mut stream, 200, "{\"ok\":true}")
@@ -617,10 +629,28 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
         let baud = v
             .as_i64()
             .ok_or_else(|| "baud must be a number".to_string())? as u32;
-        if !BAUDS.contains(&baud) {
-            return Err(format!("unsupported baud rate {baud}"));
+        if !USB_BAUDS.contains(&baud) {
+            return Err(format!("unsupported USB CDC baud rate {baud}"));
         }
         patch.baud = Some(baud);
+    }
+    if let Some(v) = body.get("uart_baud") {
+        let uart_baud =
+            v.as_i64()
+                .ok_or_else(|| "uart_baud must be a number".to_string())? as u32;
+        if !UART_BAUDS.contains(&uart_baud) {
+            return Err(format!("unsupported UART radio baud rate {uart_baud}"));
+        }
+        patch.uart_baud = Some(uart_baud);
+    }
+    if let Some(v) = body.get("radio") {
+        let radio_str = v
+            .as_str()
+            .ok_or_else(|| "radio must be 'dx-lr42-24t12d' or 'e28-2g4m27s'".to_string())?;
+        let radio = RadioModule::parse(radio_str).ok_or_else(|| {
+            format!("unsupported radio module '{radio_str}' (expected 'dx-lr42-24t12d' or 'e28-2g4m27s')")
+        })?;
+        patch.radio = Some(radio);
     }
     if let Some(v) = body.get("confirm_ign") {
         patch.confirm_ign = Some(
@@ -801,11 +831,14 @@ mod tests {
     #[test]
     fn config_validation() {
         let mut r = request("POST", "/api/config");
-        r.body = br#"{"op_mode":"test","fill_seconds":90,"countdown_seconds":8,"baud":115200,"port":"auto"}"#.to_vec();
+        r.body = br#"{"op_mode":"test","fill_seconds":90,"countdown_seconds":8,"baud":230400,"uart_baud":57600,"radio":"e28-2g4m27s","port":"auto"}"#.to_vec();
         let patch = parse_config_patch(&r).unwrap();
         assert_eq!(patch.op_mode, Some(OperationMode::Test));
         assert_eq!(patch.fill_seconds, Some(90));
         assert_eq!(patch.countdown_seconds, Some(8));
+        assert_eq!(patch.baud, Some(230_400));
+        assert_eq!(patch.uart_baud, Some(57_600));
+        assert_eq!(patch.radio, Some(RadioModule::E28_2G4M27S));
         r.body = br#"{"op_mode":"nope"}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"fill_seconds":9999}"#.to_vec();
@@ -815,6 +848,10 @@ mod tests {
         r.body = br#"{"countdown_seconds":9999}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
         r.body = br#"{"baud":1234}"#.to_vec();
+        assert!(parse_config_patch(&r).is_err());
+        r.body = br#"{"uart_baud":14400}"#.to_vec();
+        assert!(parse_config_patch(&r).is_err());
+        r.body = br#"{"radio":"sx1276"}"#.to_vec();
         assert!(parse_config_patch(&r).is_err());
     }
 

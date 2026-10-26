@@ -12,8 +12,8 @@
 //! * radio -> USB: frames addressed to HOST or BROADCAST, plus local ones
 
 use gse_proto::{
-    encode_message, Endpoint, Event, EventCode, Frame, FrameDecoder, Heartbeat, Hello, LinkStat,
-    Message, Pong, StateSnapshot,
+    encode_message, link_cfg_flags, AckResult, Endpoint, Event, EventCode, Frame, FrameDecoder,
+    Heartbeat, Hello, LinkConfig, LinkConfigAck, LinkStat, Message, Pong, Reason, StateSnapshot,
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, GroundHal, Leds};
@@ -48,6 +48,7 @@ pub struct Ground<H: GroundHal> {
     crc_errors: u16,
     uart_errors: u16,
     drops: u16,
+    pending_link_cfg: Option<LinkConfig>,
 }
 
 impl<H: GroundHal> Ground<H> {
@@ -71,6 +72,7 @@ impl<H: GroundHal> Ground<H> {
             crc_errors: 0,
             uart_errors: 0,
             drops: 0,
+            pending_link_cfg: None,
         }
     }
 
@@ -98,6 +100,26 @@ impl<H: GroundHal> Ground<H> {
             let state = StateSnapshot::all_safe();
             self.send_event(EventCode::BridgeReady, 0, now, state);
             self.send_hello(now);
+        }
+
+        // Complete any staged link switchover only after the `LinkConfigAck` bytes
+        // have completely drained from USB + radio TX shift registers.
+        if let Some(cfg) = self.pending_link_cfg {
+            if !self.hal.usb_tx_busy() && !self.hal.radio_tx_busy() {
+                self.pending_link_cfg = None;
+                if self.hal.apply_link_config(cfg).is_ok() {
+                    self.usb = FrameDecoder::new();
+                    self.radio = DxLr42Receiver::new();
+                    self.send_event(
+                        EventCode::LinkReconfigured,
+                        cfg.radio.code(),
+                        now,
+                        StateSnapshot::all_safe(),
+                    );
+                    self.send_hello(now);
+                    self.send_linkstat(now);
+                }
+            }
         }
 
         let mut buf = [0u8; RX_CHUNK];
@@ -216,6 +238,41 @@ impl<H: GroundHal> Ground<H> {
                     self.send_radio(&pong, Endpoint::Host);
                 }
             }
+            Some(Message::LinkConfig(cfg)) if from_usb => {
+                if !self.hal.probe_radio_module(cfg.radio) {
+                    let cur = self.hal.link_state();
+                    let ack = Message::LinkConfigAck(LinkConfigAck {
+                        req_id: cfg.req_id,
+                        result: AckResult::HardwareFault,
+                        reason: Reason::HardwareFault,
+                        usb_baud: cur.usb_baud,
+                        uart_baud: cur.uart_baud,
+                        radio: cur.radio,
+                        flags: if cur.flash_saved {
+                            link_cfg_flags::PERSIST
+                        } else {
+                            0
+                        },
+                    });
+                    self.send_usb(&ack);
+                } else {
+                    let ack = Message::LinkConfigAck(LinkConfigAck {
+                        req_id: cfg.req_id,
+                        result: AckResult::Ok,
+                        reason: Reason::None,
+                        usb_baud: cfg.usb_baud,
+                        uart_baud: cfg.uart_baud,
+                        radio: cfg.radio,
+                        flags: if cfg.persist() {
+                            link_cfg_flags::PERSIST
+                        } else {
+                            0
+                        },
+                    });
+                    self.send_usb(&ack);
+                    self.pending_link_cfg = Some(cfg);
+                }
+            }
             Some(Message::Heartbeat(Heartbeat { .. })) => {}
             _ => {}
         }
@@ -233,7 +290,9 @@ impl<H: GroundHal> Ground<H> {
             device_id: self.hal.device_id(),
             capabilities: gse_proto::capabilities::RADIO
                 | gse_proto::capabilities::USB_BRIDGE
-                | gse_proto::capabilities::WATCHDOG,
+                | gse_proto::capabilities::WATCHDOG
+                | gse_proto::capabilities::LINK_CONFIG
+                | gse_proto::capabilities::RADIO_E28_2G4M27S,
         };
         if self.send_usb_msg(Message::Hello(hello)) {
             self.last_hello_tx = now;
@@ -248,6 +307,7 @@ impl<H: GroundHal> Ground<H> {
         } else {
             RADIO_AGE_CAP_MS
         };
+        let cur = self.hal.link_state();
         let stat = LinkStat {
             frames_from_radio: self.frames_from_radio,
             frames_to_radio: self.frames_to_radio,
@@ -256,6 +316,14 @@ impl<H: GroundHal> Ground<H> {
             bridge_uptime_ms: elapsed_ms(now, self.boot_ms),
             last_radio_age_ms: age.min(u16::MAX as u32) as u16,
             drops: self.drops,
+            usb_baud: cur.usb_baud,
+            uart_baud: cur.uart_baud,
+            radio: cur.radio,
+            link_flags: if cur.flash_saved {
+                link_cfg_flags::PERSIST
+            } else {
+                0
+            },
         };
         if self.send_usb_msg(Message::LinkStat(stat)) {
             self.last_linkstat_tx = now;
@@ -553,5 +621,62 @@ mod tests {
         let frames = ground.hal_mut().drain_radio_frames();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].message(), Some(Message::Command(cmd)));
+    }
+
+    #[test]
+    fn reconfigures_link_only_after_ack_drains_from_usb_tx() {
+        let mut ground = new_ground();
+        ground.poll();
+        ground.hal_mut().drain_usb_frames();
+
+        let req = LinkConfig {
+            req_id: 31,
+            usb_baud: gse_proto::UsbBaud::Baud230400,
+            uart_baud: gse_proto::DxLr42Baud::Baud57600,
+            radio: gse_proto::RadioModule::E28_2G4M27S,
+            flags: link_cfg_flags::PERSIST,
+        };
+        ground.hal_mut().feed_usb_frame(
+            &Message::LinkConfig(req),
+            Endpoint::Host,
+            Endpoint::Ground,
+            3,
+        );
+        ground.poll();
+
+        // Crucial ordering invariant: `LinkConfigAck` is queued on the OLD USB baud first!
+        assert_eq!(
+            ground.hal().link.usb_baud,
+            gse_proto::UsbBaud::Baud115200,
+            "USB baud must not change while LinkConfigAck is still in usb_out"
+        );
+        let ack_frames = ground.hal_mut().drain_usb_frames();
+        assert!(ack_frames.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a)) if a.req_id == 31 && a.result == AckResult::Ok
+        )));
+
+        // Next poll after TX buffer drains switches hardware and emits updated LinkStat.
+        ground.poll();
+        assert_eq!(ground.hal().link.usb_baud, gse_proto::UsbBaud::Baud230400);
+        assert_eq!(
+            ground.hal().link.uart_baud,
+            gse_proto::DxLr42Baud::Baud57600
+        );
+        assert_eq!(ground.hal().link.radio, gse_proto::RadioModule::E28_2G4M27S);
+        assert!(ground.hal().link.flash_saved);
+
+        let post = ground.hal_mut().drain_usb_frames();
+        let stat = post
+            .iter()
+            .find_map(|f| match f.message() {
+                Some(Message::LinkStat(s)) => Some(s),
+                _ => None,
+            })
+            .expect("updated LinkStat");
+        assert_eq!(stat.usb_baud, gse_proto::UsbBaud::Baud230400);
+        assert_eq!(stat.uart_baud, gse_proto::DxLr42Baud::Baud57600);
+        assert_eq!(stat.radio, gse_proto::RadioModule::E28_2G4M27S);
+        assert!(stat.flash_saved());
     }
 }
