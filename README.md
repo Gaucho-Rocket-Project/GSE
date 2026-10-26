@@ -1,4 +1,4 @@
-# GSE — Ground Support Equipment
+<img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/d052bdcf-ce7c-4088-876c-426d2f3774dd" /><img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/ab7dce52-0474-4bbf-a5b4-838f0c8b6d26" /># GSE — Ground Support Equipment
 
 Operator console, wire protocol and flight-hardware firmware for a two-board
 rocket ground support station:
@@ -16,7 +16,7 @@ selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
 independently re-checked in the `no_std` vehicle firmware — the vehicle never
 trusts the ground station.
 
-<img width="8192" height="4425" alt="image" src="https://github.com/user-attachments/assets/738b3f60-523e-4a4f-a377-283ca46c2795" />
+<img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/0d05bd30-e619-4844-92db-64ce1e42b475" />
 
 ## Features
 
