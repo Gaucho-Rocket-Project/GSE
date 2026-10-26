@@ -16,7 +16,7 @@ selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
 independently re-checked in the `no_std` vehicle firmware — the vehicle never
 trusts the ground station.
 
-<img width="668" height="438" alt="image" src="https://github.com/user-attachments/assets/e9d1e4bd-3cf3-4feb-817e-3a2d5e658657" />
+<img width="8192" height="4425" alt="image" src="https://github.com/user-attachments/assets/738b3f60-523e-4a4f-a377-283ca46c2795" />
 
 ## Features
 
