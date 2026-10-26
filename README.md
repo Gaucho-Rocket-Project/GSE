@@ -16,20 +16,8 @@ selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
 independently re-checked in the `no_std` vehicle firmware — the vehicle never
 trusts the ground station.
 
-```
-┌──────────────────────┐  USB CDC   ┌───────────────┐  UART   ┌────────────────┐
-│  gse-app (laptop)    │ 115200 bd  │ ground board  │ 9600 bd │ DX-LR42-24T12D │
-│  HTTP console :8765  │◄──────────►│ NUCLEO-H753ZI │◄───────►│ (2.4G SX1281)  │
-└──────────────────────┘            └───────────────┘         └───────┬────────┘
-                                                                      │ 2.4 GHz RF
-                                                              ┌───────┴────────┐
-                                                              │ DX-LR42-24T12D │
-                                                              │ vehicle H753ZI │
-                                                              └───────┬────────┘
-                                                   FILL servo ◄───────┤
-                                                   SRV servo  ◄───────┤
-                                                   IGN relay  ◄───────┘
-```
+<img width="710" height="837" alt="image" src="https://github.com/user-attachments/assets/6ec4bad7-4369-4cfa-98d3-1319bea9ba29" />
+
 
 ## Features
 
