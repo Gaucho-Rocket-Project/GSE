@@ -1,4 +1,4 @@
-<img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/d052bdcf-ce7c-4088-876c-426d2f3774dd" /><img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/ab7dce52-0474-4bbf-a5b4-838f0c8b6d26" /># GSE — Ground Support Equipment
+# GSE — Ground Support Equipment
 
 Operator console, wire protocol and flight-hardware firmware for a two-board
 rocket ground support station:
