@@ -238,8 +238,6 @@ impl UserAction {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Origin {
     Operator,
-    /// Dispatched automatically when the configurable countdown hits T-0.
-    Countdown,
     /// Dispatched automatically to return `SRV -> OFF` when an operator aborts
     /// an active `IGN` countdown in `TEST` mode.
     CountdownAbort,
@@ -255,10 +253,7 @@ enum Origin {
 
 impl Origin {
     fn is_operator(self) -> bool {
-        matches!(
-            self,
-            Origin::Operator | Origin::Countdown | Origin::CountdownAbort
-        )
+        matches!(self, Origin::Operator | Origin::CountdownAbort)
     }
 }
 
@@ -346,6 +341,7 @@ pub struct Engine {
     fill_started: Option<Instant>,
     auto_off_sent: bool,
     countdown: Option<(CountdownTarget, Instant)>,
+    countdown_holding: bool,
     prev_state: StateSnapshot,
     prev_vehicle_uptime: Option<u32>,
     ground_announced: bool,
@@ -396,6 +392,7 @@ impl Engine {
             fill_started: None,
             auto_off_sent: false,
             countdown: None,
+            countdown_holding: false,
             prev_state: StateSnapshot::default(),
             prev_vehicle_uptime: None,
             ground_announced: false,
@@ -730,6 +727,7 @@ impl Engine {
 
     fn cancel_countdown(&mut self, reason: Option<&str>) -> Option<CountdownTarget> {
         let (target, _) = self.countdown.take()?;
+        self.countdown_holding = false;
         {
             let mut st = self.shared.lock();
             st.countdown = CountdownUi::default();
@@ -802,6 +800,7 @@ impl Engine {
                 vehicle_online: st.vehicle_online(),
                 pending: st.pending.is_some(),
                 countdown_target,
+                countdown_holding: self.countdown_holding,
                 controls_ready: st.controls.ready,
                 state: st.vehicle.state,
             };
@@ -883,6 +882,39 @@ impl Engine {
             return;
         }
 
+        let held_target_action = matches!(
+            (self.countdown.map(|(target, _)| target), action),
+            (Some(CountdownTarget::Ign), UserAction::IgnPwr)
+                | (Some(CountdownTarget::SrvIgn), UserAction::SrvIgnOn)
+        );
+        if self.countdown_holding && held_target_action {
+            let target = self.countdown.map(|(target, _)| target);
+            self.countdown = None;
+            self.countdown_holding = false;
+            {
+                let mut st = self.shared.lock();
+                st.countdown = CountdownUi::default();
+                st.revision = st.revision.wrapping_add(1);
+            }
+            self.shared.log(
+                Level::Warn,
+                Source::Operator,
+                format!(
+                    "{} explicitly triggered by operator after T-0 HOLD",
+                    target.map(CountdownTarget::label).unwrap_or("IGN")
+                ),
+                Some("ignition_confirmed"),
+            );
+            self.send_action(action, fill_seconds, 0, Origin::Operator);
+            {
+                let mut st = self.shared.lock();
+                st.refresh();
+                st.revision = st.revision.wrapping_add(1);
+            }
+            self.shared.publish();
+            return;
+        }
+
         let is_countdown_abort = action == UserAction::AbortCountdown
             || (action == UserAction::SrvIgnOff
                 && countdown_target == Some(CountdownTarget::SrvIgn))
@@ -906,10 +938,12 @@ impl Engine {
             let duration = Duration::from_secs(countdown_seconds as u64);
             let duration_ms = duration.as_millis() as u64;
             self.countdown = Some((target, Instant::now() + duration));
+            self.countdown_holding = false;
             {
                 let mut st = self.shared.lock();
                 st.countdown = CountdownUi {
                     active: true,
+                    holding: false,
                     target: Some(target),
                     duration_ms: duration_ms as u32,
                     remaining_ms: duration_ms as u32,
@@ -960,7 +994,7 @@ impl Engine {
             Origin::StartupSafe => "STARTUP ALL SAFE".to_string(),
             Origin::ShutdownSafe => "SHUTDOWN ALL SAFE".to_string(),
             Origin::ResetFollowUp => "RESET FILL SEQ (auto)".to_string(),
-            Origin::Operator | Origin::Countdown => action.label().to_string(),
+            Origin::Operator => action.label().to_string(),
         };
         if !self.send(Message::Command(command), Endpoint::Vehicle) {
             self.shared.log(
@@ -1181,6 +1215,7 @@ impl Engine {
         self.fill_started = None;
         self.auto_off_sent = false;
         self.countdown = None;
+        self.countdown_holding = false;
         self.prev_state = StateSnapshot::default();
         self.prev_vehicle_uptime = None;
         // A new link starts a new session: the machine goes back to INIT and
@@ -1235,6 +1270,7 @@ impl Engine {
         self.auto_off_sent = false;
         self.fill_started = None;
         self.countdown = None;
+        self.countdown_holding = false;
         self.controls_ready = false;
         self.startup_safe_sent = false;
         self.decoder.reset();
@@ -1443,6 +1479,7 @@ impl Engine {
             };
             self.pending = None;
             if let Some((target, _)) = self.countdown.take() {
+                self.countdown_holding = false;
                 self.shared.log(
                     Level::Warn,
                     Source::App,
@@ -1628,17 +1665,9 @@ impl Engine {
                 st.vehicle.state,
             )
         };
-        let (expected_mode, event, final_action) = match target {
-            CountdownTarget::SrvIgn => (
-                OperationMode::Live,
-                ControlEvent::SrvIgnOn,
-                UserAction::SrvIgnOn,
-            ),
-            CountdownTarget::Ign => (
-                OperationMode::Test,
-                ControlEvent::IgnPwr,
-                UserAction::IgnPwr,
-            ),
+        let (expected_mode, event) = match target {
+            CountdownTarget::SrvIgn => (OperationMode::Live, ControlEvent::SrvIgnOn),
+            CountdownTarget::Ign => (OperationMode::Test, ControlEvent::IgnPwr),
         };
         let allowed = mode == expected_mode
             && ground_online
@@ -1655,21 +1684,27 @@ impl Engine {
             )));
             return;
         }
-        if now < deadline {
+        if now < deadline || self.countdown_holding {
             return;
         }
-        self.countdown = None;
+        self.countdown_holding = true;
         {
             let mut st = self.shared.lock();
-            st.countdown = CountdownUi::default();
-            st.revision = st.revision.wrapping_add(1);
-        }
-        self.send_action(final_action, 0, 0, Origin::Countdown);
-        {
-            let mut st = self.shared.lock();
+            st.countdown.active = true;
+            st.countdown.holding = true;
+            st.countdown.remaining_ms = 0;
             st.refresh();
             st.revision = st.revision.wrapping_add(1);
         }
+        self.shared.log(
+            Level::Warn,
+            Source::App,
+            format!(
+                "{} countdown reached T-0.0 s - HOLD; press L to explicitly trigger ignition or Shift+L to cancel",
+                target.label()
+            ),
+            Some("countdown_hold"),
+        );
         self.shared.publish();
     }
 
@@ -2148,6 +2183,7 @@ impl Engine {
                 self.fill_started = None;
                 self.auto_off_sent = false;
                 self.countdown = None;
+                self.countdown_holding = false;
                 self.controls_ready = false;
                 self.startup_safe_sent = false;
                 let mut st = self.shared.lock();

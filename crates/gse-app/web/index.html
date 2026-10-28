@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/grp.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=7">
+<link rel="stylesheet" href="/app.css?v=8">
 </head>
 <body>
 <div class="crt">
@@ -176,7 +176,7 @@
 
           <div class="countdown-banner" id="countdown-banner" hidden role="status" aria-live="assertive">
             <div class="cd-head">
-              <span class="cd-title" id="countdown-title">&gt;&gt; LIVE LAUNCH COUNTDOWN · SRV+IGN -&gt; ON/PWR</span>
+              <span class="cd-title" id="countdown-title">&gt;&gt; LIVE LAUNCH COUNTDOWN · SRV+IGN -&gt; HOLD</span>
               <div class="cd-right">
                 <span class="cd-time" id="countdown-time">T - 5.0 s</span>
                 <button class="btn danger-solid tiny" id="btn-abort-countdown" data-action="abort_countdown" type="button">abort</button>
@@ -185,7 +185,7 @@
             <div class="cd-bar"><div class="cd-bar-fill" id="countdown-fill"></div></div>
             <div class="cd-foot">
               <span id="countdown-sub">Outputs return OFF/SAFE immediately if aborted before T-0.0 s</span>
-              <span id="countdown-hint">Click ABORT, toggle button, or press E-STOP [E] to abort</span>
+              <span id="countdown-hint">Shift+L or ABORT cancels · press L at 0.0 s to trigger IGN</span>
             </div>
           </div>
 
@@ -291,11 +291,11 @@
         <legend>operating mode</legend>
         <label>control setup
           <select id="cfg-mode">
-            <option value="live">LIVE — Launch setup (FILL → countdown → SRV+IGN)</option>
+            <option value="live">LIVE — Launch setup (FILL → countdown HOLD → manual L)</option>
             <option value="test">TEST — Vehicle control test (independent FILL, SRV, IGN)</option>
           </select>
         </label>
-        <p class="hint" id="mode-hint">LIVE combines SRV+IGN after a completed fill with a 5 s launch countdown.</p>
+        <p class="hint" id="mode-hint">LIVE requires completed FILL, then countdown HOLD at 0.0 s before manual L trigger.</p>
       </fieldset>
 
       <fieldset>
@@ -356,10 +356,10 @@
   <div class="confirm" id="confirm" hidden>
     <div class="confirm-box">
       <h2>confirm ignition</h2>
-      <p>you are about to start the <b>IGN PWR</b> countdown. the igniter will energise at T-0.0 s unless aborted.</p>
+      <p>the <b>IGN PWR</b> countdown ends at T-0.0 s and holds safely. ignition requires a separate manual trigger.</p>
       <p class="hint" id="confirm-reason"></p>
       <div class="settings-actions">
-        <button class="btn danger-solid" id="confirm-ok" type="button">yes, arm IGN countdown</button>
+        <button class="btn danger-solid" id="confirm-ok" type="button">yes, start IGN countdown</button>
         <button class="btn ghost" id="confirm-cancel" type="button">cancel</button>
       </div>
     </div>
@@ -369,6 +369,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=7"></script>
+<script src="/app.js?v=8"></script>
 </body>
 </html>
