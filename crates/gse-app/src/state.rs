@@ -219,6 +219,8 @@ impl CountdownTarget {
 #[derive(Clone, Default)]
 pub struct CountdownUi {
     pub active: bool,
+    /// Countdown reached T-0; hold here until explicit operator ignition.
+    pub holding: bool,
     pub target: Option<CountdownTarget>,
     pub duration_ms: u32,
     pub remaining_ms: u32,
@@ -425,6 +427,7 @@ impl AppState {
             } else {
                 None
             },
+            countdown_holding: self.countdown.holding,
             controls_ready: self.controls.ready,
             state: self.vehicle.state,
         });
@@ -837,6 +840,11 @@ impl AppState {
         );
         json::field(
             &mut countdown,
+            "holding",
+            json::bool_json(self.countdown.holding),
+        );
+        json::field(
+            &mut countdown,
             "target",
             &json::opt_str_json(self.countdown.target.map(CountdownTarget::as_str)),
         );
@@ -1035,6 +1043,15 @@ mod tests {
         assert!(value.get("ground").is_some());
         assert!(value.get("vehicle").is_some());
         assert!(value.get("actions").unwrap().get("fill_on").is_some());
+        assert_eq!(
+            value
+                .get("countdown")
+                .unwrap()
+                .get("holding")
+                .unwrap()
+                .as_bool(),
+            Some(false)
+        );
         assert_eq!(
             value
                 .get("config")

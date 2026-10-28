@@ -59,8 +59,9 @@ pub const DEFAULT_FILL_SECONDS: u16 = 60;
 pub const MIN_FILL_SECONDS: u16 = 1;
 pub const MAX_FILL_SECONDS: u16 = 600;
 
-/// Default LIVE launch countdown before `SRV+IGN` energises. The operator can
-/// adjust it in Settings with the same bounds and clamping as `fill_seconds`.
+/// Default LIVE launch countdown; at T-0 the system holds safe until an
+/// explicit operator trigger. The operator can adjust it in Settings with the
+/// same bounds and clamping as `fill_seconds`.
 pub const DEFAULT_COUNTDOWN_SECONDS: u16 = 5;
 pub const MIN_COUNTDOWN_SECONDS: u16 = 1;
 pub const MAX_COUNTDOWN_SECONDS: u16 = 600;

@@ -10,14 +10,14 @@ Walks both operating modes end-to-end:
      - starts SRV+IGN countdown, aborts mid-countdown, verifies outputs stay
        OFF/SAFE and paused FILL progress remains intact
      - resumes FILL -> ON -> automatic FILL -> OFF -> SRV+IGN unlocked
-     - runs full countdown -> SRV+IGN ON/PWR -> operator SRV+IGN OFF/SAFE
+     - holds at T-0 with outputs SAFE, manually triggers with L -> SRV+IGN ON/PWR -> OFF/SAFE
   2. Settings switch to TEST mode:
      - verifies SRV and IGN start locked prior to FILL running
      - turns FILL -> ON -> pauses FILL -> OFF -> SRV unlocks
      - turns SRV -> ON -> starts IGN countdown -> aborts mid-countdown ->
        verifies SRV returns OFF and paused FILL progress remains intact
      - resumes FILL -> ON -> automatic FILL -> OFF -> SRV ON -> IGN countdown ->
-       IGN PWR -> RESET CONTROLS -> ALL SAFE
+       T-0 HOLD with IGN SAFE -> manually triggers with L -> RESET CONTROLS
 
 Usage: python3 scripts/state_trace.py [path/to/gse-app]
 """
@@ -182,7 +182,7 @@ def main() -> int:
         assert s["controls"]["safe"]
         assert s["fill"]["paused"] and s["fill"]["remaining_ms"] == rem_live
 
-        step("A4. LIVE: Resume FILL -> ON -> auto FILL -> OFF -> full countdown -> SRV+IGN ON -> OFF")
+        step("A4. LIVE: Resume FILL -> ON -> auto OFF -> countdown HOLD -> manual L trigger -> OFF")
         api("/api/command", {"action": "fill_on"})
         wait(lambda x: x["controls"]["fill"] == "ON", "LIVE resumed fill ON")
         wait(
@@ -196,13 +196,22 @@ def main() -> int:
         api("/api/command", {"action": "srv_ign_on"})
         wait(lambda x: x["countdown"]["active"], "LIVE countdown started")
         s = wait(
-            lambda x: x["controls"]["srv"] == "ON"
-            and x["controls"]["ign"] == "PWR"
-            and x["actions"]["srv_ign_off"]["enabled"],
-            "SRV+IGN ON/PWR acknowledged after countdown",
+            lambda x: x["countdown"]["active"] and x["countdown"].get("holding"),
+            "LIVE countdown held at T-0",
             timeout=8.0,
         )
         assert (time.monotonic() - t0) >= 1.9
+        assert s["countdown"]["remaining_ms"] == 0
+        assert s["controls"]["safe"]
+        assert s["actions"]["srv_ign_on"]["enabled"]
+        api("/api/command", {"action": "srv_ign_on"})  # operator presses L
+        s = wait(
+            lambda x: x["controls"]["srv"] == "ON"
+            and x["controls"]["ign"] == "PWR"
+            and x["actions"]["srv_ign_off"]["enabled"],
+            "manual L trigger acknowledged as SRV+IGN ON/PWR",
+            timeout=5.0,
+        )
         assert s["vehicle"]["state"]["srv"] and s["vehicle"]["state"]["ign"]
         api("/api/command", {"action": "srv_ign_off"})
         wait(lambda x: x["controls"]["safe"], "SRV+IGN OFF/SAFE")
@@ -245,14 +254,22 @@ def main() -> int:
         assert not s["vehicle"]["state"]["ign"]
         assert s["fill"]["paused"] and s["fill"]["remaining_ms"] == rem_test
 
-        step("B4. TEST: Resume FILL -> auto OFF -> SRV ON -> IGN countdown -> IGN PWR -> RESET")
+        step("B4. TEST: Resume FILL -> auto OFF -> SRV ON -> IGN countdown HOLD -> manual L -> RESET")
         api("/api/command", {"action": "fill_on"})
         wait(lambda x: x["controls"]["fill"] == "OFF" and x["fill"]["seq_complete"], "resumed TEST fill complete")
         api("/api/command", {"action": "srv_on"})
         wait(lambda x: x["controls"]["srv"] == "ON" and x["actions"]["ign_pwr"]["enabled"], "IGN armed")
         api("/api/command", {"action": "ign_pwr"})
         wait(lambda x: x["countdown"]["active"], "TEST IGN countdown")
-        wait(lambda x: x["controls"]["ign"] == "PWR", "IGN PWR")
+        s = wait(
+            lambda x: x["countdown"]["active"] and x["countdown"].get("holding"),
+            "TEST IGN T-0 HOLD",
+        )
+        assert s["countdown"]["remaining_ms"] == 0
+        assert not s["vehicle"]["state"]["ign"]
+        assert s["actions"]["ign_pwr"]["enabled"]
+        api("/api/command", {"action": "ign_pwr"})  # operator presses L
+        wait(lambda x: x["controls"]["ign"] == "PWR", "manual L trigger: IGN PWR")
 
         api("/api/command", {"action": "reset_controls"})
         s = wait(

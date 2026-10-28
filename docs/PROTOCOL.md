@@ -120,8 +120,9 @@ Capabilities: `RADIO` 1, `SERVOS` 2, `IGNITER` 4, `WATCHDOG` 8,
     `FILL = OFF` and `IGN = SAFE`).
   - `CLEAR_FAULTS` (`2`) — clear latched fault bits and inhibit flags.
 - **`SRV+IGN` combined launch control (`control = 4`)**:
-  - `ACTION_ON` (`1`) — used by `LIVE` launch mode after the host countdown
-    reaches `T-0`: re-verifies `!fill_open && (fill_seq_complete || fill_paused) &&
+  - `ACTION_ON` (`1`) — used by `LIVE` launch mode only after the host countdown
+    reaches T-0 HOLD and the operator explicitly triggers: re-verifies
+    `!fill_open && (fill_seq_complete || fill_paused) &&
     !fill_seq_aborted && !inhibited && !estop`, drives `SRV = true` and
     `IGN = true`, waits `SETTLE_SERVO_MS` (`350 ms`), emits `EventCode::SrvOn`
     + `EventCode::IgnPwr`, and replies `ACK` with `SRV_ON | IGN_PWR`.
@@ -222,7 +223,7 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 | Vehicle `LINK_TIMEOUT_MS` | 5 s without host frame | vehicle forces all outputs `OFF/SAFE`, sets `LINK_LOSS_SAFE` + `INHIBITED`, emits `LinkTimeoutSafe` |
 | Vehicle `STATE` telemetry | every 250 ms | updates host snapshot and board-driven fill remaining time |
 | Timed `FILL` (`DEFAULT_FILL_SECONDS = 60`) | `1..=600 s` | board counts down `fill_remaining_ms` (`fill_target_ms`); operator `FILL OFF` before expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) so `FILL ON` resumes, while at `0 ms` host sends `FILL OFF (AUTO)` (`FILL_SEQ_COMPLETE`) |
-| Ignition countdown (`DEFAULT_COUNTDOWN_SECONDS = 5`) | `1..=600 s` | host counts down on `snapshot.countdown` (`target: "srv_ign" \| "ign"`), re-validating every safety gate on every tick before sending `COMMAND(SrvIgn, ON)` (`LIVE`) or `COMMAND(Ign, ON)` (`TEST`) at `T-0`; aborting cancels immediately, safes `SRV` if `ON`, and preserves `FILL` progress |
+| Ignition countdown (`DEFAULT_COUNTDOWN_SECONDS = 5`) | `1..=600 s` | host counts down on `snapshot.countdown` (`target: "srv_ign" \| "ign"`), re-validating every safety gate on every tick; at `T-0` it remains active in `holding: true` with `remaining_ms: 0` and all outputs still `OFF/SAFE`. No ignition command is sent until explicit `L` / matching ON action (`COMMAND(SrvIgn, ON)` in `LIVE`, `COMMAND(Ign, ON)` in `TEST`); `Shift+L`, abort, or safe-toggle cancels immediately, safes `SRV` if `ON`, and preserves `FILL` progress |
 
 ### Control state machine (`gse-proto/src/fsm.rs`)
 
@@ -265,8 +266,7 @@ every `event: state` frame on `/api/events`:
   `target`, `last_event`, `last_result`) — updates only when a vehicle `ACK`
   lands.
 - `fill`: `{active, paused, duration_s, remaining_ms, ends_at, seq_complete, seq_aborted, auto_off_pending}`
-- `countdown`: `{active, target, duration_ms, remaining_ms, ends_at}` — active
-  during the `SRV+IGN` (`LIVE`) or `IGN` (`TEST`) countdown prior to energizing.
+- `countdown`: `{active, holding, target, duration_ms, remaining_ms, ends_at}` — remains active at T-0 (`holding: true`, `remaining_ms: 0`) until the operator explicitly triggers or cancels.
 - `actions`: per-action `{enabled, reason}` map for `fill_on`, `fill_off`,
   `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`,
   `abort_countdown`, `reset_controls`, `reset_fill`, `clear_faults`, and `estop`.

@@ -12,8 +12,8 @@ Exercises BOTH operating modes and all three sequence capabilities end-to-end:
        verifies immediate cancellation, zero output actuation, and preserved
        paused/completed FILL progress without needing a reset
      - resumes FILL -> ON -> verifies automatic FILL -> OFF after only the
-       remaining duration -> runs full 5 s (and custom 2 s) countdown ->
-       SRV+IGN ON (SRV=ON, IGN=PWR) -> SRV+IGN OFF (OFF/SAFE)
+       remaining duration -> runs countdown to T-0 HOLD -> manually triggers
+       with L -> SRV+IGN ON (SRV=ON, IGN=PWR) -> SRV+IGN OFF (OFF/SAFE)
   2. Settings switch to TEST mode:
      - verifies BOTH SRV and IGN start locked prior to FILL running
      - turns FILL -> ON, pauses FILL -> OFF early -> verifies SRV unlocks
@@ -21,9 +21,9 @@ Exercises BOTH operating modes and all three sequence capabilities end-to-end:
        and aborts mid-countdown via `ign_safe` / `abort_countdown`: verifies
        IGN never energises, SRV automatically closes to OFF, and paused FILL
        state/remaining_ms remain intact
-     - resumes FILL -> ON to completion, runs IGN countdown to IGN PWR,
-       triggers E-STOP, runs RESET CONTROLS, tests reconnect ALL SAFE, and
-       verifies pre-shutdown ALL SAFE.
+     - resumes FILL -> ON to completion, runs IGN countdown to T-0 HOLD,
+       manually triggers with L, triggers E-STOP, runs RESET CONTROLS,
+       tests reconnect ALL SAFE, and verifies pre-shutdown ALL SAFE.
 
 Usage: smoke.py BASE_URL TOKEN
 """
@@ -213,7 +213,7 @@ def main():
         f"resumed FILL completed after remaining duration rather than restarting 4 s ({elapsed_resume:.2f} s)",
     )
 
-    # Press SRV+IGN: verify full 5-second countdown -> automatic SRV+IGN ON.
+    # Start SRV+IGN countdown: T-0 holds safely until the operator explicitly presses L.
     t_armed = time.monotonic()
     request("/api/command", {"action": "srv_ign_on"})
     s = wait_for(lambda st: st["countdown"]["active"], "5 s SRV+IGN countdown active")
@@ -228,16 +228,29 @@ def main():
     code, _ = request_status("/api/config", {"op_mode": "test"})
     check(code == 400, "switching LIVE -> TEST is blocked while countdown is active")
 
-    # Wait for the 5-second countdown to complete and receive the SRV+IGN ON ACK.
+    s = wait_for(
+        lambda st: st["countdown"]["active"] and st["countdown"].get("holding"),
+        "countdown reached T-0 HOLD",
+        timeout=10,
+    )
+    check(
+        s["countdown"]["remaining_ms"] == 0
+        and s["controls"]["safe"]
+        and not s["vehicle"]["state"]["srv"]
+        and not s["vehicle"]["state"]["ign"]
+        and s["actions"]["srv_ign_on"]["enabled"],
+        "T-0 HOLD stays OFF/SAFE and enables explicit operator trigger",
+    )
+    elapsed_live = time.monotonic() - t_armed
+    check(elapsed_live >= 4.8, f"countdown reached HOLD after full 5 s ({elapsed_live:.2f} s)")
+    request("/api/command", {"action": "srv_ign_on"})  # equivalent to pressing L
     s = wait_for(
         lambda st: st["controls"]["srv"] == "ON"
         and st["controls"]["ign"] == "PWR"
         and st["actions"]["srv_ign_off"]["enabled"],
-        "SRV+IGN -> ON acknowledged after 5 s countdown",
-        timeout=10,
+        "manual L trigger acknowledged as SRV+IGN ON/PWR",
+        timeout=5,
     )
-    elapsed_live = time.monotonic() - t_armed
-    check(elapsed_live >= 4.8, f"SRV+IGN energised after full 5 s countdown ({elapsed_live:.2f} s)")
     check(
         s["vehicle"]["state"]["srv"]
         and s["vehicle"]["state"]["ign"]
@@ -382,10 +395,22 @@ def main():
     t_ign = time.monotonic()
     request("/api/command", {"action": "ign_pwr"})
     wait_for(lambda st: st["countdown"]["active"], "2 s TEST IGN countdown active")
-    s = wait_for(lambda st: st["vehicle"]["state"]["ign"], "IGN PWR after countdown", timeout=6)
+    s = wait_for(
+        lambda st: st["countdown"]["active"] and st["countdown"].get("holding"),
+        "TEST IGN countdown held at T-0",
+        timeout=6,
+    )
     elapsed_ign = time.monotonic() - t_ign
-    check(elapsed_ign >= 1.9, f"TEST IGN energised after 2 s countdown ({elapsed_ign:.2f} s)")
-    check(s["vehicle"]["summary"].endswith("IGN=PWR"), "IGN PWR acknowledged by the vehicle")
+    check(
+        elapsed_ign >= 1.9
+        and s["countdown"]["remaining_ms"] == 0
+        and not s["vehicle"]["state"]["ign"]
+        and s["actions"]["ign_pwr"]["enabled"],
+        f"TEST countdown held at 0.0 s with IGN SAFE after {elapsed_ign:.2f} s",
+    )
+    request("/api/command", {"action": "ign_pwr"})  # equivalent to pressing L
+    s = wait_for(lambda st: st["vehicle"]["state"]["ign"], "manual L trigger: IGN PWR", timeout=5)
+    check(s["vehicle"]["summary"].endswith("IGN=PWR"), "manual IGN trigger acknowledged by the vehicle")
 
     request("/api/command", {"action": "estop"})
     s = wait_for(lambda st: not st["vehicle"]["state"]["ign"], "E-STOP")

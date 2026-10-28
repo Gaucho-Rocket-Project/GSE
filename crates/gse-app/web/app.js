@@ -293,7 +293,11 @@
     }
     if (config && config.confirm_ign) {
       pendingIgn = "ign_pwr";
-      $("confirm-reason").textContent = "SRV is ON and FILL is ready (" + countdownSecondsCfg() + " s countdown before IGN PWR).";
+      var atHold = snapshot.countdown && snapshot.countdown.holding;
+      $("confirm-reason").textContent = atHold
+        ? "Countdown is at T-0.0 s. Confirm to manually trigger IGN PWR."
+        : "SRV is ON and FILL is ready (" + countdownSecondsCfg() + " s countdown, then manual L trigger).";
+      $("confirm-ok").textContent = atHold ? "yes, trigger IGN now" : "yes, start IGN countdown";
       $("confirm").hidden = false;
       $("confirm-ok").focus();
       return;
@@ -400,6 +404,7 @@
     var isSrvIgn = cdTarget === "srv_ign";
     var duration = cd.duration_ms || (countdownSecondsCfg() * 1000);
     var remaining = countdownRemainingMs(s);
+    var holding = !!cd.holding;
     var wholeSec = Math.ceil(remaining / 1000);
     if (wholeSec > 0 && wholeSec !== lastCountdownSec) {
       lastCountdownSec = wholeSec;
@@ -407,42 +412,62 @@
     }
     var titleEl = $("countdown-title");
     if (titleEl) {
-      titleEl.textContent = isSrvIgn
-        ? ">> LIVE LAUNCH COUNTDOWN · SRV+IGN -> ON/PWR"
-        : ">> IGNITION COUNTDOWN · IGN -> PWR";
+      titleEl.textContent = holding
+        ? ">> IGNITION HOLD · MANUAL TRIGGER REQUIRED"
+        : (isSrvIgn
+            ? ">> LIVE LAUNCH COUNTDOWN · SRV+IGN -> HOLD"
+            : ">> IGNITION COUNTDOWN · IGN -> HOLD");
     }
     var subEl = $("countdown-sub");
     if (subEl) {
-      subEl.textContent = isSrvIgn
-        ? "Outputs remain OFF/SAFE until T-0.0 s (FILL progress preserved on abort)"
-        : "Aborting cancels IGN and returns SRV -> OFF while preserving FILL progress";
+      subEl.textContent = holding
+        ? "HOLD at T-0.0 s · outputs remain OFF/SAFE until the operator explicitly triggers ignition"
+        : (isSrvIgn
+            ? "Outputs remain OFF/SAFE until T-0.0 s (FILL progress preserved on abort)"
+            : "Aborting cancels IGN and returns SRV -> OFF while preserving FILL progress");
     }
-    $("countdown-time").textContent = "T - " + fmtLaunchSeconds(remaining) + " s";
+    $("countdown-time").textContent = holding
+      ? "HOLD · 0.0 s"
+      : "T - " + fmtLaunchSeconds(remaining) + " s";
+    var hintEl = $("countdown-hint");
+    if (hintEl) {
+      hintEl.textContent = holding
+        ? "Press L to trigger IGN · Shift+L or ABORT to cancel"
+        : "Shift+L, ABORT, safe toggle, or E-STOP [E] to cancel";
+    }
     var pct = duration > 0 ? Math.min(100, Math.max(0, (remaining / duration) * 100)) : 0;
     $("countdown-fill").style.width = pct.toFixed(1) + "%";
 
     if (isSrvIgn) {
       var ledLive = $("led-srv-ign");
       if (ledLive) {
-        ledLive.textContent = "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
+        ledLive.textContent = holding ? "HOLD · 0.0s" : "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
         ledLive.className = "ctl-state counting";
       }
       var descLive = $("desc-srv-ign");
       if (descLive) {
-        descLive.textContent = "T - " + fmtLaunchSeconds(remaining) + " s · click → ABORT";
+        descLive.textContent = holding
+          ? "HOLD · press L to trigger IGN · Shift+L to cancel"
+          : "T - " + fmtLaunchSeconds(remaining) + " s · Shift+L / click → ABORT";
       }
-      $("pending-text").textContent = "SRV+IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
+      $("pending-text").textContent = holding
+        ? "IGN HOLD · 0.0 s · waiting for operator [L]"
+        : "SRV+IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
     } else {
       var ledTest = $("led-ign");
       if (ledTest) {
-        ledTest.textContent = "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
+        ledTest.textContent = holding ? "HOLD · 0.0s" : "COUNTDOWN · " + fmtLaunchSeconds(remaining) + "s";
         ledTest.className = "ctl-state counting";
       }
       var descTest = $("desc-ign");
       if (descTest) {
-        descTest.textContent = "T - " + fmtLaunchSeconds(remaining) + " s · click → ABORT";
+        descTest.textContent = holding
+          ? "HOLD · press L to trigger IGN · Shift+L to cancel"
+          : "T - " + fmtLaunchSeconds(remaining) + " s · Shift+L / click → ABORT";
       }
-      $("pending-text").textContent = "IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
+      $("pending-text").textContent = holding
+        ? "IGN HOLD · 0.0 s · waiting for operator [L]"
+        : "IGN countdown · T-" + fmtLaunchSeconds(remaining) + " s";
     }
   }
 
@@ -548,7 +573,7 @@
       hidden: !live,
       active: srvIgnActive,
       danger: true,
-      counting: cdActive && cdTarget === "srv_ign",
+      counting: cdActive && !s.countdown.holding && cdTarget === "srv_ign",
       onAction: "srv_ign_on",
       offAction: "srv_ign_off",
       actions: actions,
@@ -557,7 +582,7 @@
         : (srvIgnActive
             ? "ENERGISED (ON/PWR) · click → OFF"
             : (actions.srv_ign_on && actions.srv_ign_on.enabled
-                ? ("Ready · press for " + countdownSecondsCfg() + " s countdown → ON")
+                ? (s.countdown.holding ? "HOLD · press L to trigger IGN" : "Ready · press for " + countdownSecondsCfg() + " s countdown → HOLD")
                 : "Combined launch channel · locked"))
     });
 
@@ -588,7 +613,7 @@
       hidden: live,
       active: ignPwr,
       danger: true,
-      counting: cdActive && cdTarget === "ign",
+      counting: cdActive && !s.countdown.holding && cdTarget === "ign",
       onAction: "ign_pwr",
       offAction: "ign_safe",
       actions: actions,
@@ -597,7 +622,7 @@
         : (ignPwr
             ? "IGNITER ENERGISED · click → SAFE"
             : (actions.ign_pwr && actions.ign_pwr.enabled
-                ? ("Igniter armed · press for " + countdownSecondsCfg() + " s countdown → PWR")
+                ? (s.countdown.holding ? "HOLD · press L to trigger IGN" : "Igniter armed · press for " + countdownSecondsCfg() + " s countdown → HOLD")
                 : "Igniter power · locked"))
     });
 
@@ -953,9 +978,9 @@
     var cdVal = (cdInput && parseInt(cdInput.value, 10)) || countdownSecondsCfg();
     if (!hint || !sel) { return; }
     if (sel.value === "test") {
-      hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls (SRV unlocks after FILL pauses or completes; IGN runs a " + cdVal + " s abortable countdown).";
+      hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls; IGN runs a " + cdVal + " s countdown, then holds at 0.0 s for manual L (Shift+L cancels).";
     } else {
-      hint.textContent = "LIVE combines SRV+IGN into one button unlocked after FILL pauses or completes, with a " + cdVal + " s abortable launch countdown.";
+      hint.textContent = "LIVE combines SRV+IGN after FILL; the " + cdVal + " s countdown holds at 0.0 s for manual L (Shift+L cancels).";
     }
   }
 
@@ -1195,6 +1220,15 @@
   }
 
   function onKeyDown(e) {
+    var countdown = snapshot && snapshot.countdown;
+    if (countdown && countdown.active && e.shiftKey && e.key && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      e.stopPropagation();
+      pendingIgn = null;
+      $("confirm").hidden = true;
+      sendCommand("abort_countdown");
+      return;
+    }
     if (recording) {
       e.preventDefault();
       e.stopPropagation();
@@ -1202,6 +1236,15 @@
       var combo = comboFromEvent(e);
       if (!combo) { return; }
       commitShortcut(combo);
+      return;
+    }
+    if (countdown && countdown.active && e.key && e.key.toLowerCase() === "l") {
+      e.preventDefault();
+      e.stopPropagation();
+      if (countdown.holding) {
+        if (countdown.target === "ign") { requestIgn(); }
+        else { sendCommand("srv_ign_on"); }
+      }
       return;
     }
     if (!$("confirm").hidden) {

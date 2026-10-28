@@ -77,12 +77,13 @@ activating command is in progress.
 | Console controls | `FILL[ON/OFF]` + `SRV+IGN[ON/OFF]` (2 buttons) | `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]` (3 buttons) |
 | Fill sequence & pause/resume | `FILL ON` → auto `FILL OFF` after `fill_seconds` (`FILL_SEQ_COMPLETE`), or manual `FILL OFF` prior to expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) so `FILL ON` resumes | Identical (`FILL ON` → auto `FILL OFF`, or manual `FILL OFF` pauses timer and `FILL ON` resumes) |
 | Pre-fill lock | `SRV+IGN` starts `OFF/SAFE` and unlocks once `FILL` completes or is paused `OFF` | `SRV` and `IGN` start locked and `SRV` unlocks once `FILL` completes or is paused `OFF`; `IGN` additionally requires `SRV = ON` |
-| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`) holding outputs `OFF/SAFE` until `T-0.0 s`, then commands `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then pressing `IGN` (optional confirm dialog) runs the `countdown_seconds` countdown before commanding `Control::Ign` (`ON`) → `PWR` |
+| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`), then holds at `T-0.0 s` with outputs `OFF/SAFE`; operator must press `L` to command `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then pressing `IGN` (optional confirm dialog) runs the countdown and holds at `T-0.0 s`; operator must press `L` to command `Control::Ign` (`ON`) → `PWR` |
 | Safe shutoff | Pressing `SRV+IGN` while `ON/PWR` commands `Control::SrvIgn` (`OFF`) → safes `IGN` first, then `SRV` → `OFF/SAFE` | Operator commands `IGN SAFE`, then `SRV OFF` (`SRV OFF` is blocked while `IGN` is `PWR`) |
-| Countdown abort | Clicking `ABORT`, toggling `SRV+IGN` (`L`), or posting `abort_countdown` immediately cancels the countdown with outputs `OFF/SAFE` and preserves `FILL` state | Clicking `ABORT`, toggling `IGN` (`I`), or posting `abort_countdown` immediately cancels `IGN`, commands `SRV -> OFF`, and preserves `FILL` state |
+| Countdown abort | Pressing `Shift+L`, clicking `ABORT` / the safe toggle, or posting `abort_countdown` cancels the countdown with outputs `OFF/SAFE` and preserves `FILL` state | Pressing `Shift+L`, clicking `ABORT` / `IGN SAFE`, or posting `abort_countdown` cancels `IGN`, commands `SRV -> OFF`, and preserves `FILL` state |
 
-- **LIVE sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → press SRV+IGN → (abortable countdown) → SRV+IGN ON/PWR → SRV+IGN OFF/SAFE`
-- **TEST sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → SRV ON → press IGN → (abortable countdown) → IGN PWR → IGN SAFE → SRV OFF`
+- **LIVE sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → press SRV+IGN → (abortable countdown) → HOLD at 0.0 s → manually press L to trigger SRV+IGN ON/PWR → SRV+IGN OFF/SAFE`
+- **TEST sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → SRV ON → press IGN → (abortable countdown) → HOLD at 0.0 s → manually press L to trigger IGN PWR → IGN SAFE → SRV OFF`
+- **No automatic ignition:** countdown completion never energises IGN; it stays at `0.0 s` with outputs `OFF/SAFE` until the operator explicitly presses `L`. `Shift+L` cancels the active countdown; the abort button and safe-toggle also remain available.
 
 ## Safety interlocks
 

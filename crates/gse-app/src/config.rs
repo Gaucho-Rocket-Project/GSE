@@ -10,7 +10,7 @@ use crate::json::{self, Value};
 /// Operator control setup selected in Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OperationMode {
-    /// Live launch sequence: `FILL` -> countdown -> `SRV+IGN` (`OFF/SAFE` <-> `ON/PWR`).
+    /// Live launch sequence: `FILL` -> abortable countdown -> T-0 HOLD -> manual `L` trigger.
     #[default]
     Live,
     /// Vehicle control checkout: independent `FILL`, `SRV`, and `IGN` controls.

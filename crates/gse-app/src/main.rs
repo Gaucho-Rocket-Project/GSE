@@ -58,8 +58,9 @@ OPTIONS:
     -V, --version         Show the version
 
 SAFETY:
-    Supports selectable LIVE (FILL -> configurable countdown -> combined
-    SRV+IGN) and TEST (independent FILL, SRV, IGN) operating modes in Settings.
+    Supports selectable LIVE and TEST control modes. Ignition countdowns hold
+    at T-0 with outputs SAFE until the operator explicitly presses L; Shift+L
+    aborts an active countdown.
     FILL and SRV are interlocked; neither IGN PWR nor SRV+IGN ON can activate
     without a completed fill sequence. The vehicle firmware independently
     re-checks every command and can always refuse one.
