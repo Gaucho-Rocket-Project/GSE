@@ -39,10 +39,10 @@ const ACK_MAX_ATTEMPTS: u32 = 5;
 const RECONNECT_DELAY_MS: u64 = 1_500;
 const SCAN_RETRY_MS: u64 = 2_500;
 const PUBLISH_MS: u64 = 100;
-// Allow for a board that starts/restarts when its USB serial port is opened.
-// Ground HELLOs are only periodic at 1 Hz, so a shorter probe window can miss
-// both the initial PING (while the MCU is booting) and the next HELLO.
-const PROBE_TIMEOUT_MS: u64 = 2_200;
+// Give the configured USB CDC link time to produce a complete response after
+// opening. Ground HELLOs are periodic at 1 Hz; keep a bounded 5 s window for
+// startup delays and retransmit PING while waiting.
+const PROBE_TIMEOUT_MS: u64 = 5_000;
 const PROBE_RETRY_MS: u64 = 250;
 /// How long the shutdown sequence waits for the ALL SAFE acknowledgement.
 const SHUTDOWN_TIMEOUT_MS: u64 = 2_500;
@@ -1138,13 +1138,7 @@ impl Engine {
             let mut tried = Vec::new();
             for port in &ports {
                 tried.push(port.label.clone());
-                if let Some((link, matched_baud)) =
-                    probe_port_any_baud(&port.path, baud, Endpoint::Ground, self.verbose)
-                {
-                    if matched_baud != baud {
-                        self.shared.lock().config.baud = matched_baud;
-                        self.shared.save_config();
-                    }
+                if let Some(link) = probe_port(&port.path, baud, Endpoint::Ground, self.verbose) {
                     self.on_connected(link, &port.path);
                     return;
                 }
@@ -1166,16 +1160,10 @@ impl Engine {
                 Err(e) => self.scan_failed(&format!("Cannot connect to {target}: {e}")),
             }
         } else {
-            match probe_port_any_baud(&target, baud, Endpoint::Ground, self.verbose) {
-                Some((link, matched_baud)) => {
-                    if matched_baud != baud {
-                        self.shared.lock().config.baud = matched_baud;
-                        self.shared.save_config();
-                    }
-                    self.on_connected(link, &target);
-                }
+            match probe_port(&target, baud, Endpoint::Ground, self.verbose) {
+                Some(link) => self.on_connected(link, &target),
                 None => self.scan_failed(&format!(
-                    "No response from {target}. Check the cable, baud rate and permissions."
+                    "No response from {target} at configured {baud} baud. Check the serial link and permissions."
                 )),
             }
         }
@@ -2869,32 +2857,9 @@ fn auto_off_due(vehicle_remaining_ms: u32, host_deadline: Option<Instant>, now: 
         .unwrap_or(false)
 }
 
-/// Probe a hardware port first at `preferred_baud`, falling back across all
-/// supported `UsbBaud` rates so boards with flash-saved custom USB CDC speeds
-/// auto-discover cleanly on any workstation.
-fn probe_port_any_baud(
-    path: &str,
-    preferred_baud: u32,
-    target: Endpoint,
-    verbose: bool,
-) -> Option<(Box<dyn ByteLink>, u32)> {
-    if let Some(link) = probe_port(path, preferred_baud, target, verbose) {
-        return Some((link, preferred_baud));
-    }
-    for preset in UsbBaud::ALL {
-        let candidate = preset.bps();
-        if candidate == preferred_baud {
-            continue;
-        }
-        if let Some(link) = probe_port_timeout(path, candidate, target, 240, verbose) {
-            return Some((link, candidate));
-        }
-    }
-    None
-}
-
-/// Probe a freshly opened port by sending a PING to `target` and waiting for a
-/// valid frame from that endpoint. Returns the link if the board answered.
+/// Probe a freshly opened port at the operator-configured baud by sending a
+/// PING to `target` and waiting for a valid frame from that endpoint. Returns
+/// the link if the board answered.
 fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<Box<dyn ByteLink>> {
     probe_port_timeout(path, baud, target, PROBE_TIMEOUT_MS, verbose)
 }
