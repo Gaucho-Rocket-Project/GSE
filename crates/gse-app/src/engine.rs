@@ -1157,7 +1157,7 @@ impl Engine {
         } else if is_tcp_spec(&target) {
             match open_link(&target, baud) {
                 Ok(mut link) => {
-                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS) {
+                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS, self.verbose) {
                         self.on_connected(link, &target);
                     } else {
                         self.scan_failed(&format!("No ground board responded on {target}"));
@@ -2915,14 +2915,22 @@ fn probe_port_timeout(
             return None;
         }
     };
-    if probe_existing(&mut *link, target, timeout_ms) {
+    if verbose {
+        eprintln!("[gse] probing {path} @ {baud} baud for {target}");
+    }
+    if probe_existing(&mut *link, target, timeout_ms, verbose) {
         Some(link)
     } else {
         None
     }
 }
 
-fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) -> bool {
+fn probe_existing(
+    link: &mut dyn ByteLink,
+    target: Endpoint,
+    timeout_ms: u64,
+    verbose: bool,
+) -> bool {
     let mut buf = [0u8; Frame::MAX_ENCODED];
     let nonce = clock::unix_ms() as u32;
     let n = match encode_message(
@@ -2943,7 +2951,10 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
     while Instant::now() < deadline {
         let now = Instant::now();
         if now >= next_ping {
-            if link.write_all(&buf[..n]).is_err() {
+            if let Err(e) = link.write_all(&buf[..n]) {
+                if verbose {
+                    eprintln!("[gse] probe {}: PING write failed: {e}", link.name());
+                }
                 return false;
             }
             next_ping = now + retry_period;
@@ -2956,6 +2967,15 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
                         // announcement; PONG is the response to our probe.
                         // Either is sufficient to prove this endpoint is alive.
                         if frame.src == target {
+                            if verbose {
+                                eprintln!(
+                                    "[gse] probe {}: received valid {} from {} (seq {})",
+                                    link.name(),
+                                    frame.msg_type,
+                                    frame.src,
+                                    frame.seq
+                                );
+                            }
                             return true;
                         }
                     }
@@ -2964,8 +2984,20 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
                     thread::sleep(Duration::from_millis(3));
                 }
             }
-            Err(_) => return false,
+            Err(e) => {
+                if verbose {
+                    eprintln!("[gse] probe {}: serial read failed: {e}", link.name());
+                }
+                return false;
+            }
         }
+    }
+    if verbose {
+        let stats = decoder.stats();
+        eprintln!(
+            "[gse] probe {}: no valid frame from {}; rx {} bytes, {} valid frame(s), {} CRC error(s), {} malformed frame(s)",
+            link.name(), target, stats.bytes_in, stats.frames_ok, stats.crc_errors, stats.malformed
+        );
     }
     false
 }
@@ -3028,7 +3060,12 @@ mod tests {
             ping_writes: 0,
         };
 
-        assert!(probe_existing(&mut link, Endpoint::Ground, PROBE_TIMEOUT_MS));
+        assert!(probe_existing(
+            &mut link,
+            Endpoint::Ground,
+            PROBE_TIMEOUT_MS,
+            false
+        ));
         assert!(link.ping_writes >= 2, "probe should retry while waiting");
     }
 
