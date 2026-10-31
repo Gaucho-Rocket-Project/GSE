@@ -1,9 +1,9 @@
 //! Ground (bridge) NUCLEO-H753ZI logic.
 //!
 //! The ground board is deliberately "dumb": it validates framing on both links
-//! and forwards frames between USB and the SX1281 UART. It only answers frames
-//! addressed to itself (used by the app's port auto-detection) and injects its
-//! own HELLO / LINKSTAT telemetry. All safety logic lives on the vehicle and in
+//! and forwards frames between USB and the SX1281 UART. It answers PING frames
+//! addressed to itself with PONG for app discovery/liveness, and injects its own
+//! LINKSTAT telemetry. All safety logic lives on the vehicle and in
 //! the ground app.
 //!
 //! Address filtering is what keeps the two links apart:
@@ -13,15 +13,13 @@
 
 use gse_proto::{
     encode_message, link_cfg_flags, AckResult, Endpoint, Event, EventCode, Frame, FrameDecoder,
-    Heartbeat, Hello, LinkConfig, LinkConfigAck, LinkStat, Message, Pong, Reason, StateSnapshot,
+    Heartbeat, LinkConfig, LinkConfigAck, LinkStat, Message, Pong, Reason, StateSnapshot,
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, GroundHal, Leds};
 use crate::radio::{DxLr42Receiver, DxLr42Stats};
 
-/// HELLO rate towards the PC.
-pub const HELLO_PERIOD_MS: u32 = 1_000;
-/// LINKSTAT rate towards the PC.
+/// LINKSTAT rate towards the PC after host activity is observed.
 pub const LINKSTAT_PERIOD_MS: u32 = 1_000;
 /// If more than this many bytes are queued for USB, drop radio frames instead
 /// of blocking the radio receiver (a wedged PC must not stall the bridge).
@@ -41,7 +39,6 @@ pub struct Ground<H: GroundHal> {
     last_usb_activity: u32,
     last_radio_activity: u32,
     have_radio: bool,
-    last_hello_tx: u32,
     last_linkstat_tx: u32,
     frames_from_radio: u32,
     frames_to_radio: u32,
@@ -65,7 +62,6 @@ impl<H: GroundHal> Ground<H> {
             last_usb_activity: now,
             last_radio_activity: now,
             have_radio: false,
-            last_hello_tx: now,
             last_linkstat_tx: now,
             frames_from_radio: 0,
             frames_to_radio: 0,
@@ -97,9 +93,6 @@ impl<H: GroundHal> Ground<H> {
         if !self.booted {
             self.booted = true;
             self.hal.set_radio_transparent();
-            let state = StateSnapshot::all_safe();
-            self.send_event(EventCode::BridgeReady, 0, now, state);
-            self.send_hello(now);
         }
 
         // Complete any staged link switchover only after the `LinkConfigAck` bytes
@@ -116,7 +109,6 @@ impl<H: GroundHal> Ground<H> {
                         now,
                         StateSnapshot::all_safe(),
                     );
-                    self.send_hello(now);
                     self.send_linkstat(now);
                 }
             }
@@ -160,9 +152,6 @@ impl<H: GroundHal> Ground<H> {
             }
         }
 
-        if elapsed_ms(now, self.last_hello_tx) >= HELLO_PERIOD_MS {
-            self.send_hello(now);
-        }
         if self.saw_host && elapsed_ms(now, self.last_linkstat_tx) >= LINKSTAT_PERIOD_MS {
             self.send_linkstat(now);
         }
@@ -278,29 +267,6 @@ impl<H: GroundHal> Ground<H> {
         }
     }
 
-    fn send_hello(&mut self, now: u32) {
-        let hello = Hello {
-            protocol: gse_proto::PROTOCOL_VERSION,
-            fw: {
-                let (a, b, c) = gse_proto::FIRMWARE_VERSION;
-                [a, b, c]
-            },
-            role: Endpoint::Ground,
-            uptime_ms: elapsed_ms(now, self.boot_ms),
-            device_id: self.hal.device_id(),
-            capabilities: gse_proto::capabilities::RADIO
-                | gse_proto::capabilities::USB_BRIDGE
-                | gse_proto::capabilities::WATCHDOG
-                | gse_proto::capabilities::LINK_CONFIG
-                | gse_proto::capabilities::RADIO_E28_2G4M27S,
-        };
-        if self.send_usb_msg(Message::Hello(hello)) {
-            self.last_hello_tx = now;
-        } else {
-            self.last_hello_tx = now.wrapping_sub(HELLO_PERIOD_MS - 20);
-        }
-    }
-
     fn send_linkstat(&mut self, now: u32) {
         let age = if self.have_radio {
             elapsed_ms(now, self.last_radio_activity).min(RADIO_AGE_CAP_MS)
@@ -391,16 +357,14 @@ mod tests {
     }
 
     #[test]
-    fn boots_and_announces_hello() {
+    fn boots_silently_until_host_ping() {
         let mut ground = new_ground();
         ground.poll();
-        let frames = ground.hal_mut().drain_usb_frames();
-        assert!(frames
-            .iter()
-            .any(|f| matches!(f.message(), Some(Message::Hello(h)) if h.role == Endpoint::Ground)));
-        assert!(frames.iter().any(
-            |f| matches!(f.message(), Some(Message::Event(e)) if e.code == EventCode::BridgeReady)
-        ));
+        assert!(ground.hal_mut().drain_usb_frames().is_empty());
+
+        ground.hal_mut().advance(5_000);
+        ground.poll();
+        assert!(ground.hal_mut().drain_usb_frames().is_empty());
         assert!(ground.hal().watchdog_kicks > 0);
     }
 

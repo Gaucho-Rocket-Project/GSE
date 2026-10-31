@@ -69,7 +69,7 @@ decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
 
 | Type | Name | Direction | Body |
 |---|---|---|---|
-| `0x01` | `HELLO` | board → host | 15 B |
+| `0x01` | `HELLO` | vehicle → host | 15 B |
 | `0x02` | `PING` | host → board | 8 B |
 | `0x03` | `PONG` | board → host | 24 B |
 | `0x04` | `COMMAND` | host → vehicle | 7 B |
@@ -82,6 +82,9 @@ decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
 | `0x0B` | `LINK_CONFIG_ACK` | vehicle / ground → host | 8 B |
 
 All multi-byte integers are little-endian.
+
+The Ground bridge is silent on boot and is discovered/kept alive with host-initiated
+PINGs and nonce-matched PONGs. The Vehicle continues to use HELLO for firmware discovery.
 
 ### HELLO (15 B)
 
