@@ -290,7 +290,9 @@ rustup target add thumbv7em-none-eabihf
 cd firmware/stm32h753
 cargo build --release --bin gse-ground
 cargo build --release --bin gse-vehicle
-# flash via probe-rs:
+# Connect the ground NUCLEO via its ST-LINK USB port, then flash/run its image:
+cargo run --release --bin gse-ground
+# Connect the vehicle NUCLEO, then flash/run its image separately:
 cargo run --release --bin gse-vehicle
 ```
 

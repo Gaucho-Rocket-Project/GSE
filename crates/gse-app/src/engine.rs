@@ -39,7 +39,11 @@ const ACK_MAX_ATTEMPTS: u32 = 5;
 const RECONNECT_DELAY_MS: u64 = 1_500;
 const SCAN_RETRY_MS: u64 = 2_500;
 const PUBLISH_MS: u64 = 100;
-const PROBE_TIMEOUT_MS: u64 = 700;
+// Allow for a board that starts/restarts when its USB serial port is opened.
+// Ground HELLOs are only periodic at 1 Hz, so a shorter probe window can miss
+// both the initial PING (while the MCU is booting) and the next HELLO.
+const PROBE_TIMEOUT_MS: u64 = 2_200;
+const PROBE_RETRY_MS: u64 = 250;
 /// How long the shutdown sequence waits for the ALL SAFE acknowledgement.
 const SHUTDOWN_TIMEOUT_MS: u64 = 2_500;
 /// How long a pending command may finish before shutdown cancels it.
@@ -2931,17 +2935,26 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
         Some(n) => n,
         None => return false,
     };
-    if link.write_all(&buf[..n]).is_err() {
-        return false;
-    }
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let retry_period = Duration::from_millis(PROBE_RETRY_MS);
+    let mut next_ping = Instant::now();
     let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 512];
+    let mut rx_buf = [0u8; 512];
     while Instant::now() < deadline {
-        match link.read(&mut buf) {
+        let now = Instant::now();
+        if now >= next_ping {
+            if link.write_all(&buf[..n]).is_err() {
+                return false;
+            }
+            next_ping = now + retry_period;
+        }
+        match link.read(&mut rx_buf) {
             Ok(n) => {
-                for &byte in &buf[..n] {
+                for &byte in &rx_buf[..n] {
                     if let Some(frame) = decoder.push(byte) {
+                        // HELLO is unsolicited and is the normal startup
+                        // announcement; PONG is the response to our probe.
+                        // Either is sufficient to prove this endpoint is alive.
                         if frame.src == target {
                             return true;
                         }
@@ -2960,6 +2973,64 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct DelayedHelloLink {
+        response: Vec<u8>,
+        ready_at: Option<Instant>,
+        ping_writes: usize,
+    }
+
+    impl ByteLink for DelayedHelloLink {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.ready_at.map(|at| Instant::now() < at).unwrap_or(true) {
+                return Ok(0);
+            }
+            let n = buf.len().min(self.response.len());
+            buf[..n].copy_from_slice(&self.response[..n]);
+            self.response.drain(..n);
+            Ok(n)
+        }
+
+        fn write_all(&mut self, _data: &[u8]) -> io::Result<()> {
+            self.ping_writes += 1;
+            if self.ready_at.is_none() {
+                self.ready_at = Some(Instant::now() + Duration::from_millis(800));
+            }
+            Ok(())
+        }
+
+        fn name(&self) -> String {
+            "delayed-hello-test-link".into()
+        }
+    }
+
+    #[test]
+    fn probe_survives_delayed_ground_startup_hello() {
+        let mut response = [0u8; Frame::MAX_ENCODED];
+        let len = encode_message(
+            &Message::Hello(Hello {
+                protocol: gse_proto::PROTOCOL_VERSION,
+                fw: [1, 0, 0],
+                role: Endpoint::Ground,
+                uptime_ms: 0,
+                device_id: 1,
+                capabilities: 0,
+            }),
+            Endpoint::Ground,
+            Endpoint::Host,
+            1,
+            &mut response,
+        )
+        .unwrap();
+        let mut link = DelayedHelloLink {
+            response: response[..len].to_vec(),
+            ready_at: None,
+            ping_writes: 0,
+        };
+
+        assert!(probe_existing(&mut link, Endpoint::Ground, PROBE_TIMEOUT_MS));
+        assert!(link.ping_writes >= 2, "probe should retry while waiting");
+    }
 
     #[test]
     fn operator_commands_map_to_the_expected_events() {
