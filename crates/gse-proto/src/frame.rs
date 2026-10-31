@@ -131,6 +131,9 @@ impl Frame {
         if payload.len() < expected {
             return Err(DecodeError::TooShort);
         }
+        if payload.len() > expected {
+            return Err(DecodeError::TrailingBytes(payload.len() - expected));
+        }
         let want = u16::from_le_bytes([payload[8 + len], payload[9 + len]]);
         let got = crc16(&payload[..8 + len]);
         if want != got {
@@ -158,6 +161,7 @@ pub enum DecodeError {
     UnknownType(u8),
     BadEndpoint(u8),
     BodyTooLong(usize),
+    TrailingBytes(usize),
     BadCrc { want: u16, got: u16 },
     BadCobs,
 }
@@ -171,6 +175,7 @@ impl fmt::Display for DecodeError {
             DecodeError::UnknownType(t) => write!(f, "unknown message type 0x{t:02X}"),
             DecodeError::BadEndpoint(e) => write!(f, "unknown endpoint 0x{e:02X}"),
             DecodeError::BodyTooLong(n) => write!(f, "body too long ({n} bytes)"),
+            DecodeError::TrailingBytes(n) => write!(f, "unexpected trailing bytes ({n})"),
             DecodeError::BadCrc { want, got } => {
                 write!(f, "CRC mismatch (want 0x{want:04X}, got 0x{got:04X})")
             }
@@ -355,6 +360,21 @@ mod tests {
         }
         assert_eq!(count, 0);
         assert_eq!(dec.stats().crc_errors + dec.stats().malformed, 1);
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_after_crc() {
+        let frame = sample_frame();
+        let mut encoded = [0u8; MAX_ENCODED_LEN];
+        let encoded_len = frame.encode(&mut encoded).unwrap();
+        let mut payload = [0u8; MAX_WIRE_LEN];
+        let payload_len = cobs::decode(&encoded[1..encoded_len - 1], &mut payload).unwrap();
+        payload[payload_len] = 0xA5;
+
+        assert_eq!(
+            Frame::decode_payload(&payload[..payload_len + 1]),
+            Err(DecodeError::TrailingBytes(1))
+        );
     }
 
     #[test]

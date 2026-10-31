@@ -44,12 +44,14 @@ decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
 | 8 | `LEN` | `BODY` | message payload, little-endian |
 | 8+`LEN` | 2 | `CRC` | CRC-16/CCITT-FALSE, little-endian |
 
+- The decoded raw payload length must equal `HEADER + LEN + CRC`; trailing bytes
+  after the CRC are invalid. Message bodies may still contain defined forward-compatible extensions.
 - **CRC** covers `MAGIC` through the last body byte (`poly = 0x1021`,
   `init = 0xFFFF`, no reflection, no final XOR; check value `0x29B1` for
   `"123456789"`).
 - **COBS** removes every `0x00` inside the frame so `0x00` delimiters uniquely
   mark frame boundaries. Maximum wire frame length is 62 bytes.
-- **Resynchronisation**: invalid frames (short payload, bad magic, unknown
+- **Resynchronisation**: invalid frames (short/overlong payload, bad magic, unknown
   version, length > 48, bad COBS, CRC mismatch) are discarded and decoding
   resumes cleanly at the next `0x00` delimiter.
 - **Deduplication** uses `cmd_id` inside `COMMAND`, not `SEQ`: retransmitting a
@@ -105,6 +107,10 @@ Capabilities: `RADIO` 1, `SERVOS` 2, `IGNITER` 4, `WATCHDOG` 8,
 `PING`: `nonce: u32`, `host_ms: u32`.
 
 `PONG`: `nonce: u32` (echoed), `uptime_ms: u32`, `state: StateSnapshot` (16 B).
+
+A Ground connection probe succeeds only on a fully decoded frame with source
+`Ground`, destination `Host`, message type `PONG`, and the same nonce as the
+host's outstanding `PING`.
 
 ### COMMAND (7 B)
 

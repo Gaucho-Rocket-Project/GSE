@@ -1816,7 +1816,11 @@ impl Engine {
         }
         match message {
             Message::Hello(hello) => self.handle_hello(hello),
-            Message::Pong(pong) => self.handle_pong(frame.src, pong, now),
+            Message::Pong(pong) => {
+                if frame.dst == Endpoint::Host {
+                    self.handle_pong(frame.src, pong, now);
+                }
+            }
             Message::State(state) => {
                 if frame.src == Endpoint::Vehicle {
                     self.note_vehicle_frame(now);
@@ -2945,6 +2949,7 @@ fn probe_existing(
                         // connection handshake; unrelated traffic is not proof
                         // that the request/response path is working.
                         if frame.src == target
+                            && frame.dst == Endpoint::Host
                             && matches!(frame.message(), Some(Message::Pong(pong)) if pong.nonce == nonce)
                         {
                             if verbose {

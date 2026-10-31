@@ -214,7 +214,10 @@ impl<H: GroundHal> Ground<H> {
 
     fn handle_local(&mut self, frame: Frame, now: u32, from_usb: bool) {
         match frame.message() {
-            Some(Message::Ping(ping)) => {
+            Some(Message::Ping(ping))
+                if (from_usb && frame.src == Endpoint::Host)
+                    || (!from_usb && frame.src == Endpoint::Vehicle) =>
+            {
                 let uptime = elapsed_ms(now, self.boot_ms);
                 let pong = Message::Pong(Pong {
                     nonce: ping.nonce,
@@ -434,11 +437,13 @@ mod tests {
         );
         ground.poll();
         let frames = ground.hal_mut().drain_usb_frames();
-        let pong = frames.iter().find_map(|f| match f.message() {
-            Some(Message::Pong(p)) => Some(p),
-            _ => None,
-        });
-        assert_eq!(pong.expect("pong").nonce, 0xDEAD);
+        let pong_frame = frames
+            .iter()
+            .find(|f| matches!(f.message(), Some(Message::Pong(_))))
+            .expect("pong frame");
+        assert_eq!(pong_frame.src, Endpoint::Ground);
+        assert_eq!(pong_frame.dst, Endpoint::Host);
+        assert!(matches!(pong_frame.message(), Some(Message::Pong(p)) if p.nonce == 0xDEAD));
         assert!(
             ground.hal().radio_out.is_empty(),
             "ping must not be forwarded"
