@@ -1401,14 +1401,20 @@ impl Engine {
             self.send_ping(Endpoint::Vehicle);
         }
 
-        // Ground liveness uses host-initiated PINGs and matching PONGs; the
-        // firmware does not emit unsolicited HELLO frames.
+        // Ground liveness follows the pingpong retry rule: hold one nonce
+        // outstanding and retransmit that same PING until its PONG arrives.
+        // Advancing the nonce before its PONG arrives would make a delayed but
+        // valid response look stale on a slow USB/CDC startup.
         if self
             .last_ground_ping
             .map(|t| now.duration_since(t) >= Duration::from_millis(GROUND_PING_MS))
             .unwrap_or(true)
         {
-            self.send_ping(Endpoint::Ground);
+            if self.ground_ping_nonce.is_some() {
+                self.retry_ground_ping();
+            } else {
+                self.send_ping(Endpoint::Ground);
+            }
         }
 
         // Command retries.
@@ -1735,6 +1741,23 @@ impl Engine {
                 host_ms: uptime,
             }),
             dst,
+        );
+    }
+
+    /// Retransmit the outstanding Ground request without changing its nonce.
+    /// This is idempotent at the bridge and mirrors the standalone heartbeat
+    /// behavior when a response is delayed or lost.
+    fn retry_ground_ping(&mut self) {
+        let Some(nonce) = self.ground_ping_nonce else {
+            return;
+        };
+        self.last_ground_ping = Some(Instant::now());
+        self.send(
+            Message::Ping(Ping {
+                nonce,
+                host_ms: self.started.elapsed().as_millis() as u32,
+            }),
+            Endpoint::Ground,
         );
     }
 
@@ -2072,6 +2095,17 @@ impl Engine {
                     Source::Ground,
                     "Ground board detected (PING/PONG) - pinging vehicle".to_string(),
                     Some("ground_detected"),
+                );
+            }
+            return;
+        }
+        if source != Endpoint::Vehicle {
+            if self.verbose {
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    format!("Ignored PONG from unexpected endpoint {source}"),
+                    None,
                 );
             }
             return;
@@ -2987,6 +3021,62 @@ fn probe_existing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::state::AppState;
+    use std::path::PathBuf;
+    use std::sync::Mutex as StdMutex;
+
+    struct CaptureLink {
+        writes: Arc<StdMutex<Vec<Vec<u8>>>>,
+    }
+
+    impl ByteLink for CaptureLink {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            self.writes.lock().unwrap().push(data.to_vec());
+            Ok(())
+        }
+
+        fn name(&self) -> String {
+            "capture-test-link".into()
+        }
+    }
+
+    #[test]
+    fn ground_ping_retry_keeps_the_outstanding_nonce() {
+        let shared = Shared::new(
+            AppState::new(Config::default(), false, String::new(), "auto".into()),
+            None,
+            String::new(),
+            PathBuf::new(),
+            false,
+        );
+        let (_request_tx, request_rx) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(shared, request_rx, None, false);
+        let writes = Arc::new(StdMutex::new(Vec::new()));
+        engine.link = Some(Box::new(CaptureLink {
+            writes: writes.clone(),
+        }));
+        engine.ground_ping_nonce = Some(0xCAFE_BABE);
+        let next_nonce = engine.nonce;
+
+        engine.retry_ground_ping();
+
+        assert_eq!(engine.ground_ping_nonce, Some(0xCAFE_BABE));
+        assert_eq!(engine.nonce, next_nonce, "retry must not advance nonce");
+        let writes = writes.lock().unwrap();
+        let mut decoder = FrameDecoder::new();
+        let frame = writes[0]
+            .iter()
+            .find_map(|&byte| decoder.push(byte))
+            .expect("retry should emit a complete GSE frame");
+        assert_eq!(frame.src, Endpoint::Host);
+        assert_eq!(frame.dst, Endpoint::Ground);
+        assert!(matches!(frame.message(), Some(Message::Ping(ping)) if ping.nonce == 0xCAFE_BABE));
+    }
 
     struct DelayedPongLink {
         response: Vec<u8>,

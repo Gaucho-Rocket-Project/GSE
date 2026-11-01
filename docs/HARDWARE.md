@@ -167,20 +167,36 @@ cargo build --release --bins --no-default-features --features radio-e28-2g4m27s
 
 ## Build and flash
 
-Prerequisites: Rust 1.75 or newer, the Cortex-M target, and a flashing utility:
+Prerequisites: Rust 1.75 or newer, the Cortex-M target, Python 3, and
+`cargo-binutils` (for ELF-to-binary conversion):
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-cargo install probe-rs-tools   # or use STM32CubeProgrammer / openocd
+rustup component add llvm-tools-preview
+cargo install cargo-binutils
+python3 scripts/build_firmware.py
 ```
+
+The build script puts Cargo intermediates under `artifacts/cargo-target/` and
+writes flashable flat binaries to `artifacts/gse-ground.bin` and
+`artifacts/gse-vehicle.bin`. Program one image to each board at flash base
+`0x08000000`:
 
 ```bash
-cd firmware/stm32h753
-cargo build --release --bin gse-ground
-cargo build --release --bin gse-vehicle
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
 ```
 
-`cargo run --release --bin gse-vehicle` flashes via `probe-rs` (`STM32H753ZITx` configured in `firmware/stm32h753/.cargo/config.toml`), or load `target/thumbv7em-none-eabihf/release/gse-ground` and `gse-vehicle` directly in `STM32CubeProgrammer`.
+For a fresh board whose config sector is blank, select the E28 compile-time
+default with `python3 scripts/build_firmware.py --radio e28-2g4m27s`; otherwise
+the script defaults to `dx-lr42`. Persisted settings take precedence over this
+compile-time default. `artifacts/` is generated and git-ignored. On Windows, run
+the builder as `py scripts/build_firmware.py` and use
+`STM32_Programmer_CLI.exe` if the extension is required.
+
+Alternatively, from `firmware/stm32h753`, run `cargo run --release --bin gse-ground`
+or `cargo run --release --bin gse-vehicle` to flash via `probe-rs`
+(`STM32H753ZITx` is configured in `firmware/stm32h753/.cargo/config.toml`).
 
 Architecture notes:
 - Clocking uses the `64 MHz` internal `HSI` out of reset (no PLL or crystal bring-up failure modes).

@@ -287,14 +287,27 @@ binaries:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-cd firmware/stm32h753
-cargo build --release --bin gse-ground
-cargo build --release --bin gse-vehicle
-# Connect the ground NUCLEO via its ST-LINK USB port, then flash/run its image:
-cargo run --release --bin gse-ground
-# Connect the vehicle NUCLEO, then flash/run its image separately:
-cargo run --release --bin gse-vehicle
+rustup component add llvm-tools-preview
+cargo install cargo-binutils
+python3 scripts/build_firmware.py
 ```
+
+The script places Cargo intermediates under `artifacts/cargo-target/` and emits
+`artifacts/gse-ground.bin` and `artifacts/gse-vehicle.bin`. Flash each image to
+a separate NUCLEO-H753ZI at `0x08000000` (for example, with STM32CubeProgrammer):
+
+```bash
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
+# Connect the vehicle NUCLEO and flash it separately:
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
+```
+
+Use `python3 scripts/build_firmware.py --radio e28-2g4m27s` to change the
+compile-time default radio for blank config flash; the default is `dx-lr42`.
+Saved board settings continue to take precedence. `artifacts/` is generated and
+git-ignored. Alternatively, run `cargo run --release --bin gse-ground` or
+`cargo run --release --bin gse-vehicle` from `firmware/stm32h753` to flash via
+`probe-rs` when that tool is installed.
 
 Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
 `2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a

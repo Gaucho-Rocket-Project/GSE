@@ -110,7 +110,11 @@ Capabilities: `RADIO` 1, `SERVOS` 2, `IGNITER` 4, `WATCHDOG` 8,
 
 A Ground connection probe succeeds only on a fully decoded frame with source
 `Ground`, destination `Host`, message type `PONG`, and the same nonce as the
-host's outstanding `PING`.
+host's outstanding `PING`. Ground liveness keeps one PING nonce outstanding and
+retransmits that same request every second until a matching PONG arrives; a
+retry does not advance the nonce. The Ground reply is idempotent and echoes the
+nonce, so a lost PONG can be recovered without a false stale-response rejection.
+Only after the response is accepted does the host begin a fresh PING exchange.
 
 ### COMMAND (7 B)
 
@@ -226,7 +230,7 @@ Codes: `Boot` 1, `FillAutoOff` 2, `FillAborted` 3, `LinkTimeoutSafe` 4,
 
 | Mechanism | Interval / Limit | Consequence |
 |---|---|---|
-| Host → ground `PING` | every 500 ms (connecting), 3 s timeout | ground marked `offline`, serial port closed |
+| Host → ground `PING` | every 1 s; retry the same nonce until PONG, 3 s timeout | ground marked `offline`, serial port closed |
 | Host → vehicle `PING` | every 500 ms (connecting), 2 s (online); 2 s timeout | vehicle marked `pinging`, in-flight command & active countdown aborted |
 | Host → vehicle `HEARTBEAT` | every 1 s | resets vehicle's link-loss timer |
 | Vehicle `LINK_TIMEOUT_MS` | 5 s without host frame | vehicle forces all outputs `OFF/SAFE`, sets `LINK_LOSS_SAFE` + `INHIBITED`, emits `LinkTimeoutSafe` |
