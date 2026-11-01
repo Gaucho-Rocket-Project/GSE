@@ -1,8 +1,8 @@
 //! Embedded single-page operator console.
 //!
 //! The GUI is served by the Rust process and opened in the system browser.
-//! This keeps the application dependency-free and identical on Windows, Linux
-//! and macOS while all serial, protocol and safety logic stays in Rust.
+//! The embedded UI is platform-independent; serial, protocol and safety logic
+//! stays in Rust across Windows, Linux and macOS.
 
 pub const INDEX_HTML: &str = include_str!("../web/index.html");
 pub const APP_CSS: &str = include_str!("../web/app.css");

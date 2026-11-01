@@ -8,10 +8,10 @@ rocket ground support station:
   - **CDEBYTE [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads)** 2.4 GHz Semtech `SX1280`/`SX1281` **`500 mW` (`+27 dBm`)** SPI + PA/LNA LoRa transceiver over **`SPI1` (`4 MHz`)**.
 - **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** or **`E28-2G4M27S`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
-The normal host application (`gse-app`) is a dependency-free Rust binary. Its
-opt-in pingpong regression build adds the `serialport` crate for the minimal
-ASCII heartbeat test. In normal operation it serves an embedded terminal-style
-browser console on port `8765`, speaks a
+The host application (`gse-app`) uses the `serialport` crate for consistent
+cross-platform USB serial behavior in both normal GSE operation and the opt-in
+PING/PONG regression test. In normal operation it serves an embedded
+terminal-style browser console on port `8765`, speaks a
 compact COBS + CRC-16 framed protocol over USB serial (or TCP against the
 built-in simulator), and enforces deterministic launch interlocks across two
 selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
@@ -61,9 +61,9 @@ trusts the ground station.
   latched faults, and frame counters.
 - **Session logging** — real-time filterable log stream in the UI plus
   append-only `session-<timestamp>.log` on disk and one-click CSV download.
-- **Cross-platform native serial** — Win32 Comm API on Windows and POSIX
-  `termios`/`poll` on Linux and macOS, with automatic ground-board port
-  discovery (`port: "auto"`).
+- **Cross-platform USB serial** — shared `serialport` backend for the live
+  application and regression test, with automatic ground-board port discovery
+  (`port: "auto"`).
 - **Hardware-accurate simulator (`gse-sim`)** — executes the exact `no_std`
   ground-bridge and vehicle state machines over TCP with configurable RF
   latency, packet drops and bit errors.

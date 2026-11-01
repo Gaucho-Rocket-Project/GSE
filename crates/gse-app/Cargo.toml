@@ -13,12 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 gse-proto = { workspace = true }
-serialport = { version = "4.6", default-features = false, optional = true }
+serialport = { version = "4.6", default-features = false }
 
 [features]
 default = []
-pingpong-regression = ["dep:serialport"]
-# Type-check the Windows serial backend on non-Windows hosts (cargo check only).
-check-windows = []
-# Type-check the macOS termios branch on non-macOS hosts.
-check-macos = []
+pingpong-regression = []
