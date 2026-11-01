@@ -277,8 +277,8 @@ assets, and `GET /api/health`.
 
 ## Firmware
 
-`firmware/stm32h753` contains the `no_std` STM32H753ZI package with two
-binaries:
+`firmware/stm32h753` contains the `no_std` STM32H753ZI package with three
+firmware binaries:
 
 - `gse-ground` — USB CDC (`USART3`, `PD8`/`PD9`) ↔ `DX-LR42-24T12D` (`USART6`,
   `PG14`/`PG9` + `PG10` `AUX` + `PG12`/`PG13` `M0`/`M1`) transparent frame
@@ -286,6 +286,10 @@ binaries:
 - `gse-vehicle` — `DX-LR42-24T12D` transceiver + `TIM1` 50 Hz servo PWM (`PE9`
   `FILL`, `PE11` `SRV`), push-pull `IGN` output (`PE13`), 250 ms telemetry,
   5 s RF link-loss failsafe, and 4 s hardware watchdog (`IWDG1`).
+- `gse-test` — standalone one-board actuator checkout: connect to the GSE app
+  over USB and control the local servos / IGN without a second vehicle or radio.
+  See [Single-board actuator checkout](docs/HARDWARE.md#single-board-actuator-checkout-gse-test)
+  for safe wiring, build, and flash instructions.
 
 ```bash
 rustup target add thumbv7em-none-eabihf
@@ -297,6 +301,8 @@ cargo build --release --bin gse-ground
 cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
 cargo build --release --bin gse-vehicle
 cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
+cargo build --release --bin gse-test
+cargo objcopy --release --bin gse-test -- -O binary ../../artifacts/GSE-test.bin
 ```
 
 Cargo keeps the linked ELF files under

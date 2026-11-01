@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,6 +26,7 @@ jobs:
           firmware/stm32h753/src/hw.rs
           firmware/stm32h753/src/bin/ground.rs
           firmware/stm32h753/src/bin/vehicle.rs
+          firmware/stm32h753/src/bin/gse-test.rs
           firmware/stm32h753/build.rs
 
   clippy:
@@ -74,9 +76,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
+          components: llvm-tools
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: firmware/stm32h753
+      - name: Install cargo-binutils
+        run: cargo install cargo-binutils --locked
       # Run from inside the package so `firmware/stm32h753/.cargo/config.toml`
       # supplies the Cortex-M target triple and the `-Tlink.x` link argument.
       - name: Build ground and vehicle firmware (DX-LR42 default)
@@ -88,3 +93,14 @@ jobs:
       - name: Build ground pingpong regression image
         working-directory: firmware/stm32h753
         run: cargo build --release --bin gse-ground --no-default-features --features pingpong-regression
+      - name: Build and package standalone GSE-test firmware
+        working-directory: firmware/stm32h753
+        run: |
+          cargo build --release --bin gse-test
+          mkdir -p ../../artifacts
+          cargo objcopy --release --bin gse-test -- -O binary ../../artifacts/GSE-test.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GSE-test-firmware
+          path: artifacts/GSE-test.bin
+          if-no-files-found: error

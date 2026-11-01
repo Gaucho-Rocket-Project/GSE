@@ -79,6 +79,24 @@ The integrated ST-LINK-V3E on the `NUCLEO-H753ZI` exposes `USART3` over the USB 
 
 Servo pulses use `TIM1`'s `1 MHz` counter directly (`CCR = pulse width in µs`, clamped to `500..=2500 µs`). `SERVO_OFF_US` (`1000 µs`) and `SERVO_ON_US` (`2000 µs`) in `firmware/stm32h753/src/hw.rs` set the endpoints.
 
+### Single-board actuator checkout (`GSE-test`)
+
+`GSE-test` is a separate firmware image for bench checkout on one NUCLEO-H753ZI. It uses the same USB VCP (`CN1`, USART3) as `gse-ground`, but runs the real Vehicle state machine locally on that board and routes its protocol traffic over USB. The GSE app therefore sees both Ground discovery and a Vehicle endpoint through one cable; no second vehicle board or RF module is needed. The fill, SRV and ignition commands still pass through the normal vehicle interlocks and fill timer. Outputs start safe, and the IGN output remains low until the operator explicitly requests power through the normal countdown flow.
+
+**Bench safety:** disconnect any pyrotechnic igniter and use only a dummy load / indicator when checking `IGN`. Remove pressure, fluid, and other hazardous loads from the FILL valve before enabling it. Power servos from a suitable external supply and share its ground with the NUCLEO; do not power servos from the NUCLEO 3.3 V pin. The servo signals are 3.3 V and require the external `10 kΩ` safe-state pull-downs described above.
+
+Build and flash the raw image from the repository root:
+
+```bash
+cd firmware/stm32h753
+cargo build --release --bin gse-test
+cargo objcopy --release --bin gse-test -- -O binary ../../artifacts/GSE-test.bin
+cd ../..
+STM32_Programmer_CLI -c port=SWD -w artifacts/GSE-test.bin 0x08000000 -v -rst
+```
+
+The firmware CI also publishes `GSE-test-firmware` as a downloadable artifact. After flashing, connect the board's micro-USB VCP to the laptop and use the regular `gse-app` at the configured USB baud (default `115200`). Select the board's serial port if auto-discovery does not select it. Reflash `gse-ground` before returning this NUCLEO to normal Ground-bridge service.
+
 ## `DX-LR42-24T12D` configuration & RF parameters
 
 ### Factory defaults (plug-and-play compatible)
