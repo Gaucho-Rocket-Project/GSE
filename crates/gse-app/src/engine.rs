@@ -2047,25 +2047,22 @@ impl Engine {
 
     fn handle_hello(&mut self, hello: Hello) {
         let fw = hello.fw_version().to_string();
-        match hello.role {
-            Endpoint::Vehicle => {
-                self.note_vehicle_frame(Instant::now());
-                {
-                    let mut st = self.shared.lock();
-                    st.vehicle.fw = Some(fw.clone());
-                    st.vehicle.device_id = Some(hello.device_id);
-                }
-                if !self.vehicle_announced {
-                    self.vehicle_announced = true;
-                    self.shared.log(
-                        Level::Ok,
-                        Source::Vehicle,
-                        format!("Vehicle firmware {fw} online (id {:08X})", hello.device_id),
-                        Some("vehicle_hello"),
-                    );
-                }
+        if hello.role == Endpoint::Vehicle {
+            self.note_vehicle_frame(Instant::now());
+            {
+                let mut st = self.shared.lock();
+                st.vehicle.fw = Some(fw.clone());
+                st.vehicle.device_id = Some(hello.device_id);
             }
-            _ => {}
+            if !self.vehicle_announced {
+                self.vehicle_announced = true;
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    format!("Vehicle firmware {fw} online (id {:08X})", hello.device_id),
+                    Some("vehicle_hello"),
+                );
+            }
         }
     }
 
