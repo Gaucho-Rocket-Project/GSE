@@ -13,14 +13,14 @@ mod http;
 mod json;
 mod logging;
 mod paths;
+#[cfg(feature = "pingpong-regression")]
+mod pingpong_test;
 mod safety;
 mod serial;
 mod signals;
 mod state;
 mod transport;
 mod ui;
-#[cfg(feature = "pingpong-regression")]
-mod pingpong_test;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -499,7 +499,13 @@ mod tests {
 
     #[test]
     fn parses_pingpong_regression_arguments() {
-        let opts = parse(&["--pingpong-test", "--port", "/dev/ttyACM0", "--baud", "115200"]);
+        let opts = parse(&[
+            "--pingpong-test",
+            "--port",
+            "/dev/ttyACM0",
+            "--baud",
+            "115200",
+        ]);
         assert!(opts.pingpong_test);
         assert_eq!(opts.port.as_deref(), Some("/dev/ttyACM0"));
         assert_eq!(opts.baud, Some(115_200));

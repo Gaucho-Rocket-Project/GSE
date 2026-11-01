@@ -45,7 +45,11 @@ pub fn run(port_name: &str) -> Result<(), String> {
                                 accepted = accept(accepted, ping);
                                 println!(
                                     "PING {ping} -> PONG {accepted}{}",
-                                    if ping != previous { " (resync/retry)" } else { "" }
+                                    if ping != previous {
+                                        " (resync/retry)"
+                                    } else {
+                                        ""
+                                    }
                                 );
                                 write!(port, "PONG {accepted}\n")
                                     .map_err(|e| format!("serial write failed: {e}"))?;

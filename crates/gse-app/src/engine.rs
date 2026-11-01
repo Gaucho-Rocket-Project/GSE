@@ -1156,7 +1156,8 @@ impl Engine {
         } else if is_tcp_spec(&target) {
             match open_link(&target, baud) {
                 Ok(mut link) => {
-                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS, self.verbose) {
+                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS, self.verbose)
+                    {
                         self.on_connected(link, &target);
                     } else {
                         self.scan_failed(&format!("No ground board responded on {target}"));
@@ -2075,7 +2076,10 @@ impl Engine {
                     self.shared.log(
                         Level::Warn,
                         Source::Ground,
-                        format!("Ignored Ground PONG with unmatched nonce {:08X}", pong.nonce),
+                        format!(
+                            "Ignored Ground PONG with unmatched nonce {:08X}",
+                            pong.nonce
+                        ),
                         None,
                     );
                 }
@@ -2989,7 +2993,9 @@ fn probe_existing(
                             if verbose {
                                 eprintln!(
                                     "[gse] probe {}: received matching PONG from {} (seq {})",
-                                    link.name(), frame.src, frame.seq
+                                    link.name(),
+                                    frame.src,
+                                    frame.seq
                                 );
                             }
                             return true;
