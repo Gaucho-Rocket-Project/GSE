@@ -56,9 +56,7 @@ fn nonblocking_read(result: io::Result<usize>) -> io::Result<usize> {
         Err(error)
             if matches!(
                 error.kind(),
-                io::ErrorKind::TimedOut
-                    | io::ErrorKind::WouldBlock
-                    | io::ErrorKind::Interrupted
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
             ) =>
         {
             Ok(0)
@@ -84,7 +82,7 @@ pub fn list_ports() -> Vec<PortInfo> {
             }
         })
         .collect();
-    ports.sort_by(|a, b| a.label.cmp(&b.label));
+    ports.sort_by_key(|port| port.label.clone());
     ports
 }
 
