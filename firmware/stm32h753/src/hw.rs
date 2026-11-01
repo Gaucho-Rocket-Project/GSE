@@ -92,8 +92,8 @@ const USART_CR1_FIFOEN: u32 = 1 << 29;
 const USART_ISR_RXNE: u32 = 1 << 5;
 const USART_ISR_TC: u32 = 1 << 6;
 const USART_ISR_TXE: u32 = 1 << 7;
-const USART_ISR_ORE: u32 = 1 << 3;
-const USART_ICR_ORECF: u32 = 1 << 3;
+const USART_ISR_RX_ERROR_MASK: u32 = 0x0F; // PE, FE, NE, ORE
+const USART_ICR_RX_ERROR_MASK: u32 = 0x0F; // PECF, FECF, NECF, ORECF
 
 pub const SPI1: usize = 0x4001_3000;
 const SPI_CR1: usize = 0x00;
@@ -757,10 +757,17 @@ impl Uart {
         let mut count = 0;
         unsafe {
             let isr_addr = self.base + USART_ISR;
-            if rd(isr_addr) & USART_ISR_ORE != 0 {
-                wr(self.base + USART_ICR, USART_ICR_ORECF);
-            }
-            while count < out.len() && rd(isr_addr) & USART_ISR_RXNE != 0 {
+            while count < out.len() {
+                let status = rd(isr_addr);
+                let errors = status & USART_ISR_RX_ERROR_MASK;
+                if errors != 0 {
+                    // Clear PE/FE/NE/ORE just as the standalone ping-pong
+                    // receiver does, so a stale UART error cannot poison RX.
+                    wr(self.base + USART_ICR, errors & USART_ICR_RX_ERROR_MASK);
+                }
+                if status & USART_ISR_RXNE == 0 {
+                    break;
+                }
                 out[count] = rd(self.base + USART_RDR) as u8;
                 count += 1;
             }
