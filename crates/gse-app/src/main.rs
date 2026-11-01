@@ -19,6 +19,8 @@ mod signals;
 mod state;
 mod transport;
 mod ui;
+#[cfg(feature = "pingpong-regression")]
+mod pingpong_test;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -54,6 +56,8 @@ OPTIONS:
     --no-browser          Do not open a browser window
     --open                Force opening a browser window (even when headless)
     --verbose             Verbose diagnostics on stderr
+    --pingpong-test       Run only ASCII PING/PONG VCP regression
+                          (build with feature pingpong-regression)
     -h, --help            Show this help
     -V, --version         Show the version
 
@@ -84,6 +88,7 @@ struct Options {
     no_browser: bool,
     force_browser: bool,
     verbose: bool,
+    pingpong_test: bool,
     help: bool,
     version: bool,
 }
@@ -107,6 +112,7 @@ impl Options {
             match flag.as_str() {
                 "--sim" => opts.sim = true,
                 "--verbose" | "-v" => opts.verbose = true,
+                "--pingpong-test" => opts.pingpong_test = true,
                 "--no-browser" => opts.no_browser = true,
                 "--open" => opts.force_browser = true,
                 "--help" | "-h" => opts.help = true,
@@ -179,6 +185,53 @@ fn main() {
 }
 
 fn run(opts: Options) -> Result<(), String> {
+    #[cfg(feature = "pingpong-regression")]
+    if !opts.pingpong_test {
+        return Err(
+            "this gse-app build is regression-only; run it with --pingpong-test --port <PORT>"
+                .to_string(),
+        );
+    }
+
+    // Regression mode deliberately bypasses config loading, the web console,
+    // Engine, GSE frames, and all control logic. It only runs the proven ASCII
+    // PING/PONG responder against one explicitly selected VCP port.
+    if opts.pingpong_test {
+        if opts.sim
+            || opts.config.is_some()
+            || opts.uart_baud.is_some()
+            || opts.radio.is_some()
+            || opts.host.is_some()
+            || opts.http_port.is_some()
+            || opts.no_browser
+            || opts.force_browser
+        {
+            return Err(
+                "--pingpong-test only accepts --port and optional --baud 115200".to_string(),
+            );
+        }
+        let port = opts
+            .port
+            .as_deref()
+            .filter(|name| *name != "auto" && !name.starts_with("tcp:"))
+            .ok_or_else(|| "--pingpong-test requires an explicit serial --port".to_string())?;
+        if opts.baud.unwrap_or(115_200) != 115_200 {
+            return Err("--pingpong-test is fixed at the configured 115200 baud".to_string());
+        }
+        #[cfg(feature = "pingpong-regression")]
+        {
+            return pingpong_test::run(port);
+        }
+        #[cfg(not(feature = "pingpong-regression"))]
+        {
+            let _ = port;
+            return Err(
+                "rebuild gse-app with --features pingpong-regression to use --pingpong-test"
+                    .to_string(),
+            );
+        }
+    }
+
     signals::install();
     let config_path = opts
         .config
@@ -442,6 +495,14 @@ mod tests {
         assert!(opts.verbose);
         assert_eq!(opts.baud, Some(9_600));
         assert_eq!(opts.http_port, Some(9_000));
+    }
+
+    #[test]
+    fn parses_pingpong_regression_arguments() {
+        let opts = parse(&["--pingpong-test", "--port", "/dev/ttyACM0", "--baud", "115200"]);
+        assert!(opts.pingpong_test);
+        assert_eq!(opts.port.as_deref(), Some("/dev/ttyACM0"));
+        assert_eq!(opts.baud, Some(115_200));
     }
 
     #[test]

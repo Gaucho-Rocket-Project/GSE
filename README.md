@@ -8,8 +8,10 @@ rocket ground support station:
   - **CDEBYTE [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads)** 2.4 GHz Semtech `SX1280`/`SX1281` **`500 mW` (`+27 dBm`)** SPI + PA/LNA LoRa transceiver over **`SPI1` (`4 MHz`)**.
 - **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** or **`E28-2G4M27S`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
-The host application (`gse-app`) is a single dependency-free Rust binary. It
-serves an embedded terminal-style browser console on port `8765`, speaks a
+The normal host application (`gse-app`) is a dependency-free Rust binary. Its
+opt-in pingpong regression build adds the `serialport` crate for the minimal
+ASCII heartbeat test. In normal operation it serves an embedded terminal-style
+browser console on port `8765`, speaks a
 compact COBS + CRC-16 framed protocol over USB serial (or TCP against the
 built-in simulator), and enforces deterministic launch interlocks across two
 selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
@@ -315,8 +317,8 @@ default; persisted board settings take precedence. `artifacts/` is generated and
 git-ignored. Alternatively, from `firmware/stm32h753`, run
 `cargo run --release --bin gse-ground` or `cargo run --release --bin gse-vehicle`
 to flash via `probe-rs` when installed. For an isolated USART3-only heartbeat
-regression using the original `pingpong` logic, see
-[Minimal USART3 ping/pong regression](docs/HARDWARE.md#minimal-usart3-pingpong-regression).
+regression that temporarily bypasses normal Ground/app logic, see
+[Temporary ping/pong regression](docs/HARDWARE.md#temporary-pingpong-regression-in-the-current-gse-binaries).
 
 Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
 `2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
