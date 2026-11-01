@@ -23,6 +23,9 @@ path = "src/bin/vehicle.rs"
 
 [features]
 default = ["radio-dx-lr42"]
+# Replace only the gse-ground entry point with the standalone ASCII heartbeat.
+# Build with --no-default-features --features pingpong-regression.
+pingpong-regression = []
 # Boot default radio module when STM32 Bank 2 Sector 7 flash holds no saved override.
 # Both drivers remain linked in (~4 KB) so live switching via the console dropdown
 # always works without reflashing either board.

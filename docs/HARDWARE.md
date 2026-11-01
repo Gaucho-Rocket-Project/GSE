@@ -158,29 +158,85 @@ Both `gse-ground` and `gse-vehicle` include a built-in `DualRadioPort` (`firmwar
 | **Pin 12** | `BUSY` | **`PG10`** | **`CN9` pin 66** | Active-high busy input (`15 ms` timeout guard) |
 | **Pin 13** | `DIO1` | **`PF13`** | **`CN10` pin 2** (`D7`) | IRQ status input (`TX_DONE` / `RX_DONE` / `CRC_ERROR`) |
 
-To compile firmware defaulting to `E28-2G4M27S` on fresh blank flash (before any Settings flash save):
-
-```bash
-cd firmware/stm32h753
-cargo build --release --bins --no-default-features --features radio-e28-2g4m27s
-```
+To compile firmware defaulting to `E28-2G4M27S` on fresh blank flash (before
+any Settings flash save), add `--no-default-features --features radio-e28-2g4m27s`
+to each `cargo build` and `cargo objcopy` command in the build-and-flash
+instructions below.
 
 ## Build and flash
 
-Prerequisites: Rust 1.75 or newer, the Cortex-M target, and a flashing utility:
+Prerequisites: Rust 1.75 or newer, the Cortex-M target, and `cargo-binutils`
+for ELF-to-binary conversion:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-cargo install probe-rs-tools   # or use STM32CubeProgrammer / openocd
+rustup component add llvm-tools
+cargo install cargo-binutils
+cd firmware/stm32h753
+
+cargo build --release --bin gse-ground
+cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
+cargo build --release --bin gse-vehicle
+cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
 ```
+
+Cargo leaves the linked ELF files under
+`firmware/stm32h753/target/thumbv7em-none-eabihf/release/`; `cargo objcopy`
+creates the flashable flat `.bin` files under the repository's `artifacts/`
+directory. From the repository root, program each image to a separate board at
+flash base `0x08000000`:
+
+```bash
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
+```
+
+For a blank config sector, add `--no-default-features --features radio-e28-2g4m27s`
+to each build and objcopy command for the E28 compile-time default; persisted
+board settings take precedence. `artifacts/` is generated and git-ignored. On
+Windows, use `STM32_Programmer_CLI.exe` if the extension is required.
+
+Alternatively, from `firmware/stm32h753`, run `cargo run --release --bin gse-ground`
+or `cargo run --release --bin gse-vehicle` to flash via `probe-rs`
+(`STM32H753ZITx` is configured in `firmware/stm32h753/.cargo/config.toml`).
+
+### Temporary ping/pong regression in the current GSE binaries
+
+The `pingpong-regression` feature temporarily compiles the simple heartbeat in
+place of the normal `gse-ground` main loop. The matching `gse-app` mode exits
+before starting its web server, engine, config handling, or controls and runs
+the original line-based host responder. This bypasses GSE COBS/CRC framing and
+the radio path while exercising the **current GSE firmware binary, current
+`gse-app` executable, and USART3 VCP**. Use it on the **ground NUCLEO only**;
+do not use the regression image on the vehicle board.
+
+Build and flash the regression image:
 
 ```bash
 cd firmware/stm32h753
-cargo build --release --bin gse-ground
-cargo build --release --bin gse-vehicle
+cargo build --release --bin gse-ground --no-default-features --features pingpong-regression
+cargo objcopy --release --bin gse-ground --no-default-features --features pingpong-regression -- -O binary ../../artifacts/gse-ground-pingpong.bin
+cd ../..
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground-pingpong.bin 0x08000000 -v -rst
 ```
 
-`cargo run --release --bin gse-vehicle` flashes via `probe-rs` (`STM32H753ZITx` configured in `firmware/stm32h753/.cargo/config.toml`), or load `target/thumbv7em-none-eabihf/release/gse-ground` and `gse-vehicle` directly in `STM32CubeProgrammer`.
+Close CubeIDE serial consoles and any other serial reader. Run the host responder's regression tests, then start the same GSE app in
+heartbeat-only mode at the configured `115200` baud (provide the board's port;
+Linux example):
+
+```bash
+cargo test -p gse-app --features pingpong-regression
+cargo run -p gse-app --features pingpong-regression -- --pingpong-test --port /dev/ttyACM0
+```
+
+On Windows, use the NUCLEO COM port, for example `COM5`. A successful exchange
+prints `PING 0 -> PONG 1`, then `PING 1 -> PONG 2` and so on. The firmware
+starts with `PING 0`, retries it every 5 s if no response arrives, and paces
+successful exchanges by 250 ms. If the responder starts after the initial ping,
+allow up to 5 s for the first line. Only the explicit `--pingpong-test` mode
+uses ASCII; the normal GSE app continues to use its binary frame protocol. When the
+heartbeat test is complete, reflash the normal `artifacts/gse-ground.bin`
+before resuming GSE tests.
 
 Architecture notes:
 - Clocking uses the `64 MHz` internal `HSI` out of reset (no PLL or crystal bring-up failure modes).

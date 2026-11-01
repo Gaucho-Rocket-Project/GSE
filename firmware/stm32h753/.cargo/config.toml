@@ -4,4 +4,6 @@ target = "thumbv7em-none-eabihf"
 [target.thumbv7em-none-eabihf]
 rustflags = ["-C", "link-arg=-Tlink.x"]
 # `cargo run` uses probe-rs when it is installed; `cargo build` needs nothing.
-runner = "probe-rs run --chip STM32H753ZITx"
+# Do not halt at the reset vector when the board's RESET button is pressed;
+# the default reset catch can leave H7 targets stopped at Reset during bring-up.
+runner = "probe-rs run --chip STM32H753ZITx --no-catch-reset"

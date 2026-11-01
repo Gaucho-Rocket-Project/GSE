@@ -31,6 +31,7 @@ use crate::transport::{is_tcp_spec, open_link, ByteLink};
 const TICK_MS: u64 = 10;
 const PING_ONLINE_MS: u64 = 2_000;
 const PING_FAST_MS: u64 = 500;
+const GROUND_PING_MS: u64 = 1_000;
 const HEARTBEAT_MS: u64 = 1_000;
 const GROUND_TIMEOUT_MS: u64 = 3_000;
 const VEHICLE_TIMEOUT_MS: u64 = 2_000;
@@ -39,7 +40,11 @@ const ACK_MAX_ATTEMPTS: u32 = 5;
 const RECONNECT_DELAY_MS: u64 = 1_500;
 const SCAN_RETRY_MS: u64 = 2_500;
 const PUBLISH_MS: u64 = 100;
-const PROBE_TIMEOUT_MS: u64 = 700;
+// Give the configured USB CDC link time to produce a complete response after
+// opening. Keep a bounded 5 s window for startup delays and retransmit PING
+// while waiting for the nonce-matched PONG.
+const PROBE_TIMEOUT_MS: u64 = 5_000;
+const PROBE_RETRY_MS: u64 = 250;
 /// How long the shutdown sequence waits for the ALL SAFE acknowledgement.
 const SHUTDOWN_TIMEOUT_MS: u64 = 2_500;
 /// How long a pending command may finish before shutdown cancels it.
@@ -331,6 +336,8 @@ pub struct Engine {
     last_connect_attempt: Option<Instant>,
     last_ground_rx: Option<Instant>,
     last_vehicle_rx: Option<Instant>,
+    last_ground_ping: Option<Instant>,
+    ground_ping_nonce: Option<u32>,
     last_ping: Option<Instant>,
     vehicle_ping: Option<(u32, Instant)>,
     last_heartbeat: Option<Instant>,
@@ -382,6 +389,8 @@ impl Engine {
             last_connect_attempt: None,
             last_ground_rx: None,
             last_vehicle_rx: None,
+            last_ground_ping: None,
+            ground_ping_nonce: None,
             last_ping: None,
             vehicle_ping: None,
             last_heartbeat: None,
@@ -1134,13 +1143,7 @@ impl Engine {
             let mut tried = Vec::new();
             for port in &ports {
                 tried.push(port.label.clone());
-                if let Some((link, matched_baud)) =
-                    probe_port_any_baud(&port.path, baud, Endpoint::Ground, self.verbose)
-                {
-                    if matched_baud != baud {
-                        self.shared.lock().config.baud = matched_baud;
-                        self.shared.save_config();
-                    }
+                if let Some(link) = probe_port(&port.path, baud, Endpoint::Ground, self.verbose) {
                     self.on_connected(link, &port.path);
                     return;
                 }
@@ -1153,7 +1156,8 @@ impl Engine {
         } else if is_tcp_spec(&target) {
             match open_link(&target, baud) {
                 Ok(mut link) => {
-                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS) {
+                    if probe_existing(&mut *link, Endpoint::Ground, PROBE_TIMEOUT_MS, self.verbose)
+                    {
                         self.on_connected(link, &target);
                     } else {
                         self.scan_failed(&format!("No ground board responded on {target}"));
@@ -1162,16 +1166,10 @@ impl Engine {
                 Err(e) => self.scan_failed(&format!("Cannot connect to {target}: {e}")),
             }
         } else {
-            match probe_port_any_baud(&target, baud, Endpoint::Ground, self.verbose) {
-                Some((link, matched_baud)) => {
-                    if matched_baud != baud {
-                        self.shared.lock().config.baud = matched_baud;
-                        self.shared.save_config();
-                    }
-                    self.on_connected(link, &target);
-                }
+            match probe_port(&target, baud, Endpoint::Ground, self.verbose) {
+                Some(link) => self.on_connected(link, &target),
                 None => self.scan_failed(&format!(
-                    "No response from {target}. Check the cable, baud rate and permissions."
+                    "No response from {target} at configured {baud} baud. Check the serial link and permissions."
                 )),
             }
         }
@@ -1206,6 +1204,8 @@ impl Engine {
         self.tx_seq = 0;
         self.last_ground_rx = Some(Instant::now());
         self.last_vehicle_rx = None;
+        self.last_ground_ping = None;
+        self.ground_ping_nonce = None;
         self.ground_announced = false;
         self.vehicle_announced = false;
         self.was_vehicle_online = false;
@@ -1264,6 +1264,8 @@ impl Engine {
             st.vehicle.state.fill_open()
         };
         self.link = None;
+        self.last_ground_ping = None;
+        self.ground_ping_nonce = None;
         self.pending = None;
         self.link_handover = None;
         self.fill_deadline = None;
@@ -1400,6 +1402,22 @@ impl Engine {
             self.send_ping(Endpoint::Vehicle);
         }
 
+        // Ground liveness follows the pingpong retry rule: hold one nonce
+        // outstanding and retransmit that same PING until its PONG arrives.
+        // Advancing the nonce before its PONG arrives would make a delayed but
+        // valid response look stale on a slow USB/CDC startup.
+        if self
+            .last_ground_ping
+            .map(|t| now.duration_since(t) >= Duration::from_millis(GROUND_PING_MS))
+            .unwrap_or(true)
+        {
+            if self.ground_ping_nonce.is_some() {
+                self.retry_ground_ping();
+            } else {
+                self.send_ping(Endpoint::Ground);
+            }
+        }
+
         // Command retries.
         let retry_now = self
             .pending
@@ -1453,7 +1471,7 @@ impl Engine {
         if let Some(last) = self.last_ground_rx {
             if now.duration_since(last) > Duration::from_millis(GROUND_TIMEOUT_MS) {
                 self.disconnect(
-                    "Ground board stopped responding (no HELLO for 3 s)",
+                    "Ground board stopped responding (no PONG for 3 s)",
                     Level::Error,
                 );
                 return;
@@ -1711,8 +1729,12 @@ impl Engine {
     fn send_ping(&mut self, dst: Endpoint) {
         self.nonce = self.nonce.wrapping_add(1);
         let uptime = self.started.elapsed().as_millis() as u32;
-        if dst == Endpoint::Vehicle {
-            self.vehicle_ping = Some((self.nonce, Instant::now()));
+        let now = Instant::now();
+        if dst == Endpoint::Ground {
+            self.ground_ping_nonce = Some(self.nonce);
+            self.last_ground_ping = Some(now);
+        } else if dst == Endpoint::Vehicle {
+            self.vehicle_ping = Some((self.nonce, now));
         }
         self.send(
             Message::Ping(Ping {
@@ -1720,6 +1742,23 @@ impl Engine {
                 host_ms: uptime,
             }),
             dst,
+        );
+    }
+
+    /// Retransmit the outstanding Ground request without changing its nonce.
+    /// This is idempotent at the bridge and mirrors the standalone heartbeat
+    /// behavior when a response is delayed or lost.
+    fn retry_ground_ping(&mut self) {
+        let Some(nonce) = self.ground_ping_nonce else {
+            return;
+        };
+        self.last_ground_ping = Some(Instant::now());
+        self.send(
+            Message::Ping(Ping {
+                nonce,
+                host_ms: self.started.elapsed().as_millis() as u32,
+            }),
+            Endpoint::Ground,
         );
     }
 
@@ -1801,7 +1840,11 @@ impl Engine {
         }
         match message {
             Message::Hello(hello) => self.handle_hello(hello),
-            Message::Pong(pong) => self.handle_pong(frame.src, pong, now),
+            Message::Pong(pong) => {
+                if frame.dst == Endpoint::Host {
+                    self.handle_pong(frame.src, pong, now);
+                }
+            }
             Message::State(state) => {
                 if frame.src == Endpoint::Vehicle {
                     self.note_vehicle_frame(now);
@@ -1824,7 +1867,6 @@ impl Engine {
                 if frame.src != Endpoint::Ground {
                     return;
                 }
-                self.last_ground_rx = Some(now);
                 let mut push_handover = None;
                 let mut saved_adopted = false;
                 {
@@ -1832,10 +1874,6 @@ impl Engine {
                     let first_stat = !st.ground.have_link_stat;
                     st.ground.link = stat;
                     st.ground.have_link_stat = true;
-                    if st.ground.status != GroundStatus::Online {
-                        st.ground.status = GroundStatus::Online;
-                    }
-                    st.ground.last_seen_epoch_ms = clock::unix_ms();
                     if first_stat && self.link_handover.is_none() {
                         let mismatch_usb = stat.usb_baud.bps() != st.config.baud;
                         let mismatch_rf = stat.uart_baud.bps() != st.config.uart_baud
@@ -2009,62 +2047,68 @@ impl Engine {
 
     fn handle_hello(&mut self, hello: Hello) {
         let fw = hello.fw_version().to_string();
-        match hello.role {
-            Endpoint::Ground => {
-                self.last_ground_rx = Some(Instant::now());
-                let first = {
-                    let mut st = self.shared.lock();
-                    let first = !st.ground.have_link_stat && st.ground.fw.is_none();
-                    st.ground.status = GroundStatus::Online;
-                    st.ground.protocol = hello.protocol;
-                    st.ground.fw = Some(fw.clone());
-                    st.ground.device_id = Some(hello.device_id);
-                    st.ground.last_seen_epoch_ms = clock::unix_ms();
-                    st.ground.error = None;
-                    st.revision = st.revision.wrapping_add(1);
-                    first
-                };
-                if first && !self.ground_announced {
-                    self.ground_announced = true;
-                    self.shared.log(
-                        Level::Ok,
-                        Source::Ground,
-                        format!(
-                            "Ground board detected (fw {fw}, id {:08X}) - pinging vehicle",
-                            hello.device_id
-                        ),
-                        Some("ground_detected"),
-                    );
-                }
+        if hello.role == Endpoint::Vehicle {
+            self.note_vehicle_frame(Instant::now());
+            {
+                let mut st = self.shared.lock();
+                st.vehicle.fw = Some(fw.clone());
+                st.vehicle.device_id = Some(hello.device_id);
             }
-            Endpoint::Vehicle => {
-                self.note_vehicle_frame(Instant::now());
-                {
-                    let mut st = self.shared.lock();
-                    st.vehicle.fw = Some(fw.clone());
-                    st.vehicle.device_id = Some(hello.device_id);
-                }
-                if !self.vehicle_announced {
-                    self.vehicle_announced = true;
-                    self.shared.log(
-                        Level::Ok,
-                        Source::Vehicle,
-                        format!("Vehicle firmware {fw} online (id {:08X})", hello.device_id),
-                        Some("vehicle_hello"),
-                    );
-                }
+            if !self.vehicle_announced {
+                self.vehicle_announced = true;
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    format!("Vehicle firmware {fw} online (id {:08X})", hello.device_id),
+                    Some("vehicle_hello"),
+                );
             }
-            _ => {}
         }
     }
 
     fn handle_pong(&mut self, source: Endpoint, pong: Pong, now: Instant) {
         if source == Endpoint::Ground {
+            if self.ground_ping_nonce != Some(pong.nonce) {
+                if self.verbose {
+                    self.shared.log(
+                        Level::Warn,
+                        Source::Ground,
+                        format!(
+                            "Ignored Ground PONG with unmatched nonce {:08X}",
+                            pong.nonce
+                        ),
+                        None,
+                    );
+                }
+                return;
+            }
+            self.ground_ping_nonce = None;
             self.last_ground_rx = Some(now);
             let mut st = self.shared.lock();
             st.ground.status = GroundStatus::Online;
             st.ground.last_seen_epoch_ms = clock::unix_ms();
             st.ground.error = None;
+            drop(st);
+            if !self.ground_announced {
+                self.ground_announced = true;
+                self.shared.log(
+                    Level::Ok,
+                    Source::Ground,
+                    "Ground board detected (PING/PONG) - pinging vehicle".to_string(),
+                    Some("ground_detected"),
+                );
+            }
+            return;
+        }
+        if source != Endpoint::Vehicle {
+            if self.verbose {
+                self.shared.log(
+                    Level::Warn,
+                    Source::App,
+                    format!("Ignored PONG from unexpected endpoint {source}"),
+                    None,
+                );
+            }
             return;
         }
         self.note_vehicle_frame(now);
@@ -2798,7 +2842,7 @@ impl Engine {
         {
             let mut st = self.shared.lock();
             st.refresh();
-            // Derive ground status from the last HELLO.
+            // Ground liveness is refreshed by matching PONG responses.
             if self.link.is_some() {
                 if let Some(last) = self.last_ground_rx {
                     if now.duration_since(last) > Duration::from_millis(GROUND_TIMEOUT_MS) {
@@ -2865,32 +2909,9 @@ fn auto_off_due(vehicle_remaining_ms: u32, host_deadline: Option<Instant>, now: 
         .unwrap_or(false)
 }
 
-/// Probe a hardware port first at `preferred_baud`, falling back across all
-/// supported `UsbBaud` rates so boards with flash-saved custom USB CDC speeds
-/// auto-discover cleanly on any workstation.
-fn probe_port_any_baud(
-    path: &str,
-    preferred_baud: u32,
-    target: Endpoint,
-    verbose: bool,
-) -> Option<(Box<dyn ByteLink>, u32)> {
-    if let Some(link) = probe_port(path, preferred_baud, target, verbose) {
-        return Some((link, preferred_baud));
-    }
-    for preset in UsbBaud::ALL {
-        let candidate = preset.bps();
-        if candidate == preferred_baud {
-            continue;
-        }
-        if let Some(link) = probe_port_timeout(path, candidate, target, 240, verbose) {
-            return Some((link, candidate));
-        }
-    }
-    None
-}
-
-/// Probe a freshly opened port by sending a PING to `target` and waiting for a
-/// valid frame from that endpoint. Returns the link if the board answered.
+/// Probe a freshly opened port at the operator-configured baud by sending a
+/// PING to `target` and waiting for a nonce-matched PONG. Returns the link if
+/// the board answered.
 fn probe_port(path: &str, baud: u32, target: Endpoint, verbose: bool) -> Option<Box<dyn ByteLink>> {
     probe_port_timeout(path, baud, target, PROBE_TIMEOUT_MS, verbose)
 }
@@ -2911,14 +2932,22 @@ fn probe_port_timeout(
             return None;
         }
     };
-    if probe_existing(&mut *link, target, timeout_ms) {
+    if verbose {
+        eprintln!("[gse] probing {path} @ {baud} baud for {target}");
+    }
+    if probe_existing(&mut *link, target, timeout_ms, verbose) {
         Some(link)
     } else {
         None
     }
 }
 
-fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) -> bool {
+fn probe_existing(
+    link: &mut dyn ByteLink,
+    target: Endpoint,
+    timeout_ms: u64,
+    verbose: bool,
+) -> bool {
     let mut buf = [0u8; Frame::MAX_ENCODED];
     let nonce = clock::unix_ms() as u32;
     let n = match encode_message(
@@ -2931,18 +2960,41 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
         Some(n) => n,
         None => return false,
     };
-    if link.write_all(&buf[..n]).is_err() {
-        return false;
-    }
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let retry_period = Duration::from_millis(PROBE_RETRY_MS);
+    let mut next_ping = Instant::now();
     let mut decoder = FrameDecoder::new();
-    let mut buf = [0u8; 512];
+    let mut rx_buf = [0u8; 512];
     while Instant::now() < deadline {
-        match link.read(&mut buf) {
+        let now = Instant::now();
+        if now >= next_ping {
+            if let Err(e) = link.write_all(&buf[..n]) {
+                if verbose {
+                    eprintln!("[gse] probe {}: PING write failed: {e}", link.name());
+                }
+                return false;
+            }
+            next_ping = now + retry_period;
+        }
+        match link.read(&mut rx_buf) {
             Ok(n) => {
-                for &byte in &buf[..n] {
+                for &byte in &rx_buf[..n] {
                     if let Some(frame) = decoder.push(byte) {
-                        if frame.src == target {
+                        // A PONG echoing this probe's nonce is the Ground
+                        // connection handshake; unrelated traffic is not proof
+                        // that the request/response path is working.
+                        if frame.src == target
+                            && frame.dst == Endpoint::Host
+                            && matches!(frame.message(), Some(Message::Pong(pong)) if pong.nonce == nonce)
+                        {
+                            if verbose {
+                                eprintln!(
+                                    "[gse] probe {}: received matching PONG from {} (seq {})",
+                                    link.name(),
+                                    frame.src,
+                                    frame.seq
+                                );
+                            }
                             return true;
                         }
                     }
@@ -2951,8 +3003,20 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
                     thread::sleep(Duration::from_millis(3));
                 }
             }
-            Err(_) => return false,
+            Err(e) => {
+                if verbose {
+                    eprintln!("[gse] probe {}: serial read failed: {e}", link.name());
+                }
+                return false;
+            }
         }
+    }
+    if verbose {
+        let stats = decoder.stats();
+        eprintln!(
+            "[gse] probe {}: no matching PONG from {}; rx {} bytes, {} valid frame(s), {} CRC error(s), {} malformed frame(s)",
+            link.name(), target, stats.bytes_in, stats.frames_ok, stats.crc_errors, stats.malformed
+        );
     }
     false
 }
@@ -2960,6 +3024,132 @@ fn probe_existing(link: &mut dyn ByteLink, target: Endpoint, timeout_ms: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::state::AppState;
+    use std::path::PathBuf;
+    use std::sync::Mutex as StdMutex;
+
+    struct CaptureLink {
+        writes: Arc<StdMutex<Vec<Vec<u8>>>>,
+    }
+
+    impl ByteLink for CaptureLink {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            self.writes.lock().unwrap().push(data.to_vec());
+            Ok(())
+        }
+
+        fn name(&self) -> String {
+            "capture-test-link".into()
+        }
+    }
+
+    #[test]
+    fn ground_ping_retry_keeps_the_outstanding_nonce() {
+        let shared = Shared::new(
+            AppState::new(Config::default(), false, String::new(), "auto".into()),
+            None,
+            String::new(),
+            PathBuf::new(),
+            false,
+        );
+        let (_request_tx, request_rx) = std::sync::mpsc::channel();
+        let mut engine = Engine::new(shared, request_rx, None, false);
+        let writes = Arc::new(StdMutex::new(Vec::new()));
+        engine.link = Some(Box::new(CaptureLink {
+            writes: writes.clone(),
+        }));
+        engine.ground_ping_nonce = Some(0xCAFE_BABE);
+        let next_nonce = engine.nonce;
+
+        engine.retry_ground_ping();
+
+        assert_eq!(engine.ground_ping_nonce, Some(0xCAFE_BABE));
+        assert_eq!(engine.nonce, next_nonce, "retry must not advance nonce");
+        let writes = writes.lock().unwrap();
+        let mut decoder = FrameDecoder::new();
+        let frame = writes[0]
+            .iter()
+            .find_map(|&byte| decoder.push(byte))
+            .expect("retry should emit a complete GSE frame");
+        assert_eq!(frame.src, Endpoint::Host);
+        assert_eq!(frame.dst, Endpoint::Ground);
+        assert!(matches!(frame.message(), Some(Message::Ping(ping)) if ping.nonce == 0xCAFE_BABE));
+    }
+
+    struct DelayedPongLink {
+        response: Vec<u8>,
+        ready_at: Option<Instant>,
+        ping_writes: usize,
+    }
+
+    impl ByteLink for DelayedPongLink {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.ready_at.map(|at| Instant::now() < at).unwrap_or(true) {
+                return Ok(0);
+            }
+            let n = buf.len().min(self.response.len());
+            buf[..n].copy_from_slice(&self.response[..n]);
+            self.response.drain(..n);
+            Ok(n)
+        }
+
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            self.ping_writes += 1;
+            if self.ready_at.is_none() {
+                let mut decoder = FrameDecoder::new();
+                let ping = data
+                    .iter()
+                    .find_map(|&byte| decoder.push(byte))
+                    .and_then(|frame| match frame.message() {
+                        Some(Message::Ping(ping)) => Some(ping),
+                        _ => None,
+                    })
+                    .expect("probe must write a PING");
+                let mut encoded = [0u8; Frame::MAX_ENCODED];
+                let len = encode_message(
+                    &Message::Pong(Pong {
+                        nonce: ping.nonce,
+                        uptime_ms: 800,
+                        state: StateSnapshot::all_safe(),
+                    }),
+                    Endpoint::Ground,
+                    Endpoint::Host,
+                    1,
+                    &mut encoded,
+                )
+                .unwrap();
+                self.response.extend_from_slice(&encoded[..len]);
+                self.ready_at = Some(Instant::now() + Duration::from_millis(800));
+            }
+            Ok(())
+        }
+
+        fn name(&self) -> String {
+            "delayed-pong-test-link".into()
+        }
+    }
+
+    #[test]
+    fn probe_waits_for_delayed_matching_ground_pong() {
+        let mut link = DelayedPongLink {
+            response: Vec::new(),
+            ready_at: None,
+            ping_writes: 0,
+        };
+
+        assert!(probe_existing(
+            &mut link,
+            Endpoint::Ground,
+            PROBE_TIMEOUT_MS,
+            false
+        ));
+        assert!(link.ping_writes >= 2, "probe should retry while waiting");
+    }
 
     #[test]
     fn operator_commands_map_to_the_expected_events() {

@@ -8,8 +8,10 @@ rocket ground support station:
   - **CDEBYTE [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads)** 2.4 GHz Semtech `SX1280`/`SX1281` **`500 mW` (`+27 dBm`)** SPI + PA/LNA LoRa transceiver over **`SPI1` (`4 MHz`)**.
 - **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** or **`E28-2G4M27S`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
 
-The host application (`gse-app`) is a single dependency-free Rust binary. It
-serves an embedded terminal-style browser console on port `8765`, speaks a
+The host application (`gse-app`) uses the `serialport` crate for consistent
+cross-platform USB serial behavior in both normal GSE operation and the opt-in
+PING/PONG regression test. In normal operation it serves an embedded
+terminal-style browser console on port `8765`, speaks a
 compact COBS + CRC-16 framed protocol over USB serial (or TCP against the
 built-in simulator), and enforces deterministic launch interlocks across two
 selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
@@ -59,9 +61,9 @@ trusts the ground station.
   latched faults, and frame counters.
 - **Session logging** — real-time filterable log stream in the UI plus
   append-only `session-<timestamp>.log` on disk and one-click CSV download.
-- **Cross-platform native serial** — Win32 Comm API on Windows and POSIX
-  `termios`/`poll` on Linux and macOS, with automatic ground-board port
-  discovery (`port: "auto"`).
+- **Cross-platform USB serial** — shared `serialport` backend for the live
+  application and regression test, with automatic ground-board port discovery
+  (`port: "auto"`).
 - **Hardware-accurate simulator (`gse-sim`)** — executes the exact `no_std`
   ground-bridge and vehicle state machines over TCP with configurable RF
   latency, packet drops and bit errors.
@@ -287,12 +289,36 @@ binaries:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
+rustup component add llvm-tools
+cargo install cargo-binutils
 cd firmware/stm32h753
+
 cargo build --release --bin gse-ground
+cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
 cargo build --release --bin gse-vehicle
-# flash via probe-rs:
-cargo run --release --bin gse-vehicle
+cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
 ```
+
+Cargo keeps the linked ELF files under
+`firmware/stm32h753/target/thumbv7em-none-eabihf/release/`; `cargo objcopy`
+creates the flashable flat `.bin` files in the repository's `artifacts/`
+directory. From the repository root, flash each image to a separate NUCLEO-H753ZI
+at `0x08000000` (for example, with STM32CubeProgrammer):
+
+```bash
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
+# Connect the vehicle NUCLEO and flash it separately:
+STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
+```
+
+For a blank config sector, add `--no-default-features --features radio-e28-2g4m27s`
+to each `cargo build` and `cargo objcopy` command to select the E28 compile-time
+default; persisted board settings take precedence. `artifacts/` is generated and
+git-ignored. Alternatively, from `firmware/stm32h753`, run
+`cargo run --release --bin gse-ground` or `cargo run --release --bin gse-vehicle`
+to flash via `probe-rs` when installed. For an isolated USART3-only heartbeat
+regression that temporarily bypasses normal Ground/app logic, see
+[Temporary ping/pong regression](docs/HARDWARE.md#temporary-pingpong-regression-in-the-current-gse-binaries).
 
 Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
 `2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
