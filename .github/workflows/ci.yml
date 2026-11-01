@@ -36,7 +36,20 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy workspace
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets --message-format=short -- -D warnings > /tmp/clippy.log 2>&1
+          result=$?
+          cat /tmp/clippy.log
+          if [ "$result" -ne 0 ]; then
+            while IFS= read -r diagnostic; do
+              diagnostic="${diagnostic//'%'/'%25'}"
+              diagnostic="${diagnostic//$'\r'/'%0D'}"
+              printf '::error::%s\n' "$diagnostic"
+            done < <(grep -E '(error:|warning:)' /tmp/clippy.log || true)
+          fi
+          exit "$result"
       - run: cargo clippy -p gse-fw-check --all-targets --no-default-features --features radio-e28-2g4m27s -- -D warnings
 
   test:
