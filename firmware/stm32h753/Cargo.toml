@@ -21,6 +21,10 @@ path = "src/bin/ground.rs"
 name = "gse-vehicle"
 path = "src/bin/vehicle.rs"
 
+[[bin]]
+name = "gse-test"
+path = "src/bin/gse-test.rs"
+
 [features]
 default = ["radio-dx-lr42"]
 # Replace only the gse-ground entry point with the standalone ASCII heartbeat.

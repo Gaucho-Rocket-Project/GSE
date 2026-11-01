@@ -41,7 +41,10 @@ use gse_fw_core::e28::{E28Driver, Sx128xBus};
 use gse_fw_core::hal::{elapsed_ms, GroundHal, Leds, LinkState, VehicleHal};
 use gse_proto::crc::crc16;
 use gse_proto::radio::AUX_MAX_WAIT_MS;
-use gse_proto::{DxLr42Baud, LinkConfig, RadioModule, Reason, UsbBaud};
+use gse_proto::{
+    encode_message, DxLr42Baud, Endpoint, Frame, FrameDecoder, LinkConfig, Message, Pong,
+    RadioModule, Reason, StateSnapshot, UsbBaud,
+};
 
 // ---------------------------------------------------------------------------
 // Register map
@@ -1733,6 +1736,183 @@ impl VehicleHal for VehicleBoard {
             false
         };
         Ok(persisted)
+    }
+
+    fn set_leds(&mut self, leds: Leds) {
+        self.leds.apply(leds);
+    }
+
+    fn kick_watchdog(&mut self) {
+        watchdog_kick();
+    }
+
+    fn device_id(&self) -> u32 {
+        self.device
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Single-board GSE servo / ignition test image
+// ---------------------------------------------------------------------------
+
+/// Hardware for `gse-test`: the USB-connected board hosts the vehicle state
+/// machine locally, so the GSE app can exercise real outputs without a second
+/// vehicle board or an RF module. Ground PING/PONG is answered locally; Vehicle
+/// protocol frames use the same USB CDC UART.
+pub struct GseTestBoard {
+    usb: Uart,
+    servos: ServoPair,
+    ignition: Pin,
+    leds: LedBank,
+    fill_on: bool,
+    srv_on: bool,
+    ign_on: bool,
+    ground_decoder: FrameDecoder,
+    ground_tx_seq: u8,
+    device: u32,
+}
+
+impl GseTestBoard {
+    pub fn init() -> Self {
+        enable_gpio(1); // LEDs
+        enable_gpio(3); // USB VCP pins
+        enable_gpio(4); // servos, ignition, LEDs
+        unsafe {
+            let _ = rd(RCC_AHB4ENR); // complete GPIO clock-enable writes
+            set_bits(RCC_APB1LENR, 1 << 18); // USART3EN
+            let _ = rd(RCC_APB1LENR); // complete the RCC clock-enable write
+        }
+
+        Pin::new(GPIOD, 8).as_alternate(7);
+        Pin::new(GPIOD, 9).as_alternate_pull(7, Pull::Up);
+        Pin::new(GPIOE, 9).as_alternate(1);
+        Pin::new(GPIOE, 11).as_alternate(1);
+
+        let mut servos = ServoPair::new();
+        servos.init();
+        let ignition = IGN_PIN;
+        ignition.as_output_level(false);
+
+        let leds = LedBank::nucleo();
+        leds.init();
+        timebase_init();
+        watchdog_init();
+
+        let mut usb = Uart::new(USART3);
+        usb.init(UsbBaud::Baud115200.bps());
+
+        GseTestBoard {
+            usb,
+            servos,
+            ignition,
+            leds,
+            fill_on: false,
+            srv_on: false,
+            ign_on: false,
+            ground_decoder: FrameDecoder::new(),
+            ground_tx_seq: 0,
+            device: device_id(0x4753_0000),
+        }
+    }
+
+    pub fn pump(&mut self) {
+        self.usb.pump();
+        watchdog_kick();
+    }
+
+    fn apply_outputs(&mut self) {
+        self.servos
+            .set(servo_pulse(self.fill_on), servo_pulse(self.srv_on));
+        self.ignition.set(self.ign_on);
+    }
+
+    fn handle_ground_frame(&mut self, frame: Frame) {
+        if frame.src != Endpoint::Host || frame.dst != Endpoint::Ground {
+            return;
+        }
+        let Some(Message::Ping(ping)) = frame.message() else {
+            return;
+        };
+        let message = Message::Pong(Pong {
+            nonce: ping.nonce,
+            uptime_ms: now_ms(),
+            state: StateSnapshot::all_safe(),
+        });
+        let mut encoded = [0u8; Frame::MAX_ENCODED];
+        if let Some(len) = encode_message(
+            &message,
+            Endpoint::Ground,
+            Endpoint::Host,
+            self.ground_tx_seq,
+            &mut encoded,
+        ) {
+            if self.usb.write(&encoded[..len]) {
+                self.ground_tx_seq = self.ground_tx_seq.wrapping_add(1);
+            }
+        }
+    }
+}
+
+impl VehicleHal for GseTestBoard {
+    fn now_ms(&self) -> u32 {
+        now_ms()
+    }
+
+    fn set_fill(&mut self, on: bool) {
+        self.fill_on = on;
+        self.apply_outputs();
+    }
+
+    fn set_srv(&mut self, on: bool) {
+        self.srv_on = on;
+        self.apply_outputs();
+    }
+
+    fn set_ign(&mut self, on: bool) {
+        self.ign_on = on;
+        self.apply_outputs();
+    }
+
+    fn read_radio(&mut self, buf: &mut [u8]) -> usize {
+        // The Vehicle state machine consumes the USB stream as its local host
+        // link. Inspect the same bytes for Ground discovery PINGs so GSE can
+        // complete its normal Ground handshake over this one cable.
+        let len = self.usb.read(buf);
+        for &byte in &buf[..len] {
+            if let Some(frame) = self.ground_decoder.push(byte) {
+                self.handle_ground_frame(frame);
+            }
+        }
+        len
+    }
+
+    fn write_radio(&mut self, data: &[u8]) {
+        let _ = self.usb.write(data);
+    }
+
+    fn radio_ready(&mut self) -> bool {
+        self.usb.has_space(Frame::MAX_ENCODED)
+    }
+
+    fn radio_tx_busy(&self) -> bool {
+        self.usb.is_transmitting()
+    }
+
+    fn link_state(&self) -> LinkState {
+        LinkState {
+            usb_baud: UsbBaud::Baud115200,
+            uart_baud: DxLr42Baud::Baud9600,
+            radio: RadioModule::DxLr42,
+            flash_saved: false,
+        }
+    }
+
+    fn probe_radio_module(&mut self, _radio: RadioModule) -> bool {
+        false
+    }
+
+    fn apply_link_config(&mut self, _cfg: LinkConfig) -> Result<bool, Reason> {
+        Err(Reason::HardwareFault)
     }
 
     fn set_leds(&mut self, leds: Leds) {
