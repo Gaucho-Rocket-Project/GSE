@@ -200,6 +200,47 @@ Alternatively, from `firmware/stm32h753`, run `cargo run --release --bin gse-gro
 or `cargo run --release --bin gse-vehicle` to flash via `probe-rs`
 (`STM32H753ZITx` is configured in `firmware/stm32h753/.cargo/config.toml`).
 
+### Minimal USART3 ping/pong regression
+
+This standalone test ports the working `pingpong` branch heartbeat and bypasses
+GSE framing, the radio bridge, `gse-app`, and all vehicle controls. Flash it to
+the **ground NUCLEO only**; do not use this image on the vehicle board.
+
+Build and flash from the repository root. The ELF is
+`firmware/pingpong/target/thumbv7em-none-eabihf/release/nucleo-ping`; the raw
+binary is `artifacts/nucleo-ping.bin`:
+
+```bash
+cd firmware/pingpong
+cargo build --release
+cargo objcopy --release -- -O binary ../../artifacts/nucleo-ping.bin
+cd ../..
+STM32_Programmer_CLI -c port=SWD -w artifacts/nucleo-ping.bin 0x08000000 -v -rst
+```
+
+The host responder's parser/retry unit tests can also run on the PC:
+
+```bash
+cargo test --manifest-path firmware/pingpong-host/Cargo.toml
+```
+
+Do not run `gse-app` for this test: it expects binary COBS frames and will not
+answer these ASCII lines. Close it and any other serial monitor (only one
+process can own the VCP port), then run the branch's minimal host responder at
+the configured `115200` baud:
+
+```bash
+cargo run --release --manifest-path firmware/pingpong-host/Cargo.toml -- /dev/ttyACM0
+```
+
+On Windows, use the NUCLEO COM port, for example `COM5`, instead of
+`/dev/ttyACM0`. A successful exchange prints `PING 0 -> PONG 1`, then advances
+through `PING 1 -> PONG 2` and so on. The board starts with `PING 0`, retries
+it every 5 s if no response arrives, and paces successful exchanges by 250 ms.
+This verifies the simple USART3/VCP byte path in both directions, not GSE frame
+recognition. After this test, rebuild and flash `gse-ground.bin` before resuming
+GSE app or vehicle-control testing.
+
 Architecture notes:
 - Clocking uses the `64 MHz` internal `HSI` out of reset (no PLL or crystal bring-up failure modes).
 - `1 ms` `SysTick` timebase + polled `USART3`/`USART6` hardware FIFOs; zero peripheral ISRs.

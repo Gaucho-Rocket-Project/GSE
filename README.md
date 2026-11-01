@@ -314,7 +314,9 @@ to each `cargo build` and `cargo objcopy` command to select the E28 compile-time
 default; persisted board settings take precedence. `artifacts/` is generated and
 git-ignored. Alternatively, from `firmware/stm32h753`, run
 `cargo run --release --bin gse-ground` or `cargo run --release --bin gse-vehicle`
-to flash via `probe-rs` when installed.
+to flash via `probe-rs` when installed. For an isolated USART3-only heartbeat
+regression using the original `pingpong` logic, see
+[Minimal USART3 ping/pong regression](docs/HARDWARE.md#minimal-usart3-pingpong-regression).
 
 Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
 `2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
