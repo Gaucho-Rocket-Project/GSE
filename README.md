@@ -287,14 +287,21 @@ binaries:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-rustup component add llvm-tools-preview
+rustup component add llvm-tools
 cargo install cargo-binutils
-python3 scripts/build_firmware.py
+cd firmware/stm32h753
+
+cargo build --release --bin gse-ground
+cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
+cargo build --release --bin gse-vehicle
+cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
 ```
 
-The script places Cargo intermediates under `artifacts/cargo-target/` and emits
-`artifacts/gse-ground.bin` and `artifacts/gse-vehicle.bin`. Flash each image to
-a separate NUCLEO-H753ZI at `0x08000000` (for example, with STM32CubeProgrammer):
+Cargo keeps the linked ELF files under
+`firmware/stm32h753/target/thumbv7em-none-eabihf/release/`; `cargo objcopy`
+creates the flashable flat `.bin` files in the repository's `artifacts/`
+directory. From the repository root, flash each image to a separate NUCLEO-H753ZI
+at `0x08000000` (for example, with STM32CubeProgrammer):
 
 ```bash
 STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
@@ -302,12 +309,12 @@ STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
 STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
 ```
 
-Use `python3 scripts/build_firmware.py --radio e28-2g4m27s` to change the
-compile-time default radio for blank config flash; the default is `dx-lr42`.
-Saved board settings continue to take precedence. `artifacts/` is generated and
-git-ignored. Alternatively, run `cargo run --release --bin gse-ground` or
-`cargo run --release --bin gse-vehicle` from `firmware/stm32h753` to flash via
-`probe-rs` when that tool is installed.
+For a blank config sector, add `--no-default-features --features radio-e28-2g4m27s`
+to each `cargo build` and `cargo objcopy` command to select the E28 compile-time
+default; persisted board settings take precedence. `artifacts/` is generated and
+git-ignored. Alternatively, from `firmware/stm32h753`, run
+`cargo run --release --bin gse-ground` or `cargo run --release --bin gse-vehicle`
+to flash via `probe-rs` when installed.
 
 Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
 `2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a

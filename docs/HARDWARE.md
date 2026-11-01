@@ -158,41 +158,43 @@ Both `gse-ground` and `gse-vehicle` include a built-in `DualRadioPort` (`firmwar
 | **Pin 12** | `BUSY` | **`PG10`** | **`CN9` pin 66** | Active-high busy input (`15 ms` timeout guard) |
 | **Pin 13** | `DIO1` | **`PF13`** | **`CN10` pin 2** (`D7`) | IRQ status input (`TX_DONE` / `RX_DONE` / `CRC_ERROR`) |
 
-To compile firmware defaulting to `E28-2G4M27S` on fresh blank flash (before any Settings flash save):
-
-```bash
-cd firmware/stm32h753
-cargo build --release --bins --no-default-features --features radio-e28-2g4m27s
-```
+To compile firmware defaulting to `E28-2G4M27S` on fresh blank flash (before
+any Settings flash save), add `--no-default-features --features radio-e28-2g4m27s`
+to each `cargo build` and `cargo objcopy` command in the build-and-flash
+instructions below.
 
 ## Build and flash
 
-Prerequisites: Rust 1.75 or newer, the Cortex-M target, Python 3, and
-`cargo-binutils` (for ELF-to-binary conversion):
+Prerequisites: Rust 1.75 or newer, the Cortex-M target, and `cargo-binutils`
+for ELF-to-binary conversion:
 
 ```bash
 rustup target add thumbv7em-none-eabihf
-rustup component add llvm-tools-preview
+rustup component add llvm-tools
 cargo install cargo-binutils
-python3 scripts/build_firmware.py
+cd firmware/stm32h753
+
+cargo build --release --bin gse-ground
+cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
+cargo build --release --bin gse-vehicle
+cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
 ```
 
-The build script puts Cargo intermediates under `artifacts/cargo-target/` and
-writes flashable flat binaries to `artifacts/gse-ground.bin` and
-`artifacts/gse-vehicle.bin`. Program one image to each board at flash base
-`0x08000000`:
+Cargo leaves the linked ELF files under
+`firmware/stm32h753/target/thumbv7em-none-eabihf/release/`; `cargo objcopy`
+creates the flashable flat `.bin` files under the repository's `artifacts/`
+directory. From the repository root, program each image to a separate board at
+flash base `0x08000000`:
 
 ```bash
 STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
 STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
 ```
 
-For a fresh board whose config sector is blank, select the E28 compile-time
-default with `python3 scripts/build_firmware.py --radio e28-2g4m27s`; otherwise
-the script defaults to `dx-lr42`. Persisted settings take precedence over this
-compile-time default. `artifacts/` is generated and git-ignored. On Windows, run
-the builder as `py scripts/build_firmware.py` and use
-`STM32_Programmer_CLI.exe` if the extension is required.
+For a blank config sector, add `--no-default-features --features radio-e28-2g4m27s`
+to each build and objcopy command for the E28 compile-time default; persisted
+board settings take precedence. `artifacts/` is generated and git-ignored. On
+Windows, use `STM32_Programmer_CLI.exe` if the extension is required.
 
 Alternatively, from `firmware/stm32h753`, run `cargo run --release --bin gse-ground`
 or `cargo run --release --bin gse-vehicle` to flash via `probe-rs`
