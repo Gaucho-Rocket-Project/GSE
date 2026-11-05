@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------------------
+# ESP32-S3 dual SG90 servo test firmware - defaults
+#
+# Console on the native USB port (USB Serial/JTAG) so the board works from a
+# single USB cable. See Makefile target "build-uart" for the UART0 variant.
+# ---------------------------------------------------------------------------
+
+# Target chip
+CONFIG_IDF_TARGET="esp32s3"
+
+# --- Console -------------------------------------------------------------
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=y
+
+# --- C runtime -----------------------------------------------------------
+CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF=y
+CONFIG_NEWLIB_STDIN_LINE_ENDING_LF=y
+
+# --- Flash ---------------------------------------------------------------
+# Works for the common 8 MB module (N8R2 / N8R8) and any larger part.
+# If you have a 4 MB board, set CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y instead.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- Partition table -----------------------------------------------------
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+CONFIG_PARTITION_TABLE_FILENAME="partitions_singleapp_large.csv"
+
+# --- FreeRTOS / app ------------------------------------------------------
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# --- Build performance ---------------------------------------------------
+# (ccache is enabled from the environment: export IDF_CCACHE_ENABLE=1)
+
+
+# --- Size ----------------------------------------------------------------
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# --- Servo type ----------------------------------------------------------
+# Passed to the compiler by main/CMakeLists.txt (-DSERVO_TYPE=...).
+#   1 = SG90 / micro analog  (default)
+#   2 = DS3225MG 25 kg digital
+# Override per build, e.g.:  make build SERVO_TYPE=2 SERVO_TRAVEL_DEG=180
