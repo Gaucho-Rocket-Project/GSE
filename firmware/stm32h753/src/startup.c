@@ -20,22 +20,53 @@ extern uint32_t _estack;    /* top of RAM = initial stack pointer       */
 int  main(void);
 void Reset_Handler(void);
 void Default_Handler(void);
+void Fault_Handler(void);
+void fault_c(uint32_t *frame);
 
-/* Every fault lands here: flash the red LED forever so a crash is visible. */
-void Fault_Handler(void)
+/*
+ * Why the fault handler resets instead of blinking forever: the console lives
+ * on the ST-LINK, which only stretches a byte it has *already* received
+ * (~350 us at 115200) - it cannot be printed to from inside a fault. So the
+ * handler records the fault in RAM (which survives a soft reset), blinks the
+ * red LED briefly, and resets. The next boot prints a full report (§ "fault
+ * report" in main.c).
+ *
+ * The handler is naked so the hardware-stacked exception frame is still intact
+ * when we read it: R0-R3, R12, LR, PC, xPSR, in that order.
+ */
+__attribute__((naked)) void Fault_Handler(void)
 {
-    /* LD3 (PB14) blink. Enable the port clock here rather than relying on
-     * the rest of the firmware having got that far. */
+    /*
+     * This firmware is single-stack: main() and every handler run on MSP
+     * (nothing ever sets CONTROL.SPSEL, there is no RTOS), so at handler entry
+     * SP points straight at the hardware-stacked exception frame.
+     */
+    __asm volatile(
+        ".syntax unified          \n"
+        ".thumb                   \n"
+        "mov    r0, sp            \n"
+        "b      fault_c           \n");
+}
+
+void fault_c(uint32_t *frame)
+{
+    /* Make sure the LED can be driven even if the fault happened very early. */
     RCC_AHB4ENR |= RCC_AHB4ENR_GPIOBEN;
     (void)RCC_AHB4ENR;
-    board_gpio_output(GPIOB, 14);
+    board_gpio_output(GPIOB, 14);               /* LD3, red */
+
+    board_record_fault(frame);
+
+    /* Three quick blinks: "I crashed", visible without a terminal. */
+    for (int i = 0; i < 6; i++) {
+        GPIOB->BSRR = (i & 1) ? (1UL << (14 + 16)) : (1UL << 14);
+        for (volatile uint32_t d = 0; d < 400000UL; d++) {
+        }
+    }
+    GPIOB->BSRR = (1UL << (14 + 16));
+
+    board_system_reset();                       /* never returns */
     for (;;) {
-        GPIOB->BSRR = (1UL << 14);              /* on  */
-        for (volatile uint32_t i = 0; i < 2000000UL; i++) {
-        }
-        GPIOB->BSRR = (1UL << (14 + 16));       /* off */
-        for (volatile uint32_t i = 0; i < 2000000UL; i++) {
-        }
     }
 }
 
@@ -103,6 +134,7 @@ void Reset_Handler(void)
      *    is written (see board_early_init). */
     fpu_enable();
     board_early_init();
+    board_save_reset_cause();   /* remember why we started (before it is cleared) */
 
     /* 3. Copy .data from flash to RAM, zero .bss. */
     uint32_t *src = &_sidata;

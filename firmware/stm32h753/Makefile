@@ -2,8 +2,9 @@
 # NUCLEO-H753ZI dual servo firmware - build / verify / flash / monitor
 #
 #   make                 build out/servo.elf, out/servo.bin, out/servo.hex
-#   make flash           program over ST-LINK with OpenOCD
+#   make flash           program over ST-LINK (CubeProgrammer or OpenOCD)
 #   make monitor         open the ST-LINK virtual COM port at 115200
+#   make ports           list serial ports, marking the NUCLEO's ST-LINK one
 #   make test            run the position-parser unit tests on this machine
 #   make clean
 #
@@ -67,7 +68,7 @@ OBJS := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
 # ---------------------------------------------------------------------------
-.PHONY: all build clean flash flash-bin programmer monitor list-ports test verify help
+.PHONY: all build clean flash flash-bin programmer probe erase monitor list-ports ports sniff send test verify help
 
 all: build
 
@@ -97,32 +98,49 @@ size: $(BUILD)/$(TARGET).elf
 	@$(SIZE) -A -x $<
 
 # --- flash ------------------------------------------------------------------
-# OpenOCD ships with STM32CubeCLT, STM32CubeIDE and most distro packages, and
-# talks to the on-board ST-LINK: no external programmer needed.
-OPENOCD     ?= openocd
-OOCD_ARGS   ?= -f interface/stlink.cfg -f target/stm32h7x.cfg
+# tools/flash.sh picks whichever programmer is installed (STM32CubeProgrammer,
+# OpenOCD, or the board's drag-and-drop drive) and explains itself if none is.
+.PHONY: flash flash-bin programmer probe erase
 
-flash: $(BUILD)/$(TARGET).elf
-	@echo "  FLASH $< -> STM32H753 (ST-LINK)"
-	$(OPENOCD) $(OOCD_ARGS) -c "program $< verify reset exit"
+flash:
+	@./tools/flash.sh
 
 flash-bin: $(BUILD)/$(TARGET).bin
-	$(OPENOCD) $(OOCD_ARGS) -c "program $< 0x08000000 verify reset exit"
+	@./tools/flash.sh $(BUILD)/$(TARGET).bin
 
-# Same thing with STM32CubeProgrammer instead of OpenOCD.
+# Same thing with STM32CubeProgrammer explicitly.
 programmer:
 	STM32_Programmer_CLI -c port=SWD -w $(BUILD)/$(TARGET).elf -s -rst
 
+# Talk to the ST-LINK without writing anything (sanity check).
+probe:
+	@./tools/flash.sh --probe
+
+# Mass erase, then flash.
+erase:
+	@./tools/flash.sh --erase
+
 # --- console ----------------------------------------------------------------
 # The NUCLEO's ST-LINK exposes USART3 as a USB CDC-ACM port (ttyACM* / COMx).
-PORT ?= $(shell ls /dev/ttyACM* 2>/dev/null | head -1)
+# tools/monitor.py finds it by USB IDs (so it will not grab the ESP32-S3 board,
+# which also shows up as a ttyACM port), checks that the board answers, and
+# tells you what to do if it does not.
+PORT ?=
 monitor:
-	@test -n "$(PORT)" || { echo "No /dev/ttyACM* found - pass PORT=/dev/ttyACM0"; exit 1; }
-	@echo "Opening $(PORT) @ 115200 (quit: Ctrl-A then K)"
-	screen $(PORT) 115200
+	@if [ -n "$(PORT)" ]; then ./tools/monitor.py $(PORT); else ./tools/monitor.py; fi
 
 list-ports:
-	@ls /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || echo "no serial ports found"
+	@./tools/find_port.py --list
+
+ports: list-ports
+
+# Dump whatever arrives for N seconds (does not open an interactive session).
+sniff:
+	@./tools/monitor.py --sniff $(or $(SECS),2)
+
+# Send one command and print the reply.
+send:
+	@./tools/monitor.py --send '$(CMD)\r' --sniff 1
 
 # --- verification without an ARM toolchain ----------------------------------
 # Compiles the whole firmware as 32-bit ARM with the host gcc if it has an

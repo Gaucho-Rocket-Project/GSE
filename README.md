@@ -376,8 +376,9 @@ no HAL, no RTOS, ~1100 lines of C11, 13 KB image.
 ```bash
 cd firmware/stm32h753
 make            # build
-make flash      # ST-LINK via OpenOCD
-make monitor    # 115200 terminal on the ST-LINK COM port
+make flash      # ST-LINK (CubeProgrammer / OpenOCD / drag-and-drop)
+make monitor    # finds the ST-LINK COM port, checks it, opens 115200
+make ports      # which serial port is actually the NUCLEO?
 ```
 
 > **Power:** two DS3225MG can pull 4–6 A. They need their own 5–6.8 V supply

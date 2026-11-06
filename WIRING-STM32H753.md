@@ -196,7 +196,8 @@ sharing one frame.
 1. Wire per §3, capacitor in place, external supply off.
 2. Flash: `make flash` (or drag `prebuilt/nucleo_h753zi_servo_180.bin` onto the
    NUCLEO drive — see the firmware README).
-3. Open the console: `make monitor` (or `screen /dev/ttyACM0 115200`).
+3. Open the console: `make monitor` (it finds the ST-LINK port and checks that
+   the board answers; `make ports` lists candidates if you want to pick one).
 4. Switch the servo supply on. You should see the banner.
 5. `status` → both servos `off`, no buzzing, nothing warm.
 6. `on servo1` → servo 1 snaps to centre and holds firmly.

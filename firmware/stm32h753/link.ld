@@ -77,6 +77,19 @@ SECTIONS
         _ebss = .;
     } > AXI
 
+    /*
+     * RAM that is NOT initialised at boot: survives a soft reset, so the fault
+     * handler's report survives the reset it triggers. Cleared only by the
+     * bootloader/ST-LINK "reset" with mass erase, or a power cycle.
+     */
+    .noinit (NOLOAD) :
+    {
+        . = ALIGN(8);
+        KEEP(*(.noinit))
+        KEEP(*(.noinit*))
+        . = ALIGN(8);
+    } > AXI
+
     /* Stack reservation + overflow guard marker. */
     ._stack (NOLOAD) :
     {

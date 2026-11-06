@@ -190,6 +190,96 @@ uint32_t board_cycles(void)
     return DWT_CYCCNT;
 }
 
+/* Live in .noinit (link.ld) so a soft reset does not wipe them. */
+__attribute__((section(".noinit"), used)) fault_record_t g_last_fault;
+__attribute__((section(".noinit"), used)) volatile uint32_t g_fault_count;
+
+#define SCB_AIRCR   (*(volatile uint32_t *)0xE000ED0CUL)
+#define SCB_CFSR    (*(volatile uint32_t *)0xE000ED28UL)
+#define SCB_HFSR    (*(volatile uint32_t *)0xE000ED2CUL)
+#define SCB_MMFAR   (*(volatile uint32_t *)0xE000ED34UL)
+#define SCB_BFAR    (*(volatile uint32_t *)0xE000ED38UL)
+#define SCB_ICSR    (*(volatile uint32_t *)0xE000ED04UL)
+
+void board_record_fault(uint32_t *frame)
+{
+    g_last_fault.magic = FAULT_RECORD_MAGIC;
+    g_last_fault.ipsr  = SCB_ICSR & 0x1FFUL;      /* VECTACTIVE */
+    g_last_fault.cfsr  = SCB_CFSR;
+    g_last_fault.hfsr  = SCB_HFSR;
+    g_last_fault.mmfar = SCB_MMFAR;
+    g_last_fault.bfar  = SCB_BFAR;
+    /* Only trust the frame pointer if it points into AXI SRAM; a corrupted or
+     * bogus SP must not turn a reportable fault into a lock-up. */
+    const uintptr_t fp = (uintptr_t)frame;
+    if (fp >= 0x24000000UL && fp < 0x24080000UL) {
+        /* Hardware-stacked exception frame: R0 R1 R2 R3 R12 LR PC xPSR. */
+        g_last_fault.pc = frame[6];               /* stacked R15 */
+        g_last_fault.lr = frame[5];               /* stacked R14 */
+    } else {
+        g_last_fault.pc = 0xFFFFFFFFUL;           /* "no frame" marker */
+        g_last_fault.lr = 0xFFFFFFFFUL;
+    }
+    g_fault_count++;
+}
+
+void board_system_reset(void)
+{
+    /* VECTKEY | SYSRESETREQ */
+    SCB_AIRCR = (0x5FAUL << 16) | (1UL << 2);
+    for (;;) {
+    }
+}
+
+bool board_fault_pending(void)
+{
+    return (g_last_fault.magic == FAULT_RECORD_MAGIC) && (g_fault_count != 0UL);
+}
+
+static char s_reset_cause[40] = "unknown";
+
+void board_save_reset_cause(void)
+{
+    /* Copy into RAM (allowed now: board_early_init() already ran). */
+    const char *c = board_reset_cause();
+    unsigned i = 0;
+    while (c[i] != '\0' && i + 1 < sizeof(s_reset_cause)) {
+        s_reset_cause[i] = c[i];
+        i++;
+    }
+    s_reset_cause[i] = '\0';
+}
+
+const char *board_reset_cause_saved(void)
+{
+    return s_reset_cause;
+}
+
+const char *board_reset_cause(void)
+{
+    const uint32_t rsr = RCC->RSR;
+    const char *cause = "unknown";
+
+    if ((rsr & RCC_RSR_PORRSTF) != 0UL) {
+        cause = "power-on";
+    } else if ((rsr & RCC_RSR_BORRSTF) != 0UL) {
+        /* Almost always the servo supply sagging through the shared ground. */
+        cause = "BROWN-OUT (check servo power)";
+    } else if ((rsr & RCC_RSR_PINRSTF) != 0UL) {
+        cause = "NRST pin (reset button / ST-LINK)";
+    } else if ((rsr & RCC_RSR_SFTRSTF) != 0UL) {
+        cause = "software reset";
+    } else if ((rsr & (RCC_RSR_IWDG1RSTF | RCC_RSR_WWDG1RSTF)) != 0UL) {
+        cause = "watchdog";
+    } else if ((rsr & RCC_RSR_LPWRRSTF) != 0UL) {
+        cause = "low-power";
+    }
+
+    /* Clear the sticky flags so a soft reset starts from a known state. */
+    RCC->RSR |= RCC_RSR_RMVF;
+    return cause;
+}
+
 uint32_t board_millis(void)
 {
     /* 200 MHz / 200 000 = 1 ms. 32-bit counter wraps every ~21 s, so the

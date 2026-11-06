@@ -106,27 +106,39 @@ because nothing here is generated from CubeMX — that is deliberate (see
 
 ## Open the terminal
 
-The NUCLEO's ST-LINK exposes **USART3 as a virtual COM port**, so there is only
-one USB cable for flashing *and* the console.
+The ST-LINK exposes **USART3 as a virtual COM port**, so one USB cable gives you
+flashing *and* the console.
 
 ```bash
-make monitor                  # finds /dev/ttyACM*, opens screen at 115200
-make list-ports               # what serial ports actually exist
+make monitor              # find the ST-LINK port, check it answers, connect
+make ports                # list serial ports, marking the ST-LINK/NUCLEO one
+make sniff SECS=3         # just dump whatever arrives for 3 s
+make send CMD='status'    # send one command, print the reply
+```
 
-# or by hand:
+`make monitor` runs `tools/monitor.py`, which is more useful than `screen`
+because it tells you *why* nothing happens:
+
+| What it prints | What it means |
+|---|---|
+| `Port /dev/ttyACM0 is already open by: screen (pid 5192)` | something already owns the port - close it, or `killall screen`. On Linux, ModemManager also grabs ttyACM ports: `sudo systemctl stop ModemManager`. |
+| `Checking /dev/ttyACM0 for output ... nothing.` | the port opened but the firmware did not answer a CR: wrong port (another board can own ttyACM0), or the image is not flashed. It prints the next steps. |
+| a banner + `servo>` | you are in. Ctrl-] disconnects, Ctrl-C goes to the board. |
+
+`tools/find_port.py` identifies the port by **USB IDs**, not by guessing: the
+NUCLEO's ST-LINK reports VID `0483` (STMicroelectronics), while the ESP32-S3
+board in this repo also enumerates as `ttyACM*` and would happily eat your
+commands if you picked the wrong one.
+
+Manual alternatives still work:
+
+```bash
 screen /dev/ttyACM0 115200    # quit: Ctrl-A then K
-minicom -D /dev/ttyACM0 -b 115200
 python3 -m serial.tools.miniterm /dev/ttyACM0 115200
 ```
 
-* Linux: `/dev/ttyACM0` (add yourself to the `dialout` group if it refuses).
-* macOS: `/dev/cu.usbmodem*`.
-* Windows: `COMx` in PuTTY / Tera Term, 115200 8N1.
-
-If nothing prints: wrong port, or the terminal is holding the previous session.
-The baud rate is irrelevant for *flashing*, but the console really is 115200.
-
----
+* Linux: `/dev/ttyACM0`; add yourself to `dialout` if access is denied.
+* macOS: `/dev/cu.usbmodem*`. Windows: `COMx` (PuTTY/Tera Term, 115200 8N1).
 
 ## Commands
 
@@ -223,6 +235,10 @@ firmware/stm32h753/
 ├── prebuilt/
 │   ├── nucleo_h753zi_servo_180.bin    ready to flash (180 deg)
 │   └── nucleo_h753zi_servo_270.bin    ready to flash (270 deg)
+├── tools/
+│   ├── flash.sh          ST-LINK programming (CubeProgrammer/OpenOCD/drag-drop)
+│   ├── monitor.py        console with liveness + busy-port diagnostics
+│   └── find_port.py      find the ST-LINK port by USB ID
 └── src/
     ├── board.h           register map (cross-checked against stm32h753xx.h)
     ├── board.c           clocks, GPIO, DWT-based delays, static asserts
@@ -282,6 +298,10 @@ make -C firmware/stm32h753 test
 
 | Symptom | Likely cause / fix |
 |---|---|
+| `Device or resource busy` when opening the port | Another program owns it (screen/minicom/PuTTY/CubeIDE), or on Linux ModemManager is probing it. Run `make monitor` - it names the process - then `killall screen` and/or `sudo systemctl stop ModemManager`. |
+| The port opens, but no data comes out | Run `make monitor` instead of guessing: it sends a CR and reports what it heard. Usually it is the *other* board's ttyACM port, or the image was overwritten. |
+| Console prints a `FATAL FAULT` block | The MCU crashed and rebooted. The report gives CFSR/HFSR and the faulting PC; resolve it with `arm-none-eabi-addr2line -e out/servo.elf <PC>`. Brown-outs from insufficient servo power are the usual cause. |
+| Banner says `boot : BROWN-OUT` | The supply sagged - power problem, not software. |
 | No drive appears / flash tool can't connect | Use the USB port **next to the ST-LINK** (not the user-USB one, which is unconnected on this board). Re-seat the two jumpers CN4 (both in the `ST-LINK` / `U5V` positions). |
 | Flashed OK, but the terminal is silent | Wrong port. `make list-ports`; on macOS it is `/dev/cu.usbmodem*`, on Windows `COMx`. Close other programs holding the port. |
 | Terminal prints garbage | Baud rate not 115200, or the terminal is on the UART bridge of a different board. |

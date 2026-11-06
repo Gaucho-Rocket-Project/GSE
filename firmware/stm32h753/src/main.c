@@ -38,12 +38,78 @@ enum target {
 /* Output helpers                                                            */
 /* ------------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------------- */
+/* Fault report                                                              */
+/* ------------------------------------------------------------------------- */
+
+static const char *fault_name(uint32_t ipsr)
+{
+    switch (ipsr) {
+    case 3:  return "HardFault";
+    case 4:  return "MemManage";
+    case 5:  return "BusFault";
+    case 6:  return "UsageFault";
+    default: return "fault";
+    }
+}
+
+static void print_fault_row(const char *label, uint32_t v)
+{
+    console_printf("   %-8s 0x%08x\n", label, (unsigned)v);
+}
+
+/*
+ * Printed when the fault handler recorded a crash and reset the MCU. The report
+ * survives the soft reset in .noinit RAM, so the board reboots and tells you
+ * what happened instead of just blinking.
+ */
+static void print_fault_report(void)
+{
+    console_puts("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                 "!!  FATAL FAULT - the MCU crashed and was reset  !!\n"
+                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n");
+
+    console_printf("  fault     : %s #%u\n",
+                   fault_name(g_last_fault.ipsr),
+                   (unsigned)g_last_fault.ipsr);
+    print_fault_row("CFSR", g_last_fault.cfsr);
+    print_fault_row("HFSR", g_last_fault.hfsr);
+    print_fault_row("stack PC", g_last_fault.pc);
+    print_fault_row("stack LR", g_last_fault.lr);
+    if ((g_last_fault.cfsr & 0x82UL) != 0UL) {
+        print_fault_row("MMFAR", g_last_fault.mmfar);
+    }
+    if ((g_last_fault.cfsr & 0x8000UL) != 0UL) {
+        print_fault_row("BFAR", g_last_fault.bfar);
+    }
+
+    console_puts(
+        "  PC/LR are valid unless they read FFFFFFFF (fault before the app ran).\n"
+        "  Find the address with:  arm-none-eabi-addr2line -e out/servo.elf <PC>\n");
+
+    if ((g_last_fault.cfsr & 0x8000UL) != 0UL) {
+        console_puts("  BFARVALID: a load/store hit an unmapped address.\n");
+    } else if ((g_last_fault.cfsr & 0x82UL) != 0UL) {
+        console_puts("  MMFARVALID: an access was blocked by an MPU region.\n");
+    } else if ((g_last_fault.hfsr & 0x40000000UL) != 0UL) {
+        console_puts("  FORCED: escalated from a configurable fault.\n");
+    }
+    console_puts("  Check servo power first (brown-out -> crashes look random).\n"
+                 "  The fault record clears on the next run.\n"
+                 "--------------------------------------------------\n\n");
+
+    /* Consume the record so the next reset starts clean. */
+    g_last_fault.magic = 0;
+    g_fault_count = 0;
+}
+
 static void print_banner(void)
 {
     console_puts("\n"
                  "==================================================\n"
                  " NUCLEO-H753ZI  -  dual servo test firmware\n"
                  "==================================================\n");
+    console_printf("  boot     : %s\n", board_reset_cause_saved());
     for (int i = 0; i < SERVO_COUNT; i++) {
         console_printf("  %s : signal on %-4s (CN10-%d)  state: %s\n",
                        servo_name(i), servo_pin_name(i),
@@ -358,6 +424,9 @@ int main(void)
     servo_init();
 
     print_banner();
+    if (board_fault_pending()) {
+        print_fault_report();
+    }
 
     for (;;) {
         console_puts(PROMPT);

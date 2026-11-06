@@ -260,6 +260,19 @@ typedef struct {
 #define PWR_D3CR_VOS_Pos          14
 #define PWR_D3CR_VOS1             (3UL << PWR_D3CR_VOS_Pos)
 
+/* --- RCC reset status (RCC_RSR, 0xD0) ----------------------------------- */
+#define RCC_RSR_RMVF              (1UL << 16)   /* clear the flags          */
+#define RCC_RSR_CPURSTF           (1UL << 17)
+#define RCC_RSR_D1RSTF            (1UL << 19)
+#define RCC_RSR_D2RSTF            (1UL << 20)
+#define RCC_RSR_BORRSTF           (1UL << 21)   /* brown-out: power problem */
+#define RCC_RSR_PINRSTF           (1UL << 22)   /* NRST button / ST-LINK    */
+#define RCC_RSR_PORRSTF           (1UL << 23)   /* power-on                 */
+#define RCC_RSR_SFTRSTF           (1UL << 24)   /* software / debugger      */
+#define RCC_RSR_IWDG1RSTF         (1UL << 26)   /* watchdogs are not used   */
+#define RCC_RSR_WWDG1RSTF         (1UL << 28)
+#define RCC_RSR_LPWRRSTF          (1UL << 30)
+
 /* --- FLASH -------------------------------------------------------------- */
 #define FLASH_ACR_LATENCY_Msk     0x0FUL
 #define FLASH_ACR_LATENCY_2WS     2UL
@@ -343,3 +356,50 @@ uint32_t board_millis(void);
 
 /** Raw 32-bit timer value from a free-running TIM (used by nothing but debug). */
 uint32_t board_cycles(void);
+
+/**
+ * @brief Why did the MCU start? Reads RCC_RSR and returns a static string such
+ *        as "power-on", "NRST pin", "software" or "brown-out (power!)".
+ *        Must be called once before board_clock_init(); the flags are sticky
+ *        until the next reset.
+ */
+const char *board_reset_cause(void);
+
+/*
+ * Last fatal fault, recorded by the fault handler in startup.c before it
+ * resets the MCU. Survives the (soft) reset because the RAM contents are kept,
+ * so the next boot can print it instead of the board just blinking.
+ */
+typedef struct {
+    uint32_t magic;
+    uint32_t ipsr;          /* exception number (3 = HardFault, ...)      */
+    uint32_t cfsr;          /* configurable fault status                  */
+    uint32_t hfsr;          /* hard fault status                          */
+    uint32_t mmfar;         /* mem manage fault address                   */
+    uint32_t bfar;          /* bus fault address                          */
+    uint32_t pc;            /* stacked PC: which instruction faulted      */
+    uint32_t lr;            /* stacked LR: which function called it       */
+} fault_record_t;
+
+#define FAULT_RECORD_MAGIC 0x53455256UL    /* "SERV" */
+
+extern fault_record_t g_last_fault;        /* noinit, see link.ld */
+extern volatile uint32_t g_fault_count;    /* increments per fatal fault */
+
+/** Copy the exception frame into g_last_fault (called from the fault handler). */
+void board_record_fault(uint32_t *stack_frame);
+
+/** Reset the MCU via SCB->AIRCR (a soft reset keeps the fault record in RAM). */
+void board_system_reset(void);
+
+/** Non-zero if a fatal fault was recorded before this boot. */
+bool board_fault_pending(void);
+
+/**
+ * @brief Read RCC_RSR, store the human-readable cause in RAM and clear the
+ *        sticky flags. Called from the reset handler (after board_early_init).
+ */
+void board_save_reset_cause(void);
+
+/** The cause captured at boot ("power-on", "NRST pin", "software", ...). */
+const char *board_reset_cause_saved(void);
