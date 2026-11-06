@@ -1,37 +1,22 @@
-# Host-side tests for the pure-C parts of the firmware.
-#
-#   make            run the parser tests for both targets
-#   make test-stm32 NUCLEO-H753ZI parser tests only
-#   make test-esp32 ESP32-S3 parser tests only
-#
-# The parsers do not touch any hardware, so the exact source that is compiled
-# into the firmware is compiled and executed here on the development machine.
-CC ?= cc
-CFLAGS ?= -std=c11 -Wall -Wextra -Wshadow -Wundef -Wno-unused-parameter -O1
+CC      ?= gcc
+CFLAGS  ?= -std=c11 -O2 -Wall -Wextra -Wpedantic -I../firmware/src/common
+HDR      = ../firmware/src/common/gse_protocol.h
+CORE     = ../firmware/src/common/gse_tx_core.c
+COREHDR  = ../firmware/src/common/gse_tx_core.h ../firmware/src/common/gse_hal.h
 
-ESP32_SRC := ../firmware/main/position.c
-STM32_SRC := ../firmware/stm32h753/src/position.c
+all: test_protocol host_hal
 
-ESP32_BIN := test_position
-STM32_BIN := test_position_stm32
+test_protocol: test_protocol.c $(HDR)
+	$(CC) $(CFLAGS) -o $@ test_protocol.c
 
-all: run
+# the TX core is compiled here exactly as the ESP32/STM32 builds compile it
+host_hal: host_hal_stub.c $(CORE) $(COREHDR) $(HDR)
+	$(CC) $(CFLAGS) -I../firmware/src/common -o $@ host_hal_stub.c $(CORE)
 
-$(ESP32_BIN): $(ESP32_SRC) test_position.c ../firmware/main/position.h
-	$(CC) $(CFLAGS) -I../firmware/main $(ESP32_SRC) test_position.c -o $(ESP32_BIN)
-
-$(STM32_BIN): $(STM32_SRC) test_position_stm32.c ../firmware/stm32h753/src/position.h
-	$(CC) $(CFLAGS) -I../firmware/stm32h753/src $(STM32_SRC) test_position_stm32.c -o $(STM32_BIN)
-
-run: test-stm32 test-esp32
-
-test-stm32: $(STM32_BIN)
-	./$(STM32_BIN)
-
-test-esp32: $(ESP32_BIN)
-	./$(ESP32_BIN)
+run: test_protocol host_hal
+	./test_protocol
+	./host_hal
 
 clean:
-	rm -f $(ESP32_BIN) $(STM32_BIN)
-
-.PHONY: all run test-stm32 test-esp32 clean
+	rm -f test_protocol host_hal
+.PHONY: all run clean

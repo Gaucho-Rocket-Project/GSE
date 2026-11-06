@@ -1,0 +1,1543 @@
+
+
+########## PDF PAGE 239 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+230   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 13:  Recovery System & Airframe Integration 
+Gather the following: 
+QTY Part Number Description 
+48 ft REC-TNSC-3KLB Tubular Nylon Shock Cord, 3000lbf Breaking Strength 
+1 CNPY-CHT-86IN 7.2ft Hexagonal Tent Tarp, Main Chute Canopy 
+84 ft CRD-KVLR-250LB Kevlar Cord, 250lb breaking strength 
+2 REC-PRT-16 Parachute Protector, Nomex, 16 X 16” 
+1 REC-CHT-DRG-36 Drogue Parachute, 36” Diameter 
+4 8947T26 Quick Link, 1400lb Rating, 316SS 
+8 90272A194  #8-32 Screws, ½” Long, Phillips Pan Head 
+2 97654A620 Flange Head Screw, ¼-20, 1 ¼” Long 
+2 92141A029 Flat Washer for ¼” Screw Size 
+2 RLBTN-A-1515-250C Rail Button, 1515, Printed, Part A 
+2 RLBTN-B-1515-250C Rail Button, 1515, Printed, Part B 
+ 
+  
+
+
+########## PDF PAGE 240 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+231   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 13:  Recovery System & Airframe Integration 
+Note: Skip steps 1-3 if using a COTS parachute. 
+ 
+1. Cut 3 sections of CRD-KVLR-250LB Kevlar cord, each approximately 28 feet in length. Ensure all pieces 
+are consistent in length to within +/-3 inches. These will form the shroud lines for the main parachute. 
+ 
+2. Tie the ends of each piece of Kevlar cord to the loops sewn onto the corners of the hexagonal tarp, with 
+minimal excess length after the knot. Ensure the ends of each section of cord are tied to adjacent loops, 
+rather than spanning across the canopy to the  loop on the opposite side. Any type of knot may be used; a 
+non-slip loop knot is recommended. 
+ 
+3. Gather the Kevlar cords from the middle of each section. Allow the canopy to bunch into a triangle, so that 
+the sewn loops onto which the shroud lines are tied all align with each other. This will ensure the around 
+lines are equal in length. Once the sewn loops are aligned, tie a loop at the midsection of the bundled 
+shroud lines using an overhand knot. This will be used to connect the shroud lines to the shock cord via a 
+quick link. 
+ 
+4. Cut the remaining 48ft of shock cord into two equal lengths of 24 ft each. 
+ 
+5. Designate one section of shock cord as the main recovery harness, and one section as the drogue 
+recovery harness. 
+ 
+6. On the main recovery harness, tie a loop approximately 6 to 8 feet from one end, using an overhand knot 
+on a doubled section of cord. Alternate methods such as a Rigger’s Loop Knot or Alpine Butterfly may also 
+be used if desired. This loop will be used to connect the main parachute. 
+ 
+7. Connect the end of the main recovery harness closest to the loop to the short section of shock cord on the 
+nose cone assembly by tying a non -slip loop knot, with the loop passing through the existing non -slip 
+loop knot on the nose cone. 
+  
+
+
+########## PDF PAGE 241 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+232   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 13:  Recovery System & Airframe Integration 
+8. Pass the other end of the main recovery harness through the 20545T38-AF-UPR airframe tube, and tie a 
+second non-slip loop knot on the end of the harness. Connect this non -slip loop knot to the U-bolt on the 
+forward end of the Avionics Bay Coupler assembly with QTY 1 8947T26 quick link. Close the quick link and 
+tighten hand tight. A wrench may be used, but is not required. 
+ 
+9. Tie a non-slip loop knot on each end of the drogue recovery harness. 
+ 
+10. Connect one end of the drogue recovery harness to the U -bolt on the recovery bulkhead on the tank 
+assembly with QTY 1 8947T26 quick link. Close the quick link and tighten hand tight. A wrench may be used, 
+but is not required. 
+ 
+11. Connect the other end of the drogue recovery harness to U -bolt on the lower end of the Avionics Bay 
+Coupler assembly with QTY 1 8947T26 quick link. Do not close the quick link at this time.  
+ 
+12. Tie the center of the shroud lines on the REC -CHT-DRG-36 drogue parachute into a 2 -3-inch diameter 
+loop using an overhand knot. Then, place this loop onto the 8947T26 quick link on the drogue recovery 
+harness, where it connects to the Avionics Bay Coupler. 
+ 
+13. Place the reinforced slit of QTY 1 REC -PRT-16 parachute protector onto the 8947T26 quick link on the 
+drogue recovery harness, where it connects to the Avionics Bay Coupler. Close the quick link and tighten 
+hand tight. A wrench may be used, but is not required. 
+ 
+14. Using QTY 1 8947T26 quick link, connect the loop at the base of the main parachute shroud lines to the loop 
+on the main recovery harness, 6-8 feet from the nose cone end. Do not close the quick link at this time. 
+ 
+15. Place the the reinforced slit of QTY 1 REC -PRT-16 parachute protector onto the 8947T26 quick link at the 
+base of the main parachute shroud lines, where it connects to the main recovery harness. Close the quick 
+link and tighten hand tight. A wrench may be used, but is not required. 
+  
+
+
+########## PDF PAGE 242 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+233   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 13:  Recovery System & Airframe Integration 
+16. Install the Nose Cone Assembly into the forward end of the 20545T38-AF-UPR airframe tube, and secure 
+with QTY 8 90272A194 screws, threaded into the nuts in the nose cone shoulder. 
+ 
+17. Mount the lower airframe tube onto the forward tank interface ring using QTY 6 91306A279 screws and 
+QTY 6 92141A029 washers in the locations shown. Tighten to snug using a 5/32” hex key. 
+18. Note: excessive torque may damage the printed nut retaining ring. 
+ 
+19. Place QTY 2 RLBTN -A-1515-250C, QTY 2 RLBTN -B-1515-250C, and QTY 2 92141A029 washers onto QTY 2 
+97654A620 screws (one of each per screw) as shown to form a rail button assembly.  
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 243 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+234   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 13:  Recovery System & Airframe Integration 
+12. Install one rail button assembly into the unoccupied hole/nut on the forward tank interface ring where 
+shown, 90 degrees from the fuel line. Tighten to very slightly snug, so that the rail button can rotate with 
+minor resistance. It does not need to spin freely. 
+ 
+13. Install the second rail button assembly into the hole/nut on the lower tank interface ring where shown, 
+90 degrees from the fuel line (aligned with the upper rail button). Tighten to very slightly snug, so that the 
+rail button can rotate with minor resistance. It does not need to spin freely. 
+ 
+  
+ 
+
+
+
+########## PDF PAGE 244 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+235   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+Section VI – Ground Support Equipment 
+ 
+6.1  GSE Overview .............................................................................................................................................. 236 
+6.2  GSE Bill of Materials ................................................................................................................................ 237 
+6.3  GSE Assembly Procedures .................................................................................................................... 241 
+ 
+ 
+
+
+########## PDF PAGE 245 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+236   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+6.1  GSE Overview 
+Ground Support Equipment, or GSE, is a critical part 
+of any rocket system. The launch vehicle may be the 
+most interesting part, but it simply does not function 
+without GSE. 
+For solid rockets, GSE can be as simple as a switch 
+that fires an igniter. For UC-valve hybrids, where the 
+igniter also acts as the main oxidizer valve, it must 
+also be capable of loading oxidizer into the motor. 
+For Mojave Sphinx and all standard liquid r ockets, it 
+must also be able to open the main propellant valves 
+to start the flow of fuel and oxidizer, separate from 
+the ignition command. Furthermore, since any 
+operation in which N2O is present outside the supply 
+bottle is hazardous to personnel, all su ch activities 
+must be performed at a safe distance. This requires 
+a remotely -controlled fluid handling system which 
+is both safe and economical, so as to not dwarf the 
+cost of the rocket itself. 
+The purpose of the GSE is to: 
+1. Control flow of N2O from a supply bottle  
+2. Provide ignition power 
+3. Issue a valve-open command 
+4. Dump N2O rapidly to safe the vehicle 
+For rockets with pneumatic Half Cat valves, the 
+valve-open command may be a trigger for a 
+pyrotechnic device, such as a line cutter that severs 
+and vents a pneumatic pressure supply tube. In any 
+standard liquid rocket, the oxidizer dump may be the 
+same command as the normal valve -open, only 
+without triggering the igniter, and may involve 
+dumping both propellants. Only in the unlikely event 
+of complete power loss during fill should the static 
+vent be relied upon to fully empty the oxidizer tank, 
+as this can take upwards of an hour depending on 
+tank and vent sizes. The remote control system 
+described in this guide is configured so that a loss of 
+communication with the GSE will automatically 
+open the vehicle propellant valves, returning the 
+system to a safe state. 
+The GSE can be divided into two major subsystems: 
+The fill system and the control system. The fill 
+system is a simple plumbing assembly consisting of 
+a supply bottle connection, a fill valve, and a QD 
+connection. The control system is taken straight 
+from a  much more well -developed and 
+commercially available field – hobby R/C aircraft. 
+R/C plane transmitters and receivers make for 
+affordable and reliable wireless control systems 
+that do not require a Ham license or any 
+programming, beyond configuring the exi sting 
+firmware through a user interface. Furthermore, 
+modern 2.4gHz radio protocols are robust to 
+interference due to the use of an Automatic 
+Frequency Hopping Digital System (AFHDS). The 
+control system consists of a transmitter, receiver, 
+battery, voltage  regulator, and electrical relay. 
+Below is a basic electrical schematic of the GSE: 
+ 
+Figure 6.1:  GSE electrical schematic 
+
+
+
+########## PDF PAGE 246 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+237   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+6.2  GSE Bill of Materials 
+ 
+Line Item Unit Price QTY Cost Context 
+1 FlySky FS-I6X Transmitter w/ iA10B Receiver $59.99 1 $59.99 Controller 
+2 Toggle Switch Guards (Pack of 6) $8.49 1 $8.49 Switch covers 
+3 12V 160 CCA AGM Battery $49.99 1 $49.99 Electrical connections 
+4 20GA Silicone Coated Wire, Red & Black, 10ft Each $0.00 1 $0.00 Leftover from avbay 
+5 Relay Module, PWM Controlled, 10A 30V $11.99 1 $11.99 Ignition switch 
+6 12V to 5V Voltage Regulator $12.99 1 $12.99 Battery to receiver 
+7 GSW-17-SPST Toggle Switch with Screw Terminals $5.99 1 $5.99 GSE Power Switch 
+8 
+Straight-Blade Receptacle with 
+Screw Terminals, 5-15 NEMA, Side 
+Terminal 
+$3.36 1 $3.36 Electrical outlets 
+9 Nylon Wall Plate for NEMA Outlets $0.73 1 $0.73 outler cover; can also print version with labels 
+10 3-pin Servo Extension Cables, 1m (Pack of 10) $0.00 1 $0.00 Leftovers from Valves 
+11 21 Inch Steel Toolbox, Voyager, HFT $29.99 1 $29.99 GSE Enclosure 
+12 1/4-20 x 2" Eye Bolt $2.87 2 $5.74 Battery Restraints 
+13 25kg Servo w/ 25T Servo Horn $17.89 1 $17.89 Valve Actuator 
+14 Compact High Pressure Ball Valve, 1/4NPT $17.26 1 $17.26 Ox FIll Valve 
+15 20lb Nitrous Tank $197.00 1 $197.00 INCLUDES APPROX SHIPPING COST 
+16 Brass Nipple, Wrench Tighten, CGA 326, 1/4 NPT Male $8.49 1 $8.49 Nitrous tank adapter 
+17 
+Brass Female CGA 326 Nut for High-
+Pressure Nipple Hose Fitting for 
+Compressed Gas 
+$5.90 1 $5.90 Nitrous tank adapter 
+18 
+High-Pressure Braided Chemical 
+Hose with Fittings Brass 7/16"-20 
+Thread Size Flare UNF Female, 5/16" 
+OD – 14” 
+$16.14 1 $16.14 Tank to Valve Hose 
+19 37 Degree Flared Adapter for 1/4" Tube OD x 1/4 NPT Male $3.71 2 $7.42 Tank outlet and valve inlet 
+20 High-Pressure Brass Straight Connector, 1/4 NPT Female $1.78 1 $1.78 Tank adapter to flare fitting 
+  
+
+
+########## PDF PAGE 247 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+238   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+ 
+ 
+Line Item Unit Price QTY Cost Context 
+21 High-Pressure Brass Through-Wall Straight Connector, 1/4 NPT Female $9.63 1 $9.63 Fill Bulkhead Fitting 
+22 3/4-16 Hex Nut, 18-8 Black Oxide $1.79 1 $1.79 Bulkhead Fitting spacer nut 
+23 High-Pressure Brass Right-Angle Tee Adapter, 1/4 NPT Female x Male $5.71 1 $5.71 Nitrous Gauge tee 
+24 High-Pressure Brass Straight Connector, 1/4NPT Male $2.67 1 $2.67 Gauge Tee to valve 
+25 High-Pressure Push to Connect, 1/4 Tube OD, 1/4NPT Male $3.84 1 $3.84 Valve to fill line 
+26 High-Pressure Push to Connect, 1/4 Tube OD, 1/8NPT Male $3.95 2 $7.90 Fill line bulkhead 
+27 High-Pressure Brass Through-Wall Straight Connector, 1/8 NPT Female $6.97 1 $6.97 Fill line bulkhead fitting 
+28 
+Pressure Gauge with Steel Case, 1/4 
+NPT Male Center Back Connection, 2" 
+Dial, 0-2000 PSI 
+$15.85 1 $15.85 Supply pressure 
+29 8-32 X 1/2"L Screw, Zinc Plated Steel (Pack of 100) $0.00 1 $0.00 Leftovers from Valves (handle connector screw) 
+30 8-32 Hex Nut, Low Strength (Pack of 100) $0.00 1 $0.00 Leftovers from Valves (handle connector screw) 
+31 M4 Washer, 8mm OD, 18-8SS (Pack of 100) $0.00 1 $0.00 Leftovers from Valves (servo mounting) 
+32 M4 Split Lock Washer, 18-8SS (Pack of 100) $0.00 1 $0.00 Leftovers from Valves (servo mounting) 
+33 250lb Kevlar Cord, 100ft $13.95 1 $13.95 QD Clip Tether / Shroud lines for tent tarp chute) 
+34 Nylon Tubing, 1/4" OD, 800PSI, 10ft $0.00 1 $0.00 Leftover from Fluid System Components 
+35 PLA+ 3D Printer Filament, White, 2kg (Or Equivalent) $0.00 1 $0.00 Leftover from Valves (valve actuator housing) 
+36 Servo Valve Mount $0.00 1 $0.00 Printed 
+37 Servo Valve Handle Connector $0.00 1 $0.00 Printed 
+Subtotal  $529.45 
+  
+
+
+########## PDF PAGE 248 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+239   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+ 
+ 
+Line Part Number Vendor Description Source 
+1 DTUS_FSI6X_10CH 
+FLYSKY FS-i6X 10CH 2.4GHz RC Transmitter 
+Controller/W iA10B Receiver Upgrade Cable 
+for RC Helicopter Plane Quadcopter Glider 
+https://www.amazon.com/ 
+2 AZ18080602-03 
+Antrader Plastic 12mm Mount Dia. Toggle 
+Switch Cover Dustproof Safety Waterproof 
+Safety Flip Cover Cap Red 6-Pack 
+https://www.amazon.com/ 
+3 62586 THUNDERBOLT MAGNUM 12V 160 CCA AGM Battery https://www.harborfreight.com/12v-160-cca- agm-battery-62586.html 
+4 20GA-RBP 
+20 Gauge Wire 20 feet Silicone Wire Soft and 
+Flexible Tinned Copper Wire High Temperature 
+Resistance 10 ft Black and 10 ft Red Stranded 
+Wire for 3D Printer, Test Leads,RC Applications 
+https://www.amazon.com/ 
+5 LCATMC1569 
+LICHIFIT High Voltage 1CH PWM RC Aircraft 
+Remote Control Signal Relay Switch K1 
+Navigation Light Controller 
+https://www.amazon.com/ 
+6 090600AFA 
+DROK 12v to 5v Volt Converter, DC 8-35V to 5V 
+3A 15W Voltage Regulator Board Power Supply 
+Module, 9V 12V 24V Waterproof Car Volt Step 
+Down Buck Converter 
+https://www.amazon.com/ 
+7 GSW-17 
+Gardner Bender GSW-17 Electrical Toggle 
+Switch, SPST, ON-OFF, 6 A/120V AC, Screw 
+Terminal 
+https://www.amazon.com/ 
+8 7159K3 
+Straight-Blade Receptacle 
+with Screw Terminals, 5-15 NEMA, Side 
+Terminal 
+https://www.mcmaster.com/7159K3/ 
+9 7526K23 Nylon Wall Plate for NEMA Outlet, for 1 Device https://www.mcmaster.com/7526K53/ 
+10 YXQ YXQ 1M Servo Extension Cable 3 Pin Male to Female Lead Wire for RC Airplane (10Pcs) https://www.amazon.com/ 
+11 91111 VOYAGER 21 in. Steel Toolbox https://www.harborfreight.com/steel-toolbox- 91111.html 
+12 9489T519 
+Routing Eyebolt with Nut - Not for Lifting 
+316 Stainless Steel with Bent-Closed Eye, 1/4"-
+20 Thread, 2" Shank 
+https://www.mcmaster.com/9489T519/ 
+13 DS3225 20KG Steering Servo, RC Servo with Full Metal Gear and 25T Servo Horn (180°) https://www.amazon.com/ 
+14 4112T22 Compact High-Pressure Brass Ball Valve with Lever Handle, 1/4 NPT Female https://www.mcmaster.com/4112T22/ 
+15 20LBALVLV-326 NEW 20 LB ALUMINUM N2O CYLINDER WITH HANDLE https://gascylindersource.com/shop/nitrous- oxide-cylinders/20-lb-aluminum-n2o-cylinder- with-handle/ 
+16 79215A673 
+Hose Fitting for Compressed Gas 
+Brass Nipple, Wrench Tighten, CGA 326, 1/4 NPT 
+Male 
+https://www.mcmaster.com/79215A673/ 
+17 79215A672 Brass Female CGA 326 Nut for High-Pressure Nipple Hose Fitting for Compressed Gas https://www.mcmaster.com/79215A672/ 
+18 4468K811 
+High-Pressure Braided Chemical Hose with 
+Fittings 
+Brass 7/16"-20 Thread Size Flare UNF Female, 
+5/16" OD (14 in) 
+https://www.mcmaster.com/4468K811-
+4468K041/ 
+19 50675K162 37 Degree Flared Fitting for Copper Tubing Adapter for 1/4" Tube OD x 1/4 NPT Male https://www.mcmaster.com/50675K162/ 
+20 50785K92 High-Pressure Brass Pipe Fitting Straight Connector, 1/4 NPT Female https://www.mcmaster.com/50785K92/ 
+  
+
+
+########## PDF PAGE 249 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+240   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+ 
+ 
+Line Part Number Vendor Description Source 
+21 50785K273 
+High-Pressure Brass Pipe Fitting 
+Through-Wall Straight Connector, 1/4 NPT 
+Female 
+https://www.mcmaster.com/50785K273/ 
+22 97149A370 18-8 Stainless Steel Hex Nut Black-Oxide, 3/4"-16 Thread Size https://www.mcmaster.com/97149A370/ 
+23 50785K222 
+High-Pressure Brass Pipe Fitting 
+Right-Angle Tee Adapter, 1/4 NPT Female x 
+Male 
+https://www.mcmaster.com/50785K222/ 
+24 5485K22 High-Pressure Brass Pipe Fitting Straight Connector, 1/4 NPT Male https://www.mcmaster.com/5485K22/ 
+25 9396T32 
+High-Pressure Push-to-Connect Tube Fitting 
+for Air and Water, Adapter, 1/4" Tube OD x 1/4 
+NPTF Male 
+https://www.mcmaster.com/9396T32/ 
+26 9396T31 
+High-Pressure Push-to-Connect Tube Fitting 
+for Air and Water, Adapter, 1/4" Tube OD x 1/8 
+NPTF Male 
+https://www.mcmaster.com/9396T31/ 
+27 50785K272 
+High-Pressure Brass Pipe Fitting 
+Through-Wall Straight Connector, 1/8 NPT 
+Female 
+https://www.mcmaster.com/50785K272/ 
+28 3846K8 
+Single Scale Pressure Gauge with Steel Case 
+1/4 NPT Male Center Back Connection, 2" Dial (0 
+to 2,000 psi) 
+https://www.mcmaster.com/3846K8-3846K93/ 
+29 90272A194 Zinc-Plated Steel Pan Head Phillips Screw 8-32 Thread, 1/2" Long https://www.mcmaster.com/90272A194/ 
+30 90480A009 Low-Strength Steel Hex Nut Zinc-Plated, 8-32 Thread Size https://www.mcmaster.com/90480A009/ 
+31 98689A113 General Purpose 18-8 Stainless Steel Washer for M4 Screw Size, 4.300 mm ID, 8 mm OD https://www.mcmaster.com/98689A113/ 
+32 92148A160 
+18-8 Stainless Steel Split Lock Washer 
+for M4 Screw Size, Standard, 4.4 mm ID, 7.6 mm 
+OD 
+https://www.mcmaster.com/92148A160/ 
+33 EK5580 
+emma kites 100% Kevlar Braided String Utility 
+Cord Abrasion Flame Resistant, Tactical 
+Survival Fishing Assist Cord Model Rocket 
+Paracord Trip Line Camping Cordage 
+https://www.amazon.com/ 
+34 9685T3 
+High-Pressure Hard Plastic Tubing for 
+Air&Water 
+Nylon, Semi-Clear White, 0.15" ID, 1/4" OD 
+(10 ft) 
+https://www.mcmaster.com/9685T3/ 
+35 N/A 
+OVERTURE PLA Plus (PLA+) Filament 1.75mm 
+PLA Professional Toughness Enhanced PLA 
+Roll, Cardboard Spool, Premium PLA 
+2kg(4.4lbs), Dimensional Accuracy Probability 
++/- 0.02mm (White 2-Pack) 
+https://www.amazon.com/ 
+36 SABV-MOUNT-V2 - Made from printer filament 
+37 SABV-HCON-V2 - Made from printer filament 
+ 
+
+
+########## PDF PAGE 250 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+241   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+6.3  GSE Assembly Procedures 
+The GSE presented in this section is constructed within a metal toolbox, which provides a durable housing 
+that protects the system from exposure to the rocket’s exhaust and can conveniently also store the tools 
+needed to recycle the rocket between launches . The integrated packaging of the entire system including fill, 
+control electronics, power, and optional CO2 purge (used for static testing only) requires minimal on -site 
+setup time and is well suited for long term use. If project budget is a limiting factor and only a small number 
+of launches are planned, the GSE can be simplified at the expense of reduced ease of use  by eliminating the 
+toolbox and accompanying fittings and fasteners. 
+ 
+  
+
+
+########## PDF PAGE 251 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+242   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 1:  Assemble Servo-Actuated Ball Valves (GSE) 
+Gather the following (per valve): 
+QTY Part Number Description 
+1 SABV-MOUNT-V2 Servo Valve Mount V2.STL 
+1 SABV-HCON-V2 Servo Valve Handle Connector V2.STL 
+- N/A 3D Printer Filament (PLA+, PETG, or ABS recommended) 
+1 4112T22 Compact High Pressure Brass Ball Valve 
+1 DS3225  25kg Servo with 25T Servo Horn 
+1 93475A210 M3 Flat Washer 7mm OD 
+1 92855A310 M3x0.5 10mm Long 18-8 Low-Profile Socket Head Screw 
+1 90272A194 #8-32 Pan Head Screw, 1/2" Length 
+1 90480A009 #8-32 Hex Nut, Zinc Plated, Low Strength Steel 
+1 - Nylon Zip Tie, 0.188-inch width 
+4 92180A044 Medium-Strength Class 8.8 Steel Hex Head Screw M4 x 0.70 mm Thread, 16 mm Long 
+4 90591A141 M4x0.7 Metric Hex Nuts 
+4 98689A113 M4 Flat Washers 
+4 92148A160 M4 Split Lock Washers 
+ 
+The SABV-04FF servo-actuated ball valve assemblies used in the GSE are identical to those used as the fuel 
+and oxidizer valves on the vehicle Refer to Section 5 Op 1 for detailed instructions. 
+If constructing Fill Only GSE, only QTY 1 SABV -04FF is required. If a CO2 purge valve for static testing is 
+desired, build QTY 2 SABV-04FF. 
+  
+
+
+########## PDF PAGE 252 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+243   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 2:  Assemble Fill System 
+Gather the following: 
+QTY Part Number Description 
+1 SABV-04FF Servo-Actuated Ball Valve Assembly 
+1 79215A673 CGA 326 to 1/4NPT Adapter, Brass 
+1 79215A672 CGA 326 Female Nut, Brass 
+1 50785K92 High-Pressure Brass Straight Connector, 1/4 NPT Female 
+2 50675K162 37 Degree Flared Adapter for 1/4" Tube OD x 1/4 NPT Male 
+1 4468K811 High-Pressure Braided Chemical Hose with Fittings Brass 7/16"-20 Thread Size Flare UNF Female, 5/16" OD 
+1 50785K273 High-Pressure Brass Through-Wall Straight Connector, 1/4 NPT Female 
+1 97149A370 3/4-16 Hex Nut, 18-8 Black Oxide 
+1 50785K222 High-Pressure Brass Right-Angle Tee Adapter, 1/4 NPT Female x Male 
+1 3846K93 Pressure Gauge with Steel Case, 1/4 NPT Male Center Back Connection, 2" Dial, 0-2000 PSI 
+1 5485K22 High-Pressure Brass Straight Connector, 1/4NPT Male 
+1 9396T32 High-Pressure Push to Connect, 1/4 Tube OD, 1/4NPT Male 
+2 9396T31 High-Pressure Push to Connect, 1/4 Tube OD, 1/8NPT Male 
+1 50785K272 High-Pressure Brass Through-Wall Straight Connector, 1/8 NPT Female 
+ 
+  
+
+
+########## PDF PAGE 253 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+244   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 2:  Assemble Fill System 
+1. Slide QTY 1 79215A672 CGA 326 nut over QTY 1 79215A673 CGA 326 adapter nipple, so that the threads cover 
+the rounded nub. 
+ 
+2. Apply 2 -2 wraps of PTFE tape to QTY 179215A673 adapter nipple and QTY 1 50675K162 37 degree flared 
+adapter fitting. Connect the flared adapter fitting to the CGA adapter nipple using QTY 1 50785K92 female 
+straight connector as shown. Tighten all fittings to snug, 1-3 turns past hand tight. 
+ 
+ 
+ 
+
+
+
+########## PDF PAGE 254 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+245   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 2:  Assemble Fill System 
+3. Apply 2 -3 wraps of PTFE tape to the male threads on QTY 1 50675K162 37 degree flared adapter, QTY 1 
+50785K222 tee, QTY 1 50785K273 male straight connector, and QTY 1 9396T32 push -to-connect fitting. 
+Assemble with QTY 1 50785K273 through -wall fitting and QTY 1 SABV -04FF as shown. Tighten all fittings 
+to snug, 1-3 turns past hand tight. Ensure the 50785K222 tee is clocked as shown.  
+ 
+4. Thread the 97149A370 hex nut onto the 50785K273 through -wall fitting until there is approximately one 
+thread between the nut and fixed hex portion of the fitting, then loose -install the included brass jam nut 
+and toothed washer. 
+ 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 255 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+246   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 2:  Assemble Fill System 
+5. Install QTY 1 3846K93 gauge into the side port on the 50785K222 tee, with 2 -3 wraps of PTFE tape applied 
+to the threads. Tighten until snug, clocked so that the gauge scale is horizontal for readability. 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 256 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+247   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 2:  Assemble Fill System 
+6. Apply 2-3 wraps of PTFE tape to QTY 1 9396T31 push -to-connect fittings and install into each end of QTY 1 
+50785K272 through-wall fitting as shown to form the fill line bulkhead assembly. Tighten all fittings to 
+snug, 1-3 turns past hand tight. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 257 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+248   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 3:  Assemble Purge System (Optional) 
+Gather the following: 
+QTY Part Number Description 
+1 SABV-04FF Servo-Actuated Ball Valve Assembly 
+1 50785K92 High-Pressure Brass Straight Connector, 1/4 NPT Female 
+1 50785K273 High-Pressure Brass Through-Wall Straight Connector, 1/4 NPT Female 
+1 97149A370 3/4-16 Hex Nut, 18-8 Black Oxide 
+1 5485K22 High-Pressure Brass Straight Connector, 1/4NPT Male 
+2 9396T32 High-Pressure Push to Connect, 1/4 Tube OD, 1/4NPT Male 
+2 7768K26 Brass Threaded Check Valve, 1/4 NPT Male x NPT Female 
+  
+
+
+########## PDF PAGE 258 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+249   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 3:  Assemble Purge System (Optional) 
+1. Apply 2 -3 wraps of PTFE tape to the male threads of QTY 2 9396T32 push -to-connect fittings, QTY 1 
+5485K22 male straight connector, and QTY 1 7768K26 check valve. Assemble with QTY 1 50785K273 
+through-wall connector and QTY 1 SABV -04FF valve as shown. Tighten all fittings to snug, 1 -3 turns past 
+hand tight. 
+ 
+2. Thread the 97149A370 hex nut onto the 50785K273 through-wall fitting until there is approximately one 
+thread between the nut and fixed hex portion of the fitting, then loose -install the included brass jam nut 
+and toothed washer. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 259 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+250   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 3:  Assemble Purge System (Optional) 
+3. If already installed, remove QTY 1 9396T32 push -to-connect fitting from the fill assembly. Install QTY 1 
+7768K26 check valve into the SABV -04FF outlet, then reinstall QTY 1 9396T32 into the check valve outlet 
+as shown. Apply 2-3 fresh wraps of PTFE tape to each fitting prior to installation. 
+Note: This check valve is only required if a purge valve is also present; it prevents cross -contamination 
+between the CO2 and N2O supply tanks in the event that both valves are accidentally commanded open at 
+the same time with the tanks at slightly different pressures. If a purge valve is not included, no check 
+valves are needed on the fill system. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 260 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+251   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 4:  Prepare Toolbox Enclosure 
+Gather the following: 
+QTY Part Number Description 
+1 91111 21-Inch Steel Toolbox, Voyager, HFT 
+ 
+Refer to the images below for the context of each hole created on this operation.  
+ 
+  
+
+
+
+########## PDF PAGE 261 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+252   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 4:  Prepare Toolbox Enclosure 
+1. Using a hole saw, cut a 2 1/8 -inch-diameter hole where shown on the front face of the 91111 21 -Inch 
+Voyager HFT toolbox. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 262 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+253   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 4:  Prepare Toolbox Enclosure 
+2. Drill the holes as shown in the side of the toolbox that is on the right when facing the front (where the 
+latches are located). Note: if no purge valve is to be included, only the left-most of the two  3/4-inch holes 
+is needed.   
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 263 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+254   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 4:  Prepare Toolbox Enclosure 
+3. Drill the holes as shown in the side of the toolbox that is on the left when facing the front (where the 
+latches are located). Use a hole saw for the 1.5 -inch holes, and cut an approximately 1/4 -inch side slot 
+between them using a hacksaw. 
+Note: The imperfect alignment of the 1.5-inch holes with the NEMA electrical outlets is intentional to avoid 
+overlap between the holes, which can cause the hole saw blade to bind. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 264 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+255   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 4:  Prepare Toolbox Enclosure 
+4. Drill the holes as shown in the back side of the toolbox. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 265 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+256   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+Gather the following: 
+QTY Part Number Description 
+1 - Fill Valve Assembly 
+1 - Fill Line Bulkhead Assembly 
+As Needed 9685T3 Nylon Tubing, 1/4" OD, 800PSI, 10ft 
+ 
+  
+
+
+########## PDF PAGE 266 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+257   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+1. Remove the brass nut and toothed washer from the 50785K273 through -wall fitting on the fill valve 
+assembly. Pass the fitting through the 0.75” hole in toolbox where shown, then re -install the toothed 
+washer and brass nut. The 97149A370 hex nut should contact the inside of the toolbox. Ensure the gauge 
+is aligned with the hole in the front face of the toolbox, then tighten the brass nut against the 97149A370 
+hex nut to clamp the assembly in place. 
+Note: The configuration shown includes the check valve on the fill valve assembly, which is only required 
+if a purge valve for static testing is also included in the system. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 267 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+258   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+2. Remove the brass nut and toothed washer from the 50785K273 through-wall fitting on the fill line 
+bulkhead assembly and install into 0.67” the hole on the left side of the toolbox as shown. Re -install the 
+nut and washer onto the threaded portion that projects into the toolbox, and tighten to clamp the 
+assembly in place. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 268 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+259   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+3. Cut a section of 9685T3 tubing approximately 13.5 inches in length. Insert one end into the 9696T32 push -
+to-connect fitting on the fill valve assembly, and the other end into the fill line bulkhead assembly as 
+shown. Some slack in the line will aid in installation; it will not be perfectly straight as depicted in the CAD 
+model. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 269 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+260   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+4. The following steps are required ONLY if a purge valve is to be included in the system. If only a fill valve is 
+installed, proceed to the next operation. 
+ 
+5. Install the purge valve into the second 0.75” hole in the right face of the toolbox as shown. The 97149A370 
+hex nut should contact the inner face of the toolbox, with the brass nut and toothed washer on the outside, 
+as on the fill valve assembly. Ensure the valve is oriented vertically with the servo on top, then tighten the 
+two nuts against one another to clamp the assembly in place. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 270 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+261   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 5:  Fluid System Integration 
+6. Cut the 9685T3 fill tube approximately 4.5 inches from the fill valve assembly, and insert QTY 1 9396T61 
+push-to-connect tee as shown. If needed, a short section of tube may be removed to reduce excess slack 
+length. 
+ 
+7. Cut a section of 9685T3 tubing approximately 8 inches long. Insert one end into the 9396T32 fitting on the 
+purge valve assembly, and the other end into the branch of the 9396T61 tee as shown. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 271 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+262   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+Gather the following: 
+QTY Part Number Description 
+1 FS-iA10B  FlySky 10ch 2.4gHz Receiver 
+1 DROK-12V-5V 12V to 5V adapter 
+1 PWM-RLY-10A PWM-Controlled Relay Module, 30A, 12VDC 
+2 BRKT-EGSE- 2X8C Bracket, Electronics Mounting, GSE, 2X #8 Clearance Holes  
+1 CVR-ANT-2X8C Cover, Receiver Antennas, GSE, 2X #8 Clearance Holes 
+12 9027A194 8-32 X 1/2"L Screw, Zinc Plated Steel 
+12 98689A113 M4 Washer, 8mm OD, 18-8SS 
+12 92148A160 M4 Split Lock Washer, 18-8SS 
+12 90480A009 8-32 Hex Nut, Low Strength Steel  
+2 9489T519 1/4-20 x 2" Eye Bolt 
+2 92141A029 18-8 Stainless Steel Washer for 1/4" Screw Size, 0.281" ID, 0.625" OD 
+2 91102A750 Zinc-Plated Steel Split Lock Washer for 1/4" Screw Size, 0.26" ID, 0.487" OD 
+2 95505A601 Medium-Strength Steel Hex Nut, Grade 5, 1/4"-20 Thread Size 
+1 GSW-17-SPST Toggle Switch, SPST 
+1 TGL-GRD-12MM Toggle Switch Guard, 12mm Hole 
+1 7159K91 5-15 NEMA Electrical Outlet 
+1 7526K53 Nylon Wall Plate 
+1 SRV-3PIN- 1MXT Servo Extension Cable, 3-Pin, 1m 
+2 ZIP-TIE-188W Nylon Zip Tie, .188” width 
+As needed 20GA-RBP 20 Gauge Stranded Wire, Red/Black Pair, Silicone Coated 
+ 
+ 
+  
+
+
+########## PDF PAGE 272 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+263   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+1. Mount the FS -iA10B receiver and PWM -RLY-30A relay module onto the inside of the back face of the 
+toolbox as shown, using QTY 2 BRKT -EGSE-2X8C electronics mounting brackets. Secure the mounting 
+brackets and DROK -12V-5V voltage regulator using QTY 6 9027A194 8 -32 screws with 98689A113 flat 
+washers, 92148A160 lock washers, and 90480A009 hex nuts. 
+Note: M4 flat and lock washers are used with the #8 screws to reduce unique parts and cost; these 
+components are common with the Servo Actuated Ball Valve assemblies. Additional flat washers may be 
+placed under the heads of the screws if desired, but are n ot required. The PWM -RLY-30A module may 
+differ slightly in appearance from the CAD model. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 273 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+264   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+2. Pass the FS-iA10B antennas through the indicated hole and lay them into the slots in the CVR -ANT-2X8C 
+antenna cover. Secure the antenna cover to the outer back face of the toolbox using QTY 2 9027A194 8-32 
+screws with 98689A113 flat washers, 92148A160 lock washers, and 90480A009 hex nuts.  
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 274 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+265   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+3. Install QTY 2 9489T519 eye bolts into the 1/4" clearance holes in the back face of the toolbox as shown, 
+protecting inward with the eyes oriented vertically. Secure using the included hex nuts and QTY 2 
+92141A029 flat washers, QTY 2 91102A750 lock washers, and QTY 2 95505A601 nuts. These eye bolts will be 
+used to secure the 12V battery on a later step. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 275 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+266   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+4. Install QTY 1 GSW -17-SPST toggle switch with QTY 1 TGL -GRD-12MM into the ½” hole on the right side of 
+the toolbox as shown. Orient the switch so that the toggle is angled downward in the off position, when it 
+is covered by the toggle guard. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 276 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+267   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+5. Using needle nose pliers, break off the small metal tab on the side of the 7159K91 outlet that connects the 
+two receptacles. This will electrically isolate the two plugs from one another. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 277 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+268   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+6. Install QTY 1 7159K91 electrical outlet onto the inner left face of the toolbox as shown, using QTY 4 
+9027A194 8-32 screws with 98689A113 flat washers, 92148A160 lock washers, and 90480A009 hex nuts.  
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 278 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+269   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+7. Install the 7526K53 wall plate over the outlet using the included mounting screw (not shown). Label the 
+outlets with “IGN” and “SRV” as shown to designate the igniter and servo outputs. 
+Alternatively, the CAD part model may be 3D printed with engraved text. A 6 -32 x 1/2” screw is required 
+for mounting the plate to the receptacle. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 279 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+270   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+8. Cut the female (larger) plug off of QTY 1 SRV-3PIN-1M servo extension cable and strip approximately 0.5” 
+of each wire. Connect the wires to the screw terminals on the electrical receptacle closest to the front of 
+the toolbox as shown (indicated by SRV). Th is will be the Vehicle Valves cable which connects to the 
+rocket. 
+White wire:  Connect to the screw terminal for the longer of the two slots 
+Red Wire:  Connect to the screw terminal for the shorter of the two slots 
+Black Wire:  Connect to the terminal for the ground pin (ensure the grounds of the two plugs are 
+isolated by breaking off the tab on the side of the receptacle, as previously described). 
+ 
+9. Connect the servo leads to the FS-iA10B receiver as shown in the schematic below: 
+Fill Valve to Ch5 
+Vehicle Valves servo extension to Ch6 
+Purge Valve to Ch8 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 280 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+271   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+10. Connect the 3-pin cable from the PWM-controlled relay module to Ch3 as shown in the schematic. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 281 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+272   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+11. Using the 20GA stranded wire, connect the power switch, voltage regulator, and relay module as shown 
+in the schematic. The 12V positive wire from the relay should be connected to the screw terminal for the 
+longer of the two slots and the battery ground should be connect ed to the screw terminal for the shorter 
+slot on the second electrical outlet. This will be used to supply power to the igniter. 
+ 
+12. Cut off the male (smaller) plug from QTY 1 SRV -3PIN-1M servo extension cable and strip approximately 
+0.5” of the red and black wires. The white wire will not be used. Splice the red wire to the positive 5V output 
+(yellow wire) from the DROK -12V-5V voltage regulator, and the black wire to the negative (black) 5V 
+output. Splices should be tightly twisted and insulated with electrical tape or heat shrink tubing. 
+Soldering the splices is recommended but not required; crimp-on ring terminals connected with a screw 
+may also be used if desired for greater modularity. Connect the 3 -pin plug from the voltage regulator to 
+Ch1/PPM on the FS-iA10B. This will provide power to the receiver and servos. 
+Note: DO NOT connect to the battery until all wiring is complete. 
+ 
+ 
+ 
+  
+
+
+
+########## PDF PAGE 282 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+273   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 6:  Electrical System Integration 
+13. Place the battery between the two eye bolts and secure with 2 -3 nylon zip ties, looped through the eyes 
+and across the front of the battery. 
+ 
+14. With the power switch in the off position, connect the wires to the battery terminals as shown in the 
+schematic. 
+ 
+15. Bundle wires together and onto fill line tubing for tidiness and strain relief as needed, using zip ties 
+and/or electrical tape. 
+ 
+  
+
+
+########## PDF PAGE 283 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+274   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 7:  Fabricate Cables and Fill Line 
+Gather the following: 
+QTY Part Number Description 
+2 16-3-10FTXT 10 ft. x 16/3 Gauge Indoor/Outdoor Extension Cord  
+1 SRV-3PIN-1MXT Servo Extension Cable, 3-Pin, 1m 
+1 ALG-CLP-INS Alligator Electrical Clip, Insulated 
+As Needed 9685T3 Nylon Tubing, 1/4" OD, 800PSI 
+1 QDC-750x125FLG- 270MB-O007 Quick Disconnect, ¾” x ⅛” Flange, .270 Male Barb, -007 O-Ring Gland 
+1 9452K15 -007 Buna-N O-ring 
+1 9396T31 Push to Connect Fitting, 1/4" Tube X 1/8NPT 
+As Needed N/A PTFE Tape 
+ 
+ 
+  
+
+
+########## PDF PAGE 284 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+275   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 7:  Fabricate Servo and Ignition Cables 
+1. Cut the female end off of QTY 2 16 -3-10FTXT extension cord, and strip approximately 1 inch of each wire. 
+ 
+2. Cut the male end off of QTY 1  SRV -3PIN-1MXT servo extension cable, and strip approximately 1 inch of 
+each wire. 
+ 
+3. Splice the servo extension wires onto the wires of one of the extension cords as follows:  
+• Red wire on servo extension to black wire on extension cord 
+• White wire on servo extension to white wire on extension cord 
+• Black wire on servo extension to green wire on extension cord. 
+Splices should be tightly twisted and insulated with electrical tape or heat shrink tubing. Soldering the 
+splices is recommended but not required. 
+ 
+4. Crimp QTY 2 insulated alligator clips onto the black and white wires of the second extension cord (one 
+clip per wire). This provides an easy method of connecting to the igniter e-match wires. The alligator clips 
+may optionally be omitted in favor of splicing the stripped ends onto the e -match during pre -launch 
+setup. The green wire is not used on the ignition cable and should be cut flush with the end of the outer 
+insulation jacket. 
+CAUTION: NEVER plug the ignition or servo cables into a live 120V wall outlet. Doing so creates EXTREME 
+DANGER of electrocution and/or fire. 
+Ensure that the servo wire is ONLY plugged into the SRV outlet on the GSE box. Plugging the servo lead 
+into the IGN outlet may damage the servos. 
+ 
+5. Cut a section of 9685T3 nylon tubing about 6 feet in length. This will serve as the fill line from the GSE to 
+the rocket. 
+ 
+6. Apply 2-3 wraps of PTFE tape to the male threads of QTY 1 9396T31 PTC fitting and install into the port of 
+QTY 1 QDC-750x125FLG-270MB-O007 male QD fitting. 
+ 
+7. Firmly push one end of the 9685T3 tube into the PTC fitting until it is fully seated.  
+ 
+8. Install QTY 1 9452K15 O -ring onto the male barb of the QD fitting. The seal may be lightly greased if 
+necessary to aid in installation. The QD O -ring generally will last for many uses, and must only be 
+replaced if visibly damaged.  
+
+
+########## PDF PAGE 285 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+276   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Setup & Firmware Configuration 
+Gather the following: 
+QTY Part Number Description 
+1 FS-i6X Flysky 10CH 2.4GHz RC Transmitter Controller 
+1 - GSE System 
+1 - Rocket or spare servo 
+4 TGL-GRD-12MM Toggle Switch Guard, 12mm Hole 
+4 92295A100 Thread-Forming Screws for Plastic, Number 4 Size, 1/4" Long 
+ 
+  
+
+
+########## PDF PAGE 286 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+277   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Install Toggle Switch Covers 
+The FS-i6X transmitter’s switches do not have sufficient thread length to permit installing the switch covers 
+under the jam nut; instead, they are attached using screws. Adhesive may also be used to help bond on the 
+switch covers, but is not recommended as  the sole attachment method. It is recommended to remove the 
+back half of the transmitter casing while drilling the switch cover mounting screw holes to verify that the hole 
+drilling does not damage the switches or wiring. 
+ 
+20. Drill a ⅛” hole in the lower right corner of the metal base of QTY 4 TGL -GRD-12MM switch covers as 
+shown. 
+21. Place the switch covers over the four toggle switches and mark the location of the holes on the 
+transmitter casing. 
+22. Using a #37 (.104”) drill bit, drill a hole in each of the marked locations adjacent to the switches on the 
+transmitter housing. Take care not to damage the switches or wires 
+23. Install the switch covers onto the transmitter using QTY 4 92295A100 screws.  
+Note: The corner of the switch cover on the right-most position may need to be bent upwards slightly with 
+pliers. 
+24. Label (or engrave) the switch covers per the following: 
+a. Switch A (Left-most): PRG (if purge functionality is included in the system) 
+b. Switch B (Second from left): FILL 
+c. Switch C (Third from left): IGN 
+d. Switch D (Right-most): SRV 
+ 
+ 
+Note: Only 3X covers (shown) are required if purge functionality is not included in the system.  
+
+
+
+########## PDF PAGE 287 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+278   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Enable all 10 channels 
+1. Turn the transmitter on; all switches must be in the UP position and the left (throttle) stick all the way 
+down for the transmitter to boot up. This is a safety feature intended to prevent accidentally powering the 
+motor of a model airplane. 
+2. Hold OK -> MENU -> System Setup -> OK 
+3. Use the DOWN button to navigate to Aux Switches at the bottom of the list and press OK  
+4. Press OK until the arrow appears next to Ch: 6 
+5. Press the UP button until Ch: 10 
+6. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. Press OK again to return to the main MENU screen. 
+ 
+Assign channels to switches 
+1. DOWN -> Functions Setup -> OK 
+2. DOWN until Aux. Channels -> OK 
+3. Channel 5: press DOWN until Source reads  SwB -> OK 
+4. Channel 6: press DOWN until Source reads SwD -> OK 
+5. Channel 7: press OK to skip 
+6. Channel 8: Press DOWN until Source reads SwA 
+7. Hold CANCEL to save the settings. A higher-pitched beep will be emitted and the menu will return to the 
+previous level. 
+  
+
+
+########## PDF PAGE 288 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+279   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Assign igniter channel and set left stick lockout 
+The igniter relay is connected to the throttle channel (Ch3), so that the left stick must be up in order to energize 
+the igniter circuit. This serves as a safety lockout secondary to the switch cover. The igniter relay may also be 
+connected to another auxi liary channel (7, 9, or 10) assigned to Switch C; this is not recommended as it 
+increases the risk of accidental igniter activation, although it removes the risk of a failed ignition resulting 
+from the left stick being in an incorrect position. 
+1. In FUNCTIONS menu, press DOWN until Assign Switches -> OK 
+2. Fly mode None -> press OK to skip 
+3. Idle mode None -> press OK to skip 
+4. Thro. Hold -> DOWN until SwC 
+5. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. 
+6. Depending on the type of relay module used (i.e., two -channel vs single channel), there may be a 
+minimum PWM value to avoid having one channel energized. If this is the case navigate to Throttle Hold 
+in the FUNCTIONS menu. Press UP to set Hold to On -> OK -> Up to set value so that the both channels of 
+the relay (if using a dual-channel module) are off when the left stick is all the way down.  
+7. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. 
+ 
+  
+
+
+########## PDF PAGE 289 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+280   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Adjust servo endpoints 
+This step should be completed prior to initial assembly of the servo -actuated ball valves, to ensure that the 
+servo horn is installed in the correct orientation. Adjusting the end points fine-tunes the position of the servo 
+in the valve OPEN and valve CLOSED positions. 
+1. Ensure the transmitter is ON and all switches are in the DOWN position prior to bringing up power to the 
+GSE. 
+2. Connect ONLY the FILL valve to servo to Ch5 on the FS-iA10B receiver. Disconnect any other servos from 
+the receiver at this time. Ensure no pressure source is connected to the GSE fill or purge supply fittings.  
+3. In FUNCTIONS menu, navigate to End Points using DOWN -> OK 
+4. In End Points, press OK until the arrow appears next to the value on the right side of the row for Ch5. 
+Adjust the end point UP or DOWN until the servo horn/valve handle are exactly perpendicular to the servo 
+body/valve body. This is the valve CLOSED position. 
+5. Flip Switch B (second from the left) to the UP position to actuate the FILL valve to the OPEN position. 
+Adjust the end point value UP or DOWN until the servo horn/valve handle are exactly parallel to the servo 
+body/valve body. This is the valve OPEN position. 
+6. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. 
+Tip: If the servo is stalled against the valve actuator bracket, listen for an increase or decrease in the intensity 
+of the high -pitched whine emitted by the servo while adjusting the endpoint values. Adjust in the direction 
+that decreases the intensity of the n oise until the servo horn begins to move away from the bracket. Avoid 
+stalling the servo for long periods of time, as this may cause overheating or other damage. If the servo 
+horn/valve handle is unable to reach the specified positions at the limits of the endpoint adjustment range, 
+the servo horn must be removed and re-installed onto the spur gear in a different orientation. 
+ 
+  
+
+
+########## PDF PAGE 290 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+281   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+7. Connect the vehicle valves to Ch 6 on the FS-iA10B receiver. If setting the initial servo horn position, they 
+may be connected individually. If fine -tuning the setting on an integrated vehicle, both valves should be 
+connected simultaneously via the servo Y-harness, with the airframe removed to provide a clear view of 
+the fuel valve. 
+8. Navigate to End Points in the FUNCTIONS menu -> OK 
+9. In End Points, press OK until the arrow appears next to the value on the right side of the row for Ch6. 
+Adjust the end point UP or DOWN until the servo horns/valve handles are exactly perpendicular to the 
+servo bodies/valve bodies. This is the valve CLOSED position.  
+Note: A discrepancy of <5 degrees between the fuel and oxidizer valves is acceptable; the valves will still 
+seal effectively as long as the ball fully contacts the seat without the port overlapping the seat’s edge. 
+10. Flip Switch D (farthest right) to the UP position to actuate the VEHICLE valves to the OPEN position. Adjust 
+the end point value UP or DOWN until the servo horn/valve handle are exactly parallel to the servo 
+body/valve body. This is the valve OPEN position. 
+11. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. 
+12. If a purge valve is used on the GSE, connect the PURGE valve servo to Ch8 on the FS -iA10B receiver. 
+Follow the same procedure as for the fill valve to adjust the end points. The purge channel (Ch8) is 
+assigned to Switch A (first from the left) 
+ 
+  
+
+
+########## PDF PAGE 291 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+282   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Verify channel mapping 
+This will ensure that each part of the system is responding correctly to control inputs from the transmitter  
+1. Verify that the FILL valve responds in the following manner: 
+a. Switch B UP: FILL valve OPEN 
+b. Switch B DOWN: FILL valve CLOSED 
+2. Verify that the VEHICLE valves respond in the following manner: 
+a. Switch D UP: VEHICLE valves OPEN 
+b. Switch D DOWN: VEHICLE valves CLOSED 
+3. Verify that the PURGE valve (if included) responds in the following manner: 
+a. Switch A UP: PURGE valve OPEN 
+b. Switch B DOWN: PURGE valve CLOSED 
+4. Verify that the IGNITER circuit responds in the following manner (via multimeter or spark checks) 
+a. Switch C and Left Stick both fully DOWN: IGNITER circuit DE-ENERGIZED 
+b. Switch C and Left Stick both fully UP: IGNITER circuit ENERGIZED 
+c. Switch C UP and Left Stick fully DOWN: IGNITER circuit DE-ENERGIZED 
+d. Switch C DOWN and Left Stick fully UP: IGNITER circuit DE-ENERGIZED 
+Note: Switch C is the only 3 -position switch on the FS -i6X transmitter. The middle position is effectively 
+ignored; it should only be intentionally set to the fully up and fully down positions.  
+ 
+  
+
+
+########## PDF PAGE 292 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+283   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+OP 8:  Transmitter Firmware Configuration 
+Configure receiver failsafes 
+The failsafe settings dictate how the receiver behaves if it loses connection with the transmitter for any 
+reason. They must be configured to put the rocket and ground system in a safe state, with the fill and optional 
+purge valves closed, the vehicle valv es open so that no pressure remains inside the rocket, and the igniter 
+circuit de-energized. 
+1. From home screen: 
+Hold OK -> System Setup -> OK -> DOWN until RX Setup -> DOWN until Failsafe -> OK 
+2. Igniter failsafe: DOWN until arrow appears next to Channel 3 -> OK -> ensure left stick and Switch C (third 
+from the left) are both all the way down -> UP to change OFF to ON -> Press OK 
+3. Fill failsafe: DOWN until arrow appears next to Channel 5 -> OK ->  Switch B (second from the left) is 
+DOWN (FILL valve CLOSED position) -> UP to change OFF to ON -> Press OK 
+4. Vehicle Valves failsafe: DOWN until arrow appears next to Channel 6 -> OK -> Switch D (farthest right) is 
+UP (VEHICLE valves OPEN position) -> UP to change OFF to ON -> Press OK 
+5. Purge (if included) failsafe: DOWN until arrow appears next to Channel 8 -> OK ->  Switch A (first from the 
+left) is DOWN (PURGE valve CLOSED position) -> UP to change OFF to ON -> Press OK 
+6. Hold CANCEL to save the setting. A higher -pitched beep will be emitted and the menu will return to the 
+previous level. 
+IMPORTANT NOTE: Failsafe settings are saved when holding CANCEL to exit the Failsafe menu and return 
+to the RX Setup Menu. They are NOT saved when pressing OK to return from the individual channel failsafe 
+setting screen to the Failsafes Menu. ALWAYS verify failsafe settings are set and saved correctly. 
+7. To verify failsafes, ensure the FILL, PURGE, and VEHICLE valve servos as well as the igniter relay module 
+are connected to the FS-iA10B receiver, no pressure supply is connected, and the GSE is powered on. Set 
+the switches in the following positions: 
+a. Switch A: UP to OPEN the PURGE valve 
+b. Switch B: UP to OPEN the FILL valve 
+c. Switch C AND Left Stick: fully UP to ENERGIZE igniter circuit (caution: ensure igniter leads are not 
+connected to anything and are insulated from each other) 
+d. Switch D: DOWN to CLOSE the VEHICLE valves 
+8. Turn the transmitter POWER switch OFF. Verify the system enters the following state: 
+a. PURGE valve CLOSED 
+b. FILL valve CLOSED 
+c. IGNITER circuit DE-ENERGIZED (verify by multimeter or spark check)  
+d. VEHICLE valves OPEN 
+
+
+########## PDF PAGE 293 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+284   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+Section VII – Launch Preparation and Procedures 
+ 
+7.1  Vehicle Preparation ................................................................................................................................. 285 
+7.1.1  Fuel Loading ............................................................................................................................................................... 285 
+7.1.2  Igniter Installation ................................................................................................................................................... 287 
+7.1.3  Recovery System Packing ..................................................................................................................................... 290 
+7.2  GSE Setup .................................................................................................................................................... 298 
+7.2.1  Required Items ......................................................................................................................................................... 298 
+7.2.2  Ground System Setup ............................................................................................................................................ 298 
+7.3  Launchpad Operations ............................................................................................................................ 301 
+7.3.1  Rail Loading ................................................................................................................................................................ 301 
+7.3.2  GSE Startup and Checkouts ................................................................................................................................. 302 
+7.3.3  Vehicle Arming......................................................................................................................................................... 303 
+7.4  Launch Procedure ................................................................................................................................... 304 
+7.4.1  Procedure Review ................................................................................................................................................... 304 
+7.4.2  Fill Criteria ................................................................................................................................................................ 304 
+7.4.3  Holding After Oxidizer Fill .................................................................................................................................... 305 
+7.4.4  LCO Coordination .................................................................................................................................................... 305 
+7.4.5  Load and Go .............................................................................................................................................................. 306 
+7.4.6  Flight Observation .................................................................................................................................................. 306 
+7.5  Launchpad Shutdown ............................................................................................................................ 308 
+7.5.1  Nominal Pad Shutdown .......................................................................................................................................... 308 
+7.5.2  Aborted Firing .......................................................................................................................................................... 309 
+7.5.3  Vehicle Shutdown ..................................................................................................................................................... 311 
+7.6  Recovery ....................................................................................................................................................... 312 
+ 
+ 
+
+
+########## PDF PAGE 294 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+285   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+7.1  Vehicle Preparation 
+This section covers the preparation of the vehicle for static testing or launch. Recovery system packing is only 
+required for launch. This procedure assumes that the rocket has been fully assembled per Section 5 and 
+contains only the steps that must be repeated each time the rocket is recycled. 
+ 
+7.1.1  Fuel Loading 
+Caution:  This procedure involves handling of fuel and O-ring grease. Ensure all personnel are equipped with 
+safety glasses and nitrile gloves. Perform these steps outdoors or in a well-ventilated area with disposable 
+shop towels or rags on hand to clean up any fuel spills. 
+1. Gather the following: 
+a. 5/8” wrench (or adjustable) 
+b. 9/16” wrench (or adjustable) 
+c. 3/16” hex key or driver bit 
+d. Optional: Battery powered drill with adjustable torque-limiting clutch 
+e. Sturdy PVC pipe or wooden dowel with marking 12.25” from one end 
+f. Safety glasses 
+g. Nitrile gloves 
+h. O-ring grease 
+i. 1X -238 Buna-N O-rings (PN: 9452K226) 
+j. Shop towels 
+k. Approx. 1/2 gallon fuel (see section 2.6) 
+l. If piston is to be removed (required every 3 firings or sooner): 
+m. 1/4-20 bolt or threaded rod 
+n. Vise-grip or large pliers 
+o. 2X additional -238 Buna-N O-rings (PN: 9452K226) 
+2. Disconnect the fuel line from the flared fitting on the fuel valve outlet using the 5/8” and 9/16” wrenches.  
+Caution:  Residual fuel may be present. Be prepared for a small amount of fuel to drip out of the fuel valve 
+outlet and/or injector when the fuel line is disconnected. 
+3. Ensure the fuel valve is OPEN. If closed, it may be opened either using the GSE or by slowly and gently 
+moving the valve handle/servo horn to the open position by hand. The servo must be disconnected from 
+power to open manually. If the valve is closed, the  forward tank bulkhead cannot be removed, as it will 
+pull a vacuum. 
+
+
+########## PDF PAGE 295 ##########
+MOJAVE SPHINX  |  Build, Integration, and Launch Guidebook  |  HCR-5100 
+286   
+Half Cat Rocketry 
+HalfCatRocketry.com 
+contact@halfcatrocketry.com 
+4. Disconnect the fuel valve servo wire from the vehicle Y -harness at the 3 -pin connector closest to the 
+servo. 
+5. Remove the 8X 5/16” fasteners from the forward tank interface ring using the 3/16” hex key or driver bit 
+and drill. Set aside for later reinstallation. A magnetic dish is recommended to prevent fasteners from 
+being lost. 
+6. Remove the entire fuel bulkhead assembly from the tank by pulling on the U-bolt installed in the recovery 
+bulkhead. The lower airframe tube may remain connected to the interface ring if installed.  Note: When 
+static testing without the recovery bulkhead, i t is recommended to either re -install the recovery 
+bulkhead or another pair of 1/4-20 threaded rods to remove the fuel bulkhead assembly by pulling on the 
+coupling nuts. Removal by pulling on the valve assembly should be avoided, as it may damage the valve  
+assembly and/or fuel tank outlet port/fitting. 
+Caution:  Residual fuel will likely be present in the tank, even if some has already drained out of the valve 
+outlet fittings and/or fuel line. It is recommended to remove the fuel bulkhead assembly with the rocket 
+vertical or tilted upwards to prevent spillage. 
+Perform steps 7 -11 only if the piston must be removed prior to the next firing. Servicing the piston seals is 
+required every three firings. If the piston does not need to be removed, skip to step 12.  
+7. Insert a 1/4 -20 bolt or threaded rod into the tapped blind hole in the center of the piston until it bottoms 
+out. Tighten only to hand tight. 
+8. Pull the piston out of the forward end of the tank using the extraction bolt. A pair of vise -grips or pliers 
+may be used to improve grip. The extraction fastener may now be removed from the piston. 
+9. Remove the 2X O -rings from the piston and discard. Clean any particulate or darkened grease from the 
+O-ring grooves. 
+10. Coat 2X new -238 O-rings with grease and install into the grooves on the piston. 
+11. Re-install the piston into the tank with the 1/4 -20 threaded blind hole facing the open forward end. Use 
+even pressure to carefully push the O -rings past the tank edge and bolt holes. Verify that the piston 
+extraction fastener has been removed before proceeding. 
+12. Push the piston down into the tank until the lower surface closest to the outer edge is 12.25 +0/-.25” from 
+the forward end of the tank tube. A sturdy piece of PVC pipe or wooden dowel with a clearly visible 
+marking is recommended.  Caution: Do not apply more than 100lbf to the piston if the vehicle is resting on 
+the plywood fins. If more force is required, place a wooden or concrete block under the nozzle to provide 
+support without stressing the fins. No more than 150lbf should be required to install the piston to its final 
+depth. DO NOT use a hammer or mallet to push the piston down. This may cause the piston to bind against 
+the tank wall, preventing fuel flow when the valve is opened. 
+13. Verify that the nitrous tank static vent is unobstructed by poking a small piece of wire (such as from a 
+spent e -match) at least 1/2” into the vent orifice. If the vent is found to be obstructed, pull the piston 
+upwards using a long 1/4-20 threaded rod until the piston no longer blocks the vent. Blockage of the vent 
+will prevent oxidizer loading. 
+14. Inspect the fuel bulkhead O-ring for damage or swelling to assess whether replacement is necessary. If 
+so, remove and discard the O-ring, then grease and install 1X new -238 O-ring into the groove on the fuel 
+bulkhead. 

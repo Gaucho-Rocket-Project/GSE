@@ -1,0 +1,2 @@
+# GUI itself uses only the Python standard library (tkinter).
+pyserial>=3.5      # required only for real hardware (SimLink works without it)

@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HCR-5100 Section VI — Ground Support Equipment (rev B, ECR-01)</title>
+<style>
+  @page {
+    size: Letter;
+    margin: 88pt 72pt 96pt 72pt;
+  }
+  html { font-family: "DejaVu Serif", serif; font-size: 9.2pt; line-height: 1.42; color: #111; }
+  body { margin: 0; }
+
+  /* repeated page chrome ------------------------------------------------ */
+
+  .hbar .light { font-weight: normal; opacity: 0.92; }
+
+
+
+
+
+
+
+
+  /* page setup ---------------------------------------------------------- */
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+
+  h1 { font-family: "DejaVu Sans", sans-serif; font-size: 13.5pt; color: #b71234;
+       margin: 0 0 10pt 0; letter-spacing: -0.2pt; }
+  h2 { font-family: "DejaVu Sans", sans-serif; font-size: 10.5pt; margin: 14pt 0 5pt 0; color: #111; }
+  h3 { font-family: "DejaVu Sans", sans-serif; font-size: 9.4pt; margin: 11pt 0 4pt 0; color: #111; }
+  p { margin: 0 0 6pt 0; text-align: justify; hyphens: auto; }
+  ul, ol { margin: 0 0 7pt 0; padding-left: 14pt; }
+  li { margin-bottom: 2.5pt; }
+  .cols { column-count: 2; column-gap: 18pt; }
+  .cols p, .cols li { text-align: justify; }
+
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 9pt 0;
+          font-family: "DejaVu Sans", sans-serif; font-size: 7.4pt; }
+  th { background: #f0f1f3; text-align: left; font-weight: bold; padding: 3.5pt 4pt;
+       border-bottom: 0.8pt solid #b71234; }
+  td { padding: 3.2pt 4pt; border-bottom: 0.4pt solid #d9dde1; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  .num { text-align: right; white-space: nowrap; }
+  .mono { font-family: "DejaVu Sans Mono", monospace; font-size: 6.9pt; }
+
+  .fig { margin: 8pt 0 10pt 0; text-align: center; break-inside: avoid; }
+  .fig img { width: 100%; }
+  .cap { font-family: "DejaVu Sans", sans-serif; font-size: 7.2pt; color: #333;
+         text-align: left; margin-top: 3pt; line-height: 1.35; }
+  .cap b { color: #111; }
+
+  .callout { border-left: 3pt solid #b71234; background: #fdf4f5; padding: 7pt 9pt;
+             margin: 8pt 0 10pt 0; font-size: 8.6pt; break-inside: avoid; }
+  .callout h3 { margin-top: 0; color: #b71234; }
+  .note { background: #f4f6f8; border: 0.5pt solid #cfd6dc; padding: 6pt 8pt; font-size: 8.2pt;
+          margin: 7pt 0 9pt 0; break-inside: avoid; }
+  .caution { background: #fff6e5; border: 0.5pt solid #e0b25a; padding: 6pt 8pt; font-size: 8.4pt;
+             margin: 7pt 0 9pt 0; break-inside: avoid; }
+  .new { color: #b71234; font-family: "DejaVu Sans", sans-serif; font-size: 7.4pt;
+         font-weight: bold; letter-spacing: 0.2pt; }
+  .del { text-decoration: line-through; color: #7a7a7a; }
+  .gather th { font-size: 7pt; }
+  .small { font-size: 7.6pt; color: #444; }
+  .title-block { border: 0.8pt solid #111; padding: 12pt 14pt; margin: 4pt 0 14pt 0; }
+  .title-block h1 { margin-bottom: 6pt; }
+  .kv { font-family: "DejaVu Sans", sans-serif; font-size: 8pt; }
+  .kv td { border: none; padding: 1.6pt 0; }
+  .kv td:first-child { width: 30%; color: #555; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================== 1 -->
+<div class="page">
+  <div class="title-block">
+    <h1>Section VI — Ground Support Equipment</h1>
+    <div class="kv">
+      <table class="kv">
+        <tr><td>Replaces</td><td>HCR-5100 rev 01, pages 235–283 (§6.1, §6.2, §6.3 OP 6 and OP 8)</td></tr>
+        <tr><td>Revision</td><td>rev 02 draft — ECR-01, control subsystem change</td></tr>
+        <tr><td>Date</td><td>6 November 2026</td></tr>
+        <tr><td>Reason</td><td>Replace the FS-i6X / FS-iA10B radio pair with a laptop-driven ESP32-S3 + DX-LR41-24T12S link</td></tr>
+        <tr><td>Status</td><td>Draft for review — not to be used for a live firing until the test gates in the companion test plan are signed</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="callout">
+    <h3>How to use these pages</h3>
+    <p>This is an insert, not a rewrite of the whole manual. Pages numbered <b>236–255</b> replace the existing
+    Section VI pages; the content that follows them (Section VII) needs the four changes listed at the
+    end of this insert, which are also summarised in the revision history entry below. Everything not mentioned
+    here — the fluid system, the servo-actuated ball valves, the cables, the fill line, and all of Section V —
+    is unchanged.</p>
+    <p><b>Revised content is marked</b> <span class="new">&#9632; REVISED</span>. Deleted text is shown struck
+    through only where a reviewer needs to see exactly what was removed.</p>
+  </div>
+
+  <h2>Revision history addition</h2>
+  <table>
+    <tr><th style="width:12%">Revision</th><th>Description</th><th style="width:22%">Date</th></tr>
+    <tr><td>01</td><td>Initial release</td><td>17 Aug 2024</td></tr>
+    <tr><td>02</td><td>GSE control subsystem replaced (ECR-01): FS-i6X transmitter and FS-iA10B receiver
+      replaced by a laptop-driven ESP32-S3 pair with DX-LR41-24T12S 2.4 GHz LoRa modules. Section VI §6.1,
+      §6.2, §6.3 OP 6 and OP 8 revised; §7.2, §7.3 and §7.5 amended.</td><td>6 Nov 2026</td></tr>
+  </table>
+
+  <h2>What changes, at a glance</h2>
+  <table>
+    <tr><th style="width:26%">Item</th><th>Rev 01</th><th>Rev 02</th></tr>
+    <tr><td>Operator control</td><td>FS-i6X transmitter, four switches under covers</td>
+        <td>Laptop application over USB-C, plus a physical arm key at the pad</td></tr>
+    <tr><td>Radio link</td><td>AFHDS 2A, 2.4 GHz GFSK, closed protocol</td>
+        <td>2.4 GHz LoRa (SX1281), 13 dBm, full-duplex by channel split</td></tr>
+    <tr><td>Receiver</td><td>FS-iA10B, 10 PWM channels</td>
+        <td>ESP32-S3 pad node, 3 PWM channels + igniter relay</td></tr>
+    <tr><td>Channel map</td><td>Ch5 / Ch6 / Ch8 / Ch3, fixed by the transmitter firmware</td>
+        <td>Same numbers, software-defined, re-mappable from the GUI</td></tr>
+    <tr><td>Endpoint adjustment</td><td>Transmitter menu, ±120 %</td>
+        <td>GUI, servo travel 5–90° per channel</td></tr>
+    <tr><td>Failsafes</td><td>Per-channel positions in the transmitter menu</td>
+        <td>Pad-node watchdog (0.3–3.0 s) + TX-node safe stream + hardware heartbeat</td></tr>
+    <tr><td>Igniter</td><td>PWM relay, on-time set by the operator's finger</td>
+        <td>One pulse per press, hard limit 0.1–2.0 s, series key switch and heartbeat</td></tr>
+    <tr><td>Logging</td><td>None</td>
+        <td>Every command and every reported state, CSV, 20 Hz</td></tr>
+    <tr><td>Cost</td><td>—</td><td>+$16 net; −$72 of removed parts, +$89 of added parts</td></tr>
+  </table>
+
+  <div class="note">
+    <b>What the pad node does not do.</b> It does not replace the fill valve, the QD, the fill line, the supply
+    bottle, the servo-actuated ball valves, or their adjustment procedure. It is a drop-in replacement for the
+    receiver and the four things the receiver used to switch.
+  </div>
+</div>
+
+<!-- ================================================================== 2 -->
+<div class="page">
+  <h1><span class="new">&#9632; REVISED</span>&nbsp; 6.1&nbsp; GSE Overview</h1>
+
+  <div class="cols">
+    <p>Ground Support Equipment, or <b>GSE</b>, is a critical part of any rocket system. The launch vehicle may be
+    the most interesting part, but it simply does not function without GSE.</p>
+
+    <p>For solid rockets, GSE can be as simple as a switch that fires an igniter. For UC-valve hybrids, where the
+    igniter also acts as the main oxidizer valve, it must also be capable of loading oxidizer into the motor. For
+    Mojave Sphinx and all standard liquid rockets, it must also be able to open the main propellant valves to start
+    the flow of fuel and oxidizer, separate from the ignition command. Furthermore, since any operation in which
+    N<sub>2</sub>O is present outside the supply bottle is hazardous to personnel, all such activities must be
+    performed at a safe distance. This requires a remotely-controlled fluid handling system which is both safe and
+    economical, so as to not dwarf the cost of the rocket itself.</p>
+
+    <p>The purpose of the GSE is to:</p>
+    <ol>
+      <li>Control flow of N<sub>2</sub>O from a supply bottle</li>
+      <li>Provide ignition power</li>
+      <li>Issue a valve-open command</li>
+      <li>Dump N<sub>2</sub>O rapidly to safe the vehicle</li>
+    </ol>
+
+    <p>For rockets with pneumatic Half Cat valves, the valve-open command may be a trigger for a pyrotechnic
+    device, such as a line cutter that severs and vents a pneumatic pressure supply tube. In any standard liquid
+    rocket, the oxidizer dump may be the same command as the normal valve-open, only without triggering the
+    igniter, and may involve dumping both propellants. Only in the unlikely event of complete power loss during
+    fill should the static vent be relied upon to fully empty the oxidizer tank, as this can take upwards of an
+    hour depending on tank and vent sizes. The remote control system described in this guide is configured so
+    that <b>a loss of communication with the GSE will automatically open the vehicle propellant valves</b>,
+    returning the system to a safe state.</p>
+
+    <p>The GSE can be divided into two major subsystems: the fill system and the control system. The fill system
+    is a simple plumbing assembly consisting of a supply bottle connection, a fill valve, and a QD connection.</p>
+
+    <p>The control system is purpose-built and laptop-driven. A small application on the operator's laptop sends
+    command frames over USB-C to an ESP32-S3 radio node inside the GSE box, which relays them over a 2.4 GHz LoRa
+    link to a second ESP32-S3 at the launch pad. The pad node drives the three valve servos and the igniter relay
+    directly, and reports the actual state of every output back to the laptop ten times per second. Channel
+    numbering is preserved from earlier revisions — FILL on Ch5, VEHICLE on Ch6, PURGE on Ch8, IGNITER on Ch3 —
+    but is software-defined and can be re-mapped without re-wiring.</p>
+
+    <p>Because the link is not a certified hobby receiver, <b>all failsafe behaviour is implemented in the pad
+    node</b> and verified as part of launch preparation: loss of communication for longer than the configured
+    watchdog (1.0 s by default) closes the fill and purge valves, opens the vehicle valves, and de-energises the
+    igniter. This mirrors the safe state that the FS-iA10B receiver was configured for in earlier revisions, and
+    the physics of the safe state is unchanged: no pressure remains in the vehicle, and the igniter cannot fire.</p>
+
+    <p>The control system consists of the operator's laptop, two ESP32-S3 radio nodes, two DX-LR41-24T12S
+    modules, the 12 V battery, the voltage regulator, the arm key switch, and the igniter relay. Below is the basic
+    electrical schematic of the GSE.</p>
+  </div>
+
+  <div class="fig">
+    <img src="fig_gse_schematic.png" alt="GSE electrical schematic">
+    <div class="cap"><b>Figure 6.1:</b> GSE electrical schematic (revised). Panel A — power distribution and node
+    I/O. Panel B — igniter enable chain; the relay coil can only conduct with the arm key closed, the heartbeat
+    running and an igniter command present.</div>
+  </div>
+
+  <div class="callout">
+    <h3>Why the link is not a hobby receiver any more</h3>
+    <p>The FS-iA10B listens on FlySky AFHDS 2A, a closed frequency-hopping protocol that a general-purpose 2.4 GHz
+    LoRa module cannot produce. Removing the receiver therefore means taking ownership of the behaviour it used to
+    provide for free: PWM generation, channel mapping, and failsafes. The pad node and its test plan exist to make
+    that ownership explicit rather than implicit.</p>
+  </div>
+</div>
+
+<!-- ================================================================== 3 -->
+<div class="page">
+  <h1><span class="new">&#9632; REVISED</span>&nbsp; 6.2&nbsp; GSE Bill of Materials</h1>
+
+  <p class="small">Line items 1–20 (fluid system and enclosure) are unchanged from rev 01 except where noted.
+  Lines marked <span class="new">NEW</span> are additions; lines marked <span class="new">DELETED</span> are
+  removed.</p>
+
+  <table>
+    <tr><th style="width:6%">Line</th><th style="width:22%">Part Number</th><th>Description</th>
+        <th style="width:9%" class="num">Unit</th><th style="width:6%" class="num">Qty</th>
+        <th style="width:9%" class="num">Cost</th><th style="width:16%">Context</th></tr>
+    <tr><td>1</td><td class="del">DTUS_FSI6X_10CH</td><td class="del">FlySky FS-i6X 10CH transmitter w/ iA10B receiver</td>
+        <td class="num del">$59.99</td><td class="num del">1</td><td class="num del">$59.99</td><td class="del">Controller</td></tr>
+    <tr><td>2</td><td>AZ18080602-03</td><td>Toggle switch guards, 12 mm (pack of 6) — retained for SW1/outlet labelling</td>
+        <td class="num">$8.49</td><td class="num">1</td><td class="num">$8.49</td><td>Switch covers</td></tr>
+    <tr><td>3</td><td>62586</td><td>Thunderbolt Magnum 12 V 160 CCA AGM battery</td>
+        <td class="num">$49.99</td><td class="num">1</td><td class="num">$49.99</td><td>Electrical connections</td></tr>
+    <tr><td>4</td><td>20GA-RBP</td><td>20 GA silicone wire, red/black, 10 ft each</td>
+        <td class="num">$0.00</td><td class="num">1</td><td class="num">$0.00</td><td>Leftover from avbay</td></tr>
+    <tr><td>5</td><td class="del">LCATMC1569</td><td class="del">PWM-controlled relay module, 10 A 30 V</td>
+        <td class="num del">$11.99</td><td class="num del">1</td><td class="num del">$11.99</td><td class="del">Ignition switch</td></tr>
+    <tr><td>6</td><td>090600AFA</td><td>DROK 12 V to 5 V converter, 3 A — retained (now also feeds the pad node)</td>
+        <td class="num">$12.99</td><td class="num">1</td><td class="num">$12.99</td><td>Battery to logic</td></tr>
+    <tr><td>7</td><td>GSW-17</td><td>Gardner Bender SPST toggle switch, 6 A</td>
+        <td class="num">$5.99</td><td class="num">1</td><td class="num">$5.99</td><td>GSE power switch</td></tr>
+    <tr><td>8</td><td>7159K3</td><td>Straight-blade receptacle, 5-15 NEMA, side terminal</td>
+        <td class="num">$3.36</td><td class="num">1</td><td class="num">$3.36</td><td>IGN and service outlets</td></tr>
+    <tr><td>9</td><td>7526K23</td><td>Nylon wall plate for NEMA outlet</td>
+        <td class="num">$0.73</td><td class="num">1</td><td class="num">$0.73</td><td>Outlet cover</td></tr>
+    <tr><td>10</td><td>YXQ-3PIN-1M</td><td>3-pin servo extension, 1 m (pack of 10) — 2 retained for the vehicle Y-harness</td>
+        <td class="num">$0.00</td><td class="num">1</td><td class="num">$0.00</td><td>Leftovers from valves</td></tr>
+    <tr><td>11–37</td><td colspan="4">Unchanged from rev 01 (toolbox, eye bolts, servo, ball valve, tank, fittings, tubing, filament, printed parts)</td>
+        <td class="num">$333.98</td><td></td></tr>
+  </table>
+
+  <h3>Added in rev 02</h3>
+  <table>
+    <tr><th style="width:6%">Line</th><th style="width:22%">Part Number</th><th>Description</th>
+        <th style="width:9%" class="num">Unit</th><th style="width:6%" class="num">Qty</th>
+        <th style="width:9%" class="num">Cost</th><th style="width:16%">Context</th></tr>
+    <tr><td>38</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit with native USB (or N16R8 / 8 MB equivalent)</td>
+        <td class="num">$8.00</td><td class="num">2</td><td class="num">$16.00</td><td>TX node, pad node</td></tr>
+    <tr><td>39</td><td>DX-LR41-24T12S</td><td>2.4 GHz SX1281 LoRa module, UART, 13 dBm</td>
+        <td class="num">$9.50</td><td class="num">2</td><td class="num">$19.00</td><td>Radio pair</td></tr>
+    <tr><td>40</td><td>ANT-24G-SMA-3DBI</td><td>2.4 GHz antenna, SMA, 3 dBi (with IPEX pigtail)</td>
+        <td class="num">$3.00</td><td class="num">2</td><td class="num">$6.00</td><td>Antennas</td></tr>
+    <tr><td>41</td><td>PRINTED-CARRIER</td><td>Carrier board / proto board for the pad node, with servo headers and a 12 V screw terminal</td>
+        <td class="num">$3.00</td><td class="num">1</td><td class="num">$3.00</td><td>Mounting</td></tr>
+    <tr><td>42</td><td>RLY-12V-1CH-OPTO</td><td>Relay module, 1-channel, 12 V coil, 10 A, opto-isolated, with flyback</td>
+        <td class="num">$6.00</td><td class="num">1</td><td class="num">$6.00</td><td>Igniter switch (replaces line 5)</td></tr>
+    <tr><td>43</td><td>IRLZ44N</td><td>Logic-level N-MOSFET (Q1 keep-alive, Q2 coil driver, one spare)</td>
+        <td class="num">$1.50</td><td class="num">3</td><td class="num">$4.50</td><td>Interlocks</td></tr>
+    <tr><td>44</td><td>1N5819</td><td>Schottky diode, coil flyback and RC pump</td>
+        <td class="num">$0.20</td><td class="num">4</td><td class="num">$0.80</td><td>Transient protection</td></tr>
+    <tr><td>45</td><td>SW-KEY-SPST</td><td>Key switch, 2-position, SPST (SW2 arm key)</td>
+        <td class="num">$6.00</td><td class="num">1</td><td class="num">$6.00</td><td>Physical arm interlock</td></tr>
+    <tr><td>46</td><td>FUSE-5A-INLINE</td><td>5 A blade fuse and inline holder (F1)</td>
+        <td class="num">$3.00</td><td class="num">1</td><td class="num">$3.00</td><td>Over-current</td></tr>
+    <tr><td>47</td><td>CAP-100U-16V</td><td>Electrolytic 100 µF, plus 100 nF ceramic, module supply decoupling</td>
+        <td class="num">$1.20</td><td class="num">1</td><td class="num">$1.20</td><td>RF stability</td></tr>
+    <tr><td>48</td><td>USB-C-PANEL-1M</td><td>Panel-mount USB-C extension, 1 m</td>
+        <td class="num">$7.00</td><td class="num">1</td><td class="num">$7.00</td><td>Laptop connection</td></tr>
+    <tr><td>49</td><td>WIRE-KIT-22AWG</td><td>22 AWG hookup wire, crimp terminals, heat-shrink, servo crimp kit</td>
+        <td class="num">$6.00</td><td class="num">1</td><td class="num">$6.00</td><td>Harness</td></tr>
+    <tr><td>50</td><td>PWRBANK-5V-2A</td><td>Optional USB power bank for the TX node</td>
+        <td class="num">$12.00</td><td class="num">1</td><td class="num">$12.00</td><td>Redundancy</td></tr>
+  </table>
+
+  <table>
+    <tr><th style="width:40%">Subtotal</th><th class="num" style="width:20%">Rev 01</th>
+        <th class="num" style="width:20%">Rev 02</th><th class="num">Delta</th></tr>
+    <tr><td>Removed lines 1 and 5</td><td class="num">$71.98</td><td class="num">$0.00</td><td class="num">−$71.98</td></tr>
+    <tr><td>All other lines</td><td class="num">$457.47</td><td class="num">$457.47</td><td class="num">$0.00</td></tr>
+    <tr><td>New lines 38–50</td><td class="num">$0.00</td><td class="num">$86.50</td><td class="num">+$86.50</td></tr>
+    <tr><td><b>GSE total</b></td><td class="num"><b>$529.45</b></td><td class="num"><b>$543.97</b></td>
+        <td class="num"><b>+$14.52</b></td></tr>
+  </table>
+
+  <p class="small">The operator's laptop substitutes for the transmitter and is excluded, as the guide already
+  assumes a laptop for data reduction (Section 3). Prices are indicative, single quantity, November 2026.</p>
+</div>
+
+<!-- ================================================================== 4 -->
+<div class="page">
+  <h1>6.3&nbsp; GSE Assembly Procedures</h1>
+
+  <p>The GSE presented in this section is constructed within a metal toolbox, which provides a durable housing
+  that protects the system from exposure to the rocket's exhaust and can conveniently also store the tools needed
+  to recycle the rocket between launches. The integrated packaging of the entire system including fill, control
+  electronics, power, and optional CO<sub>2</sub> purge requires minimal on-site setup time and is well suited to
+  long term use. If project budget is a limiting factor and only a small number of launches are planned, the GSE
+  can be simplified at the expense of reduced ease of use by eliminating the toolbox and accompanying fittings
+  and fasteners.</p>
+
+  <table>
+    <tr><th style="width:14%">OP</th><th>Operation</th><th style="width:22%">Status in rev 02</th></tr>
+    <tr><td>OP 1</td><td>Assemble Servo-Actuated Ball Valves (GSE)</td><td>Unchanged</td></tr>
+    <tr><td>OP 2</td><td>Assemble Fill System</td><td>Unchanged</td></tr>
+    <tr><td>OP 3–5</td><td>Enclosure, bulkheads, fluid system integration</td><td>Unchanged</td></tr>
+    <tr><td>OP 6</td><td>Electrical System Integration</td><td><span class="new">REVISED</span> — see page 241</td></tr>
+    <tr><td>OP 7</td><td>Fabricate Cables and Fill Line</td><td>Unchanged</td></tr>
+    <tr><td>OP 8</td><td>Transmitter Setup &amp; Firmware Configuration</td><td><span class="new">REPLACED</span> by OP 9 and OP 10</td></tr>
+    <tr><td>OP 9</td><td>Assemble and Wire the Control System</td><td><span class="new">NEW</span></td></tr>
+    <tr><td>OP 10</td><td>Node Bring-up, Configuration and Checkout</td><td><span class="new">NEW</span></td></tr>
+  </table>
+
+  <h2>OP 1: Assemble Servo-Actuated Ball Valves (GSE)</h2>
+
+  <div class="gather">
+  <table>
+    <tr><th style="width:8%">QTY</th><th style="width:24%">Part Number</th><th>Description</th></tr>
+    <tr><td>1</td><td>SABV-MOUNT-V2</td><td>Servo Valve Mount V2.STL</td></tr>
+    <tr><td>1</td><td>SABV-HCON-V2</td><td>Servo Valve Handle Connector V2.STL</td></tr>
+    <tr><td>—</td><td>N/A</td><td>3D printer filament (PLA+, PETG, or ABS recommended)</td></tr>
+    <tr><td>1</td><td>4112T22</td><td>Compact High Pressure Brass Ball Valve</td></tr>
+    <tr><td>1</td><td>DS3225</td><td>25 kg servo with 25T servo horn</td></tr>
+    <tr><td>1</td><td>93475A210</td><td>M3 flat washer, 7 mm OD</td></tr>
+    <tr><td>1</td><td>92855A310</td><td>M3 × 0.5, 10 mm low-profile socket head screw</td></tr>
+    <tr><td>1</td><td>90272A194</td><td>#8-32 pan head screw, ½&quot;</td></tr>
+    <tr><td>1</td><td>90480A009</td><td>#8-32 hex nut</td></tr>
+    <tr><td>—</td><td>—</td><td>Nylon zip tie, 0.188&quot; width</td></tr>
+    <tr><td>4</td><td>92180A044</td><td>M4 × 0.70, 16 mm hex head screw</td></tr>
+    <tr><td>4</td><td>90591A141</td><td>M4 × 0.7 hex nut</td></tr>
+    <tr><td>4</td><td>98689A113</td><td>M4 flat washer</td></tr>
+    <tr><td>4</td><td>92148A160</td><td>M4 split lock washer</td></tr>
+  </table>
+  </div>
+
+  <p>The SABV-04FF servo-actuated ball valve assemblies used in the GSE are identical to those used as the fuel
+  and oxidizer valves on the vehicle. Refer to Section 5 OP 1 for detailed instructions.</p>
+  <p>If constructing Fill Only GSE, only QTY 1 SABV-04FF is required. If a CO<sub>2</sub> purge valve for static
+  testing is desired, build QTY 2 SABV-04FF.</p>
+
+  <div class="note">
+    <b>Change note.</b> The servo horn must be installed in the correct orientation, which in rev 01 was
+    established with the transmitter's End Points menu (OP 8). In rev 02 the equivalent adjustment is made from the
+    GSE application, and it must still be performed <em>before</em> the horn is finally screwed to the handle.
+    See OP 10, step 5. Nothing else in OP 1 changes.
+  </div>
+
+  <h2>OP 2: Assemble Fill System</h2>
+  <p>Unchanged from rev 01. Gather:</p>
+  <div class="gather">
+  <table>
+    <tr><th style="width:8%">QTY</th><th style="width:24%">Part Number</th><th>Description</th></tr>
+    <tr><td>1</td><td>SABV-04FF</td><td>Servo-Actuated Ball Valve Assembly</td></tr>
+    <tr><td>1</td><td>79215A673</td><td>CGA 326 to 1/4 NPT adapter, brass</td></tr>
+    <tr><td>1</td><td>79215A672</td><td>CGA 326 female nut, brass</td></tr>
+    <tr><td>1</td><td>50785K92</td><td>High-pressure brass straight connector, 1/4 NPT female</td></tr>
+    <tr><td>2</td><td>50675K162</td><td>37° flared adapter, 1/4&quot; tube OD × 1/4 NPT male</td></tr>
+  </table>
+  </div>
+  <p class="small">Follow rev 01 steps 1–8 without modification. OP 3, OP 4 and OP 5 are likewise unchanged.</p>
+</div>
+
+<!-- ================================================================== 5 -->
+<div class="page">
+  <h1><span class="new">&#9632; REVISED</span>&nbsp; OP 6: Electrical System Integration</h1>
+
+  <div class="gather">
+  <table>
+    <tr><th style="width:8%">QTY</th><th style="width:26%">Part Number</th><th>Description</th></tr>
+    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>PAD</b> node</td></tr>
+    <tr><td>1</td><td>DX-LR41-24T12S</td><td>2.4 GHz LoRa module</td></tr>
+    <tr><td>1</td><td>ANT-24G-SMA-3DBI</td><td>2.4 GHz antenna</td></tr>
+    <tr><td>1</td><td>PRINTED-CARRIER</td><td>Pad-node carrier board</td></tr>
+    <tr><td>1</td><td>RLY-12V-1CH-OPTO</td><td>12 V, 10 A relay module</td></tr>
+    <tr><td>1</td><td>SW-KEY-SPST</td><td>Arm key switch (SW2)</td></tr>
+    <tr><td>3</td><td>IRLZ44N</td><td>Logic-level MOSFET</td></tr>
+    <tr><td>2</td><td>1N5819</td><td>Schottky diode</td></tr>
+    <tr><td>1</td><td>FUSE-5A-INLINE</td><td>5 A fuse and holder</td></tr>
+    <tr><td>1</td><td>CAP-100U-16V</td><td>100 µF + 100 nF, module decoupling</td></tr>
+    <tr><td>1</td><td>USB-C-PANEL-1M</td><td>Panel-mount USB-C extension</td></tr>
+    <tr><td>1</td><td>090600AFA</td><td>DROK 12 V to 5 V regulator (retained)</td></tr>
+    <tr><td>1</td><td>GSW-17</td><td>SPST power switch (retained)</td></tr>
+    <tr><td>1</td><td>7159K91</td><td>NEMA outlet (retained)</td></tr>
+    <tr><td>1</td><td>7526K53</td><td>Nylon wall plate (retained)</td></tr>
+    <tr><td>4</td><td>9027A194</td><td>#8-32 × ½&quot; screws</td></tr>
+    <tr><td>—</td><td>WIRE-KIT-22AWG</td><td>22 AWG wire, crimp terminals, heat-shrink</td></tr>
+  </table>
+  </div>
+
+  <ol>
+    <li>Mount the pad-node carrier board on the inside of the back face of the toolbox, in the position formerly
+    occupied by the FS-iA10B receiver and the PWM relay, using QTY 4 9027A194 screws with washers, lock washers and
+    nuts. The carrier must be rigid: it carries the servo connectors and the 12 V ignition terminal. <b>Do not</b>
+    mount the ESP32-S3 in a breadboard.</li>
+
+    <li>Fit the DX-LR41-24T12S to the carrier. Connect 3V3 to the module VCC, GND to GND, D16 to module TXD, D17 to
+    module RXD, and D18 to module AUX. <b>Do not connect the module to 5 V.</b> Fit the 100 µF and 100 nF capacitors
+    across the module supply pins.</li>
+
+    <li>Fit the antenna to the module, and route the SMA bulkhead through the existing antenna cover hole in the
+    back face of the toolbox. The cover <span class="mono">CVR-ANT-2X8C</span> may be re-used by replacing the two
+    wire antennas with a single SMA bulkhead; keep the antenna at least 30 mm from the servo harness.</li>
+
+    <li>Wire the three servo outputs to the carrier headers, observing the pin order used by the vehicle harness:
+    signal → <b>D4</b> (FILL), <b>D5</b> (VEHICLE, both servos via the existing Y-harness), <b>D6</b> (PURGE);
+    +5 V from the DROK regulator to the header power pins; ground common to the regulator ground.</li>
+
+    <li>Wire the ignition branch:
+      <ol type="a">
+        <li>12 V battery positive → <b>F1</b> (5 A) → <b>SW1</b> → DROK regulator input and the ignition branch;</li>
+        <li>ignition branch → <b>SW2</b> arm key → relay module contact (NO) → the <span class="mono">IGN</span>
+        NEMA outlet (longer slot), exactly as the rev 01 relay was wired;</li>
+        <li>relay module coil − → <b>Q2</b> drain, whose gate is <b>D7</b> and whose source is battery negative;</li>
+        <li><b>Q1</b> in series between Q2 source and ground, gate driven from <b>D8</b> through the RC pump
+        shown in Figure 6.1 panel B;</li>
+        <li>1N5819 flyback across the relay coil terminals, cathode to +12 V.</li>
+      </ol>
+    </li>
+
+    <li>Label the arm key "ARM — OPEN BEFORE APPROACHING PAD" and mount it on the toolbox face, adjacent to SW1.
+    The key must be removable only in the OFF position.</li>
+
+    <li>Install the panel-mount USB-C extension through the toolbox face, adjacent to the power switch, and route
+    it to the TX node. The TX node itself is carried with the laptop, not mounted in the box.</li>
+
+    <li>Retain the 12 V battery, the eye bolts, the DROK regulator and the outlet. The outlets are labelled
+    <span class="mono">IGN</span> and <span class="mono">5V SERVICE</span>; the former <span class="mono">SRV</span>
+    outlet is no longer used for valve control.</li>
+
+    <li>Bundle the wiring with zip ties and route it away from the fill line and the antenna. Verify with a
+    multimeter that:
+      <ol type="a">
+        <li>12 V is present at the relay module coil when SW1 and SW2 are closed;</li>
+        <li>12 V is <b>absent</b> at the coil when SW2 is open;</li>
+        <li>the IGN outlet is dead with the relay unpowered;</li>
+        <li>no continuity exists between the 12 V rail and the 5 V logic rail.</li>
+      </ol>
+    </li>
+
+    <li>Do <b>not</b> connect an e-match or an igniter. Proceed to OP 9.</li>
+  </ol>
+
+  <div class="caution">
+    <b>Caution.</b> The igniter outlet is now capable of firing whenever SW2 is closed and the pad node is
+    powered. Treat the IGN outlet as live from the moment SW1 is switched on. Perform all subsequent checkouts with
+    a 12 V lamp or a 100 Ω 5 W resistor in place of the igniter.
+  </div>
+</div>
+
+<!-- ================================================================== 6 -->
+<div class="page">
+  <h1><span class="new">&#9632; NEW</span>&nbsp; OP 9: Assemble and Wire the Control System</h1>
+
+  <div class="gather">
+  <table>
+    <tr><th style="width:8%">QTY</th><th style="width:26%">Part Number</th><th>Description</th></tr>
+    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>TX</b> node (or NUCLEO-H753ZI, see note)</td></tr>
+    <tr><td>1</td><td>DX-LR41-24T12S</td><td>2.4 GHz LoRa module</td></tr>
+    <tr><td>1</td><td>ANT-24G-SMA-3DBI</td><td>2.4 GHz antenna</td></tr>
+    <tr><td>1</td><td>PRINTED-CARRIER</td><td>TX-node carrier (small; may be a 3-pin harness)</td></tr>
+    <tr><td>1</td><td>LAPTOP</td><td>Operator laptop with a free USB-C port</td></tr>
+    <tr><td>1</td><td>USB-C-PANEL-1M</td><td>Panel extension from OP 6</td></tr>
+    <tr><td>1</td><td>PWRBANK-5V-2A</td><td>Optional USB power bank</td></tr>
+  </table>
+  </div>
+
+  <ol>
+    <li>Install PlatformIO on the laptop, then flash the two nodes from the change package:
+      <div class="mono" style="margin:5pt 0 6pt 0; background:#f4f6f8; padding:6pt; border:0.5pt solid #cfd6dc;">
+        cd firmware<br>
+        pio run -e tx-node&nbsp;&nbsp; -t upload&nbsp;&nbsp;&nbsp; # first board (ESP32-S3 TX)<br>
+        pio run -e pad-node&nbsp; -t upload&nbsp;&nbsp; # second board (ESP32-S3 PAD)<br>
+        pio run -e tx-nucleo -t upload&nbsp; # first board, if a NUCLEO-H753ZI is used
+      </div>
+      Flash one board at a time with the other disconnected. Label each board <b>TX</b> or <b>PAD</b> immediately;
+      the firmware is not interchangeable.
+    </li>
+    <li>Wire the TX node's DX-LR41 exactly as in OP 6 step 2 (3V3, GND, D16→TXD, D17←RXD, D18→AUX), fit the
+    antenna, and connect the node to the laptop through the panel-mounted USB-C extension.</li>
+    <li>Copy the <span class="mono">software/</span> directory to the laptop. Check that the application starts:
+      <div class="mono" style="margin:5pt 0 6pt 0; background:#f4f6f8; padding:6pt; border:0.5pt solid #cfd6dc;">
+        python software/run_gui.py --sim
+      </div>
+      The simulated pad must appear in the window and the banner must read
+      <span class="mono">LINK OK — NOT ARMED</span>. This proves the laptop side before any radio is involved.
+    </li>
+    <li>Close the simulation and start the application for real. The TX node enumerates as a USB CDC device. If
+    the port does not appear, install the ESP32 USB driver for the operating system; the node does not use a
+    CH340 or CP210x bridge.</li>
+    <li>Record the two nodes' MAC addresses and module serials in the GSE log book. They are the only pair in the
+    fleet that will talk to each other; a spare module must be re-provisioned (§Appendix A of the change package).</li>
+    <li>Mount the TX node in the laptop bag or on the lid of the toolbox. Do not mount it inside the toolbox: the
+    antenna must have line of sight to the pad.</li>
+  </ol>
+
+  <div class="note">
+    <b>Alternative TX node: NUCLEO-H753ZI.</b> The laptop-side node carries no safety state, so it may be built
+    from an ST NUCLEO-H753ZI (MB1364E) instead of the ESP32-S3 without any other change. The node then presents
+    itself as an ST-LINK virtual COM port, which needs no driver. Wire the module to <b>USART2</b> —
+    PD5 (CN11 pin 41) to module RXD, PD6 (CN11 pin 43) to module TXD, PD7 (CN11 pin 45) to AUX, 3V3 from CN11 pin 5
+    and GND from CN11 pin 8 — flash with <span class="mono">pio run -e tx-nucleo -t upload</span>, and give the
+    application the new port name. The laptop, the pad node, the protocol, the channel map and every procedure in
+    this section are unchanged: both builds run the same bridge code and the same 20 Hz pacing, 200 ms stale-frame
+    rejection and 0.3 s dead-man. Two cautions specific to this board: the VCP is <b>USART3</b> (PD8/PD9), not
+    USART2, and the Arduino headers D0/D1 are PG9/PG14 and are <b>not</b> a UART.
+  </div>
+
+  <h2>Harness colour convention</h2>
+  <table>
+    <tr><th style="width:18%">Signal</th><th style="width:18%">Pad-node pin</th><th>Connector</th><th>Note</th></tr>
+    <tr><td>FILL PWM</td><td>D4</td><td>3-pin header, signal on the outside pin</td><td>matches the vehicle harness order</td></tr>
+    <tr><td>VEHICLE PWM</td><td>D5</td><td>3-pin header, feeds the Y-harness</td><td>both valves move together</td></tr>
+    <tr><td>PURGE PWM</td><td>D6</td><td>3-pin header</td><td>optional valve</td></tr>
+    <tr><td>IGN</td><td>D7 → relay</td><td>NEMA outlet, longer slot = +12 V</td><td>identical to rev 01 outlet wiring</td></tr>
+    <tr><td>HEARTBEAT</td><td>D8</td><td>on-carrier only</td><td>25 Hz, drives Q1</td></tr>
+    <tr><td>UART</td><td>D16 / D17 / D18</td><td>4-pin header</td><td>9600 8N1</td></tr>
+  </table>
+
+  <div class="note">
+    <b>Why the heartbeat exists.</b> The relay coil is wired in series with a MOSFET that only conducts while the
+    pad node is toggling D8. A firmware hang, a crash loop or a failed flash therefore drops the igniter without
+    relying on any software watchdog. The microcontroller's own task watchdog is a second, slower layer.
+  </div>
+</div>
+
+<!-- ================================================================== 7 -->
+<div class="page">
+  <h1><span class="new">&#9632; NEW</span>&nbsp; OP 10: Node Bring-up, Configuration and Checkout</h1>
+
+  <p class="small">This operation replaces rev 01 OP 8 (Transmitter Setup and Firmware Configuration) in full. It
+  must be completed, and its results recorded, before any pressure source is connected to the GSE and before any
+  igniter is attached.</p>
+
+  <h3>Power-up order</h3>
+  <ol>
+    <li>Power the TX node from the laptop and start the application.</li>
+    <li>Select the TX node's port and press <b>Connect</b>. The event log shows <span class="mono">connected</span>,
+    then <span class="mono">HELLO_OK</span> once the pad answers.</li>
+    <li>Turn SW1 on. Verify that the banner changes to <span class="mono">LINK OK — NOT ARMED</span> within one
+    second, that <span class="mono">last valid CMD</span> is below 100 ms, and that
+    <span class="mono">rejected frames</span> stays at zero.</li>
+  </ol>
+
+  <div class="caution">
+    <b>Caution.</b> The pad node always boots into the safe state: FILL closed, PURGE closed, VEHICLE open, igniter
+    off. If the read-back does not show that state after power-up, stop and troubleshoot before continuing.
+  </div>
+
+  <h3>1. Failsafe verification (mandatory, every session)</h3>
+  <ol>
+    <li>With SW2 open and no igniter connected, close and re-open SW1. The banner must turn red
+    (<span class="mono">PAD SILENT</span>) within 1.5 s and the read-back must show the safe state.</li>
+    <li>Unplug the TX node from the laptop. The pad must report <span class="mono">COMMS LOSS — PAD SAFE</span>
+    within 1.5 s.</li>
+    <li>Close the GSE application. The TX node must begin transmitting its own safe commands within 0.3 s, and the
+    pad must remain safe until the application is restarted.</li>
+    <li>Restart the application and confirm <span class="mono">LINK OK — NOT ARMED</span>.</li>
+  </ol>
+
+  <h3>2. Channel mapping verification</h3>
+  <ol>
+    <li>Operate each switch in the application and watch the corresponding valve:
+      <ol type="a">
+        <li>FILL → the fill valve opens and closes with Switch position shown as OPEN / CLOSED;</li>
+        <li>VEHICLE → both vehicle valves move together through the Y-harness;</li>
+        <li>PURGE → the purge valve moves, <em>only</em> if "purge valve fitted" is ticked.</li>
+      </ol>
+    </li>
+    <li>Verify that the read-back panel reports the state the pad actually observed, not the state that was
+    requested.</li>
+  </ol>
+
+  <h3>3. Igniter circuit verification (lamp or resistor only)</h3>
+  <ol>
+    <li>Fit a 12 V lamp across the IGN outlet.</li>
+    <li>With ARM off, press-and-hold the fire control: the lamp must stay dark and the log must record that the
+    press was inhibited.</li>
+    <li>Close SW2, press <b>ARM</b>: the banner turns green.</li>
+    <li>Press-and-hold fire: the lamp lights, the read-back shows <span class="mono">IGNITER ENERGISED</span>, and
+    the lamp goes out at the configured limit even if the control is still held.</li>
+    <li>Release and press again: the lamp must not re-light until the control has been released.</li>
+    <li>Press <span class="mono">Esc</span>: ARM drops and the lamp goes dark.</li>
+    <li>Open SW2 with ARM on and fire again: <b>the lamp must not light</b>, even though the application reports the
+    igniter as energised. This is the hardware interlock working as designed; note the mismatch in the log book.</li>
+  </ol>
+
+  <h3>4. Servo endpoint adjustment</h3>
+  <p>Perform this step before finally screwing the servo horn to the valve handle, exactly as rev 01 required.</p>
+  <ol>
+    <li>Connect only the FILL servo. Ensure no pressure source is connected.</li>
+    <li>Operate FILL. With the valve CLOSED the horn must be perpendicular to the servo body; with the valve OPEN
+    it must be parallel.</li>
+    <li>If either position cannot be reached, adjust <b>FILL travel</b> in the application (5–90°) and press
+    <b>Apply to pad</b>. The pad echoes <span class="mono">CFG_CHANGED</span> when it has accepted the value.</li>
+    <li>If the horn still cannot reach the stop at the mechanical limit, remove the horn and re-fit it one spline
+    over. Do not exceed 90° of travel: the ball valve has no over-travel stop.</li>
+    <li>Repeat for VEHICLE (both valves) and PURGE.</li>
+  </ol>
+
+  <h3>5. Configuration to record for the day</h3>
+  <table>
+    <tr><th style="width:34%">Parameter</th><th style="width:16%">Default</th><th>Range</th><th style="width:22%">Recorded value</th></tr>
+    <tr><td>FILL travel</td><td>45°</td><td>5–90°</td><td></td></tr>
+    <tr><td>VEHICLE travel</td><td>45°</td><td>5–90°</td><td></td></tr>
+    <tr><td>PURGE travel</td><td>45°</td><td>5–90°</td><td></td></tr>
+    <tr><td>Link watchdog</td><td>1.0 s</td><td>0.3–3.0 s</td><td></td></tr>
+    <tr><td>Igniter limit</td><td>0.5 s</td><td>0.1–2.0 s</td><td></td></tr>
+    <tr><td>Purge enabled</td><td>yes/no</td><td>—</td><td></td></tr>
+    <tr><td>Air-rate preset (LEVEL)</td><td>3</td><td>0–8</td><td></td></tr>
+    <tr><td>Pad module address / channel</td><td>0002 / 0C</td><td>—</td><td></td></tr>
+    <tr><td>TX module address / channel</td><td>0001 / 0E</td><td>—</td><td></td></tr>
+  </table>
+
+  <div class="note">
+    <b>Re-programming is expected.</b> The whole point of this subsystem is that the channel map, endpoints,
+    watchdog and igniter limit are software parameters. Change them from the application, record them above, and
+    re-run steps 1–3 after any change to the failsafe timing or the igniter limit.
+  </div>
+</div>
+
+<!-- ================================================================== 8 -->
+<div class="page">
+  <h1>Failsafe behaviour — reference</h1>
+
+  <p>The pad node re-derives every output, every 20 ms, from two inputs only: the last command frame it accepted,
+  and its own clock. It does not trust the laptop, the radio, or the previous state of its own outputs.</p>
+
+  <table>
+    <tr><th style="width:26%">Condition</th><th style="width:18%">FILL / PURGE</th><th style="width:16%">VEHICLE</th>
+        <th style="width:14%">IGNITER</th><th>Notes</th></tr>
+    <tr><td>Boot, no frame received yet</td><td>CLOSED</td><td>OPEN</td><td>OFF</td>
+        <td>Outputs are written before the radio is configured</td></tr>
+    <tr><td>Normal operation</td><td>follows command</td><td>follows command</td><td>armed + commanded</td>
+        <td>State read-back at 10 Hz</td></tr>
+    <tr><td>No valid frame &gt; watchdog (1.0 s)</td><td>CLOSED</td><td>OPEN</td><td>OFF</td>
+        <td>Primary failsafe; same safe set as the FS-iA10B was configured for</td></tr>
+    <tr><td>Laptop silent &gt; 0.3 s</td><td>CLOSED</td><td>OPEN</td><td>OFF</td>
+        <td>TX node synthesises safe commands at 20 Hz</td></tr>
+    <tr><td>Arm control released</td><td>unchanged</td><td>unchanged</td><td>OFF within 20 ms</td>
+        <td>Arm code is required in every frame</td></tr>
+    <tr><td>Igniter limit reached</td><td>unchanged</td><td>unchanged</td><td>OFF, latched</td>
+        <td>Requires a release and a fresh press</td></tr>
+    <tr><td>SW2 (arm key) opened</td><td>unchanged</td><td>unchanged</td><td>OFF, immediate</td>
+        <td>Hardware; independent of firmware</td></tr>
+    <tr><td>Heartbeat stopped (firmware wedged)</td><td>held</td><td>held</td><td>OFF, immediate</td>
+        <td>Hardware; the MCU reboots into the boot state within 2 s</td></tr>
+    <tr><td>Pad power lost</td><td>held</td><td>held</td><td>OFF</td>
+        <td>Servos hold position without a signal</td></tr>
+  </table>
+
+  <div class="fig">
+    <img src="fig_failsafe_timing.png" alt="failsafe timing">
+    <div class="cap"><b>Figure 6.2 (new):</b> Failsafe timing across a one-second link blackout. The command stream
+    stops, the watchdog expires, the outputs snap to the safe set, and normal operation resumes automatically when
+    frames arrive again — but arming must be re-asserted deliberately.</div>
+  </div>
+
+  <div class="fig">
+    <img src="fig_state_machine.png" alt="state machine">
+    <div class="cap"><b>Figure 6.3 (new):</b> Pad-node state machine. Arming is orthogonal to the state: even in
+    RUN, the igniter additionally requires the arm code, a fresh link, SW2 closed and the heartbeat running.</div>
+  </div>
+
+  <h2>Operator console</h2>
+  <p>The application is deliberately plain: a status banner, the switch positions, the pad's read-back, the
+  configuration panel, and an event log. Everything shown in grey or italic is <em>requested</em>; everything shown
+  solid is <em>reported by the pad</em>. The two must agree before any pressure is admitted to the vehicle.</p>
+
+  <div class="fig">
+    <img src="docs_gui.png" alt="control application">
+    <div class="cap"><b>Figure 6.4 (new):</b> GSE control application. The banner is purple because the igniter is
+    energised; the read-back confirms FILL open and VEHICLE closed. In this capture the pad is simulated — the
+    window title says so, and the same window is used for operator training.</div>
+  </div>
+</div>
+
+<!-- ================================================================== 9 -->
+<div class="page">
+  <h1>Changes to Section VII — Launch Preparation and Procedures</h1>
+
+  <p class="small">Apply these four edits when the Section VI insert is accepted. They are written as
+  drop-in replacements for the numbered steps they supersede.</p>
+
+  <h2>§7.2.1 Required items</h2>
+  <table>
+    <tr><th style="width:8%">Item</th><th>Rev 01</th><th>Rev 02</th></tr>
+    <tr><td>e</td><td class="del">Transmitter for GSE control</td>
+        <td><b>Operator laptop with the GSE application installed and charged, the TX-node carrier, and one spare
+        USB-C cable.</b> Keep the laptop in a padded case; it is now a flight-critical item.</td></tr>
+  </table>
+
+  <h2>§7.2.2 Ground system setup</h2>
+  <p>Replace step 18 with:</p>
+  <ol start="18">
+    <li>Optional: start the GSE application on the laptop, connect to the TX node, and confirm the banner reads
+    <span class="mono">LINK OK — NOT ARMED</span> and that <span class="mono">rejected frames</span> is zero. Do not
+    arm, and leave SW2 open.</li>
+  </ol>
+
+  <h2>§7.3.2 GSE startup and checkouts</h2>
+  <p>Replace steps 1–3 ("Power on Transmitter &amp; GSE") with:</p>
+  <ol>
+    <li>Start the GSE application and connect to the TX node.</li>
+    <li>Turn SW1 on. Verify that the transmitter has established a connection with the pad node within a few
+    seconds, that the banner reads <span class="mono">LINK OK — NOT ARMED</span>, and that
+    <span class="mono">last valid CMD</span> is below 100 ms.</li>
+    <li>Confirm SW2 (arm key) is open and the key is in the operator's pocket.</li>
+  </ol>
+
+  <p>Replace steps 7–11 with the same functional checks, operated from the application:</p>
+  <ol start="7">
+    <li>Command FILL open. Visually confirm that the valve has opened; the read-back must show OPEN.</li>
+    <li>Command FILL closed. Visually confirm; the read-back must show CLOSED.</li>
+    <li>Command VEHICLE open, then closed, confirming both valves follow.</li>
+    <li>Spark check, with SW2 open and the igniter leads touching each other: no spark. Close SW2, press ARM,
+    press-and-hold the fire control: a spark within 0.1 s. Release, then press <span class="mono">Esc</span>: no
+    spark, and ARM is off in the read-back.</li>
+  </ol>
+
+  <h2>§7.3.3 Vehicle arming</h2>
+  <p>Replace step 3 in part and add one step:</p>
+  <ol start="3">
+    <li>Confirm that both deployment controllers report continuity of both drogue and main ejection charges.
+    Confirm that the Operator has physical possession of the laptop and the arm key, that ARM is off, that all
+    switch positions are reported CLOSED or SAFE, and that the link banner is green or amber — never red.</li>
+  </ol>
+  <p class="small">Add after step 7 (oxidizer supply valve open):</p>
+  <ol start="8">
+    <li>Close SW2 and keep the key with the Operator. SW2 must be opened again before any person approaches the
+    pad, and before the vehicle valves are commanded open for a dump.</li>
+  </ol>
+
+  <h2>§7.5.2 Aborted firing — step 4a</h2>
+  <p>Replace the caution about not cycling the transmitter with:</p>
+  <p><b>a.</b> During this time, do not close and re-open the GSE application. Restarting the application re-runs
+  its link handshake; although the pad stays safe while the link is down, an accidental re-arm must be avoided. Do
+  not open SW2 either: the vehicle valves must remain commandable. If three attempts to remotely open the vehicle
+  valves are unsuccessful, close the application and leave it closed until the vehicle and pad are completely
+  safed.</p>
+
+  <h2>§7.5.3 Vehicle shutdown</h2>
+  <p>Add to step 1:</p>
+  <p class="small">Turn off both deployment controllers, then press <span class="mono">Esc</span> on the
+  application to drop ARM and release the igniter, then open SW2 and remove the key. Insulate the altimeter power
+  leads to prevent accidental re-arming.</p>
+</div>
+
+<!-- ================================================================== 10 -->
+<div class="page">
+  <h1>Appendix — Troubleshooting the control link</h1>
+
+  <table>
+    <tr><th style="width:24%">Symptom</th><th style="width:34%">Likely cause</th><th>Action</th></tr>
+    <tr><td>Application cannot find the port</td><td>TX node in bootloader mode, or a charge-only USB cable</td>
+        <td>Hold BOOT, tap RESET, re-flash; try a known data cable</td></tr>
+    <tr><td>Banner stays <span class="mono">NO PAD TELEMETRY</span>; pad shows an age of 65535</td>
+        <td>Pad not powered, modules not on matching LEVEL/channel, or KEY mismatch</td>
+        <td>Check SW1; open a serial terminal on the pad node at 115200 and read the boot message; re-provision both
+        modules with <span class="mono">RADIO CONFIG</span></td></tr>
+    <tr><td><span class="mono">rejected frames</span> climbing</td><td>RF interference, range, or a corrupted
+        module setting</td>
+        <td>Move the antennas clear of metal; reduce LEVEL to 5 or 7 on both ends; check <span class="mono">AT+HELP</span>
+        banners for identical LEVEL/KEY</td></tr>
+    <tr><td>Frequent <span class="mono">COMMS_LOSS</span> at 100 ft but not at 5 ft</td>
+        <td>Path obstruction or antenna polarisation</td>
+        <td>Re-orient both antennas vertically; raise the TX node; repeat the range test before proceeding</td></tr>
+    <tr><td>Pad reports RUN but ignores switch changes</td><td>Laptop clock stalled or the application lost the
+        port</td><td>Re-connect; confirm the CSV log is still being written</td></tr>
+    <tr><td>Servo buzzes at the end of travel</td><td>Travel set beyond the mechanical stop</td>
+        <td>Reduce travel for that channel by 5° and re-apply; re-fit the horn if needed</td></tr>
+    <tr><td>Igniter will not fire, read-back says energised</td><td>SW2 open (hardware interlock), or the igniter
+        limit latched after a previous press</td><td>Close SW2; release and press the fire control again</td></tr>
+    <tr><td>Igniter fires on power-up</td><td>Firmware fault — <b>stop</b></td>
+        <td>Do not fly. Re-flash, repeat the bench ignition test, and report the log file</td></tr>
+    <tr><td>PWM relay or servo twitches when the relay operates</td><td>Coil transient coupling</td>
+        <td>Verify the flyback diode orientation; add 100 nF across the relay contacts; separate the coil wiring
+        from the servo harness</td></tr>
+  </table>
+
+  <h2>Spares to carry</h2>
+  <ul>
+    <li>One spare DX-LR41-24T12S with a pre-provisioned copy of the pad configuration</li>
+    <li>One spare ESP32-S3, flashed as PAD</li>
+    <li>One spare 2.4 GHz antenna</li>
+    <li>One spare USB-C data cable, and the USB power bank</li>
+    <li>The FS-i6X and FS-iA10B, boxed, with the rev 01 OP 8 card — the rollback path if the new link repeatedly
+    fails its checkouts</li>
+  </ul>
+
+  <div class="note">
+    <b>Note on spares.</b> A spare pad node must have the same firmware version as the installed one, and its
+    module must be provisioned to the same address and channel. Label spares with the firmware version and the
+    provisioning date.
+  </div>
+</div>
+
+</body>
+</html>
