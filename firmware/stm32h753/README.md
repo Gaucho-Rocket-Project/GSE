@@ -110,6 +110,7 @@ The ST-LINK exposes **USART3 as a virtual COM port**, so one USB cable gives you
 flashing *and* the console.
 
 ```bash
+make doctor               # "the port will not open" / silent console: diagnose
 make monitor              # find the ST-LINK port, check it answers, connect
 make ports                # list serial ports, marking the ST-LINK/NUCLEO one
 make sniff SECS=3         # just dump whatever arrives for 3 s
@@ -124,6 +125,21 @@ because it tells you *why* nothing happens:
 | `Port /dev/ttyACM0 is already open by: screen (pid 5192)` | something already owns the port - close it, or `killall screen`. On Linux, ModemManager also grabs ttyACM ports: `sudo systemctl stop ModemManager`. |
 | `Checking /dev/ttyACM0 for output ... nothing.` | the port opened but the firmware did not answer a CR: wrong port (another board can own ttyACM0), or the image is not flashed. It prints the next steps. |
 | a banner + `servo>` | you are in. Ctrl-] disconnects, Ctrl-C goes to the board. |
+
+### `screen /dev/ttyACM1 115200` → `[screen is terminating]`
+
+That is not an error message - `screen` prints the real reason on the line
+above and exits. Run `make doctor`, which checks every cause it can and prints
+a verdict:
+
+| What doctor checks | Typical result |
+|---|---|
+| stdin is a terminal, `TERM` is sane | `screen` refuses to run from an IDE console or a pipe |
+| group membership | not in `dialout`/`uucp` → `EACCES` |
+| brltty, ModemManager, stale `screen` sessions | they silently steal ttyACM ports |
+| every serial port with USB VID:PID | tells you which one really is the ST-LINK (`0483`) |
+| who holds each port + the exact `errno` on open | `EBUSY`, `ENOENT`, `EIO`, … with the fix |
+| recent `dmesg` lines | "CDC device detached", cable/driver problems |
 
 `tools/find_port.py` identifies the port by **USB IDs**, not by guessing: the
 NUCLEO's ST-LINK reports VID `0483` (STMicroelectronics), while the ESP32-S3
@@ -238,6 +254,7 @@ firmware/stm32h753/
 ├── tools/
 │   ├── flash.sh          ST-LINK programming (CubeProgrammer/OpenOCD/drag-drop)
 │   ├── monitor.py        console with liveness + busy-port diagnostics
+│   ├── doctor.py         full "why won't the console open" report
 │   └── find_port.py      find the ST-LINK port by USB ID
 └── src/
     ├── board.h           register map (cross-checked against stm32h753xx.h)
@@ -298,6 +315,7 @@ make -C firmware/stm32h753 test
 
 | Symptom | Likely cause / fix |
 |---|---|
+| `screen` opens then prints `[screen is terminating]` | screen always prints the reason one line above (busy, permission denied, no such file). Run `make doctor` and read its verdict. |
 | `Device or resource busy` when opening the port | Another program owns it (screen/minicom/PuTTY/CubeIDE), or on Linux ModemManager is probing it. Run `make monitor` - it names the process - then `killall screen` and/or `sudo systemctl stop ModemManager`. |
 | The port opens, but no data comes out | Run `make monitor` instead of guessing: it sends a CR and reports what it heard. Usually it is the *other* board's ttyACM port, or the image was overwritten. |
 | Console prints a `FATAL FAULT` block | The MCU crashed and rebooted. The report gives CFSR/HFSR and the faulting PC; resolve it with `arm-none-eabi-addr2line -e out/servo.elf <PC>`. Brown-outs from insufficient servo power are the usual cause. |

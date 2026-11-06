@@ -5,6 +5,7 @@
 #   make flash           program over ST-LINK (CubeProgrammer or OpenOCD)
 #   make monitor         open the ST-LINK virtual COM port at 115200
 #   make ports           list serial ports, marking the NUCLEO's ST-LINK one
+#   make doctor          diagnose "the port will not open" / silent console
 #   make test            run the position-parser unit tests on this machine
 #   make clean
 #
@@ -68,7 +69,7 @@ OBJS := $(patsubst $(SRC)/%.c,$(BUILD)/%.o,$(SRCS))
 DEPS := $(OBJS:.o=.d)
 
 # ---------------------------------------------------------------------------
-.PHONY: all build clean flash flash-bin programmer probe erase monitor list-ports ports sniff send test verify help
+.PHONY: all build clean flash flash-bin programmer probe erase monitor list-ports ports doctor sniff send test verify help
 
 all: build
 
@@ -133,6 +134,11 @@ list-ports:
 	@./tools/find_port.py --list
 
 ports: list-ports
+
+# Full diagnosis: terminal, permissions, brltty/ModemManager/stale screen,
+# every serial port with its USB IDs, who holds it, and the exact errno.
+doctor:
+	@./tools/doctor.py $(PORT)
 
 # Dump whatever arrives for N seconds (does not open an interactive session).
 sniff:
