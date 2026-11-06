@@ -1,0 +1,14 @@
+# Build output
+firmware/stm32h753/out/
+firmware/build/
+firmware/build-uart/
+firmware/sdkconfig
+firmware/sdkconfig.old
+
+# Host test binaries
+tests/test_position
+tests/test_position_stm32
+
+# Editor / OS noise
+.DS_Store
+*.swp

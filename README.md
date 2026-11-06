@@ -343,3 +343,43 @@ make -C tests
 * Only two servos are configured, but `servo.c` is table-driven — add entries to
   `s_servos[]` (and bump `SERVO_COUNT`) to drive up to 8 on the S3's LEDC
   channels, sharing the same timer.
+
+---
+
+## NUCLEO-H753ZI (STM32) version
+
+This repository now also contains a **bare-metal C firmware for the
+NUCLEO-H753ZI** (STM32H753ZIT6) that drives the same two servos — the
+**DSSERVO DS3225MG 25 kg** digital servos from the Amazon 4-pack
+([B09SB8RMTT](https://www.amazon.com/dp/B09SB8RMTT)). It has the same terminal
+command set as the ESP32-S3 build (`on servo1`, `on both`, `servo2 45deg`,
+`off servo1`, `sweep both`, `status`, …) but talks to the registers directly:
+no HAL, no RTOS, ~1100 lines of C11, 13 KB image.
+
+| | ESP32-S3 build | **NUCLEO-H753ZI build** |
+|---|---|---|
+| Console | USB-Serial-JTAG or UART0 | **ST-LINK virtual COM port (USART3, PD8/PD9)** |
+| PWM | LEDC, 14-bit | **TIM1, 1 µs per tick** |
+| Servo 1 signal | GPIO4 | **PE9 — CN10 pin 4 (D6)** |
+| Servo 2 signal | GPIO5 | **PE11 — CN10 pin 6 (D5)** |
+| Toolchain | ESP-IDF v5.x | **arm-none-eabi-gcc** (any build) |
+| Flash | `esptool` | **ST-LINK: drag-and-drop / CubeProgrammer / OpenOCD** |
+
+* Firmware + flashing + commands:
+  **[firmware/stm32h753/README.md](firmware/stm32h753/README.md)**
+* **Wiring: [WIRING-STM32H753.md](WIRING-STM32H753.md)**
+  (diagram: [docs/wiring-stm32h753.svg](docs/wiring-stm32h753.svg) ·
+  [docs/wiring-stm32h753.png](docs/wiring-stm32h753.png))
+* Prebuilt images: `firmware/stm32h753/prebuilt/nucleo_h753zi_servo_180.bin`
+  (and `_270.bin`)
+
+```bash
+cd firmware/stm32h753
+make            # build
+make flash      # ST-LINK via OpenOCD
+make monitor    # 115200 terminal on the ST-LINK COM port
+```
+
+> **Power:** two DS3225MG can pull 4–6 A. They need their own 5–6.8 V supply
+> (≥ 6 A) and 2200 µF of bulk capacitance — never the dev board's 5 V pin.
+> Details in [WIRING-STM32H753.md §5](WIRING-STM32H753.md).
