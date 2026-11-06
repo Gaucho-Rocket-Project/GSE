@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="800" viewBox="0 0 1180 800" font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .box     { fill:#ffffff; stroke:#2b3a55; stroke-width:2.5; rx:10; }
+      .board   { fill:#f2f7fc; stroke:#2b3a55; stroke-width:3; rx:12; }
+      .supply  { fill:#fff7f7; stroke:#b03a3a; stroke-width:2.5; rx:10; }
+      .title   { font-size:27px; font-weight:bold; fill:#15202b; }
+      .sub     { font-size:15px; fill:#55677a; }
+      .servo   { font-size:16px; font-weight:bold; fill:#15202b; }
+      .pinname { font-size:14px; fill:#33475b; }
+      .boardpin{ font-size:15px; font-weight:bold; fill:#15202b; }
+      .hint    { font-size:12px; fill:#6b7c8d; }
+      .warn    { font-size:13px; font-weight:bold; fill:#b03a3a; }
+      .sig     { stroke:#e08a00; stroke-width:4; fill:none; stroke-linecap:round; }
+      .pwr     { stroke:#d33a3a; stroke-width:5; fill:none; stroke-linecap:round; }
+      .gnd     { stroke:#4a4a4a; stroke-width:5; fill:none; stroke-linecap:round; }
+      .dash    { stroke:#d33a3a; stroke-width:3; fill:none; stroke-dasharray:8 6; }
+    </style>
+  </defs>
+
+  <rect width="1180" height="800" fill="#ffffff"/>
+  <text x="590" y="40" text-anchor="middle" class="title">NUCLEO-H753ZI + two DS3225MG servos — how to wire it</text>
+  <text x="590" y="64" text-anchor="middle" class="sub">Signal: orange/white · Power: red (separate 5–6.8 V) · Ground: brown/black — all grounds joined together</text>
+
+  <!-- ======= SERVO 1 ======= -->
+  <rect x="40" y="100" width="250" height="150" class="box"/>
+  <text x="165" y="127" text-anchor="middle" class="servo">DS3225MG #1</text>
+  <text x="165" y="147" text-anchor="middle" class="hint">signal → PE9 / D6</text>
+  <text x="278" y="172" text-anchor="end" class="pinname">ORANGE</text>
+  <text x="278" y="205" text-anchor="end" class="pinname">RED</text>
+  <text x="278" y="238" text-anchor="end" class="pinname">BROWN</text>
+  <circle cx="290" cy="167" r="8" fill="#e08a00" stroke="#8a5300" stroke-width="1.5"/>
+  <circle cx="290" cy="200" r="8" fill="#d33a3a" stroke="#8a1a1a" stroke-width="1.5"/>
+  <circle cx="290" cy="233" r="8" fill="#6b4a2f" stroke="#3d2a19" stroke-width="1.5"/>
+
+  <!-- ======= SERVO 2 ======= -->
+  <rect x="40" y="290" width="250" height="150" class="box"/>
+  <text x="165" y="317" text-anchor="middle" class="servo">DS3225MG #2</text>
+  <text x="165" y="337" text-anchor="middle" class="hint">signal → PE11 / D5</text>
+  <text x="278" y="362" text-anchor="end" class="pinname">ORANGE</text>
+  <text x="278" y="395" text-anchor="end" class="pinname">RED</text>
+  <text x="278" y="428" text-anchor="end" class="pinname">BROWN</text>
+  <circle cx="290" cy="357" r="8" fill="#e08a00" stroke="#8a5300" stroke-width="1.5"/>
+  <circle cx="290" cy="390" r="8" fill="#d33a3a" stroke="#8a1a1a" stroke-width="1.5"/>
+  <circle cx="290" cy="423" r="8" fill="#6b4a2f" stroke="#3d2a19" stroke-width="1.5"/>
+
+  <!-- ======= NUCLEO BOARD ======= -->
+  <rect x="700" y="100" width="440" height="330" class="board"/>
+  <text x="920" y="128" text-anchor="middle" class="servo">NUCLEO-H753ZI</text>
+  <text x="920" y="147" text-anchor="middle" class="hint">Arduino/Zio headers CN9 (signal) and CN8 (power)</text>
+
+  <circle cx="700" cy="180" r="8" fill="#e8eef7" stroke="#2b3a55" stroke-width="2"/>
+  <text x="718" y="185" class="boardpin">CN10-4 · D6 · PE9</text>
+  <text x="880" y="185" class="hint" style="font-size:13px">TIM1_CH1 → servo 1</text>
+
+  <circle cx="700" cy="235" r="8" fill="#e8eef7" stroke="#2b3a55" stroke-width="2"/>
+  <text x="718" y="240" class="boardpin">CN10-6 · D5 · PE11</text>
+  <text x="880" y="240" class="hint" style="font-size:13px">TIM1_CH2 → servo 2</text>
+
+  <circle cx="700" cy="330" r="8" fill="#e8eef7" stroke="#2b3a55" stroke-width="2"/>
+  <text x="718" y="335" class="boardpin">GND</text>
+  <text x="800" y="335" class="hint" style="font-size:13px">common ground (any GND pin)</text>
+
+  <circle cx="700" cy="380" r="8" fill="#e8eef7" stroke="#2b3a55" stroke-width="2"/>
+  <text x="718" y="385" class="boardpin">5V</text>
+  <text x="770" y="385" class="hint" style="font-size:13px">do NOT power the servos from here</text>
+
+  <text x="1120" y="420" text-anchor="end" class="hint">ST-LINK USB → PC (flash + terminal)</text>
+
+  <!-- ======= POWER SUPPLY ======= -->
+  <rect x="700" y="470" width="440" height="230" class="supply"/>
+  <text x="920" y="497" text-anchor="middle" class="servo">External servo supply</text>
+  <text x="920" y="517" text-anchor="middle" class="hint">5–6.8 V, ≥ 6 A for two DS3225MG (never &gt; 6.8 V)</text>
+
+  <circle cx="712" cy="560" r="9" fill="#d33a3a" stroke="#8a1a1a" stroke-width="1.5"/>
+  <text x="732" y="565" class="boardpin">+5 V rail</text>
+  <circle cx="712" cy="640" r="9" fill="#4a4a4a" stroke="#222" stroke-width="1.5"/>
+  <text x="732" y="645" class="boardpin">GND rail</text>
+
+  <text x="1120" y="560" text-anchor="end" class="hint">2200 µF across +5 V / GND at the servos</text>
+  <text x="1120" y="580" text-anchor="end" class="hint">(stripe = negative leg)</text>
+  <text x="1120" y="640" text-anchor="end" class="warn">Signal wires NEVER carry servo current</text>
+
+  <!-- ======= WIRES ======= -->
+  <!-- servo 1 signal -->
+  <path class="sig" d="M298 167 H600 V180 H692"/>
+  <!-- servo 2 signal -->
+  <path class="sig" d="M298 357 H540 V235 H692"/>
+  <!-- servo power -->
+  <path class="pwr" d="M298 200 H370 V560 H704"/>
+  <path class="pwr" d="M298 390 H370 V560"/>
+  <!-- servo grounds -->
+  <path class="gnd" d="M298 233 H340 V640 H704"/>
+  <path class="gnd" d="M298 423 H340 V640"/>
+  <!-- common ground to MCU -->
+  <path class="gnd" d="M500 640 V760 H660 V330 H692"/>
+  <text x="490" y="712" class="hint" style="font-size:13px" text-anchor="end">common ground — mandatory</text>
+
+  <!-- legend -->
+  <rect x="40" y="470" width="600" height="212" class="box"/>
+  <text x="60" y="497" class="servo">Checks before power-on</text>
+  <text x="60" y="527" class="pinname">1. Both servo red wires go to the EXTERNAL supply, never to the NUCLEO 5V pin.</text>
+  <text x="60" y="552" class="pinname">2. All grounds tied together: supply − ↔ NUCLEO GND ↔ both servo brown wires.</text>
+  <text x="60" y="577" class="pinname">3. Servo 1 orange → CN10-4 (D6, PE9).  Servo 2 orange → CN10-6 (D5, PE11).</text>
+  <text x="60" y="602" class="pinname">4. 2200 µF electrolytic across the supply rails, near the servos.</text>
+  <text x="60" y="627" class="pinname">5. Servo arms can turn freely through their whole travel — nothing blocking them.</text>
+  <text x="60" y="652" class="pinname">6. Power the servo supply first, then plug the NUCLEO USB into the PC.</text>
+
+
+  <!-- footer -->
+  <text x="590" y="782" text-anchor="middle" class="hint">Firmware: firmware/stm32h753 — console on the ST-LINK virtual COM port, 115200 8N1.  Full details: WIRING-STM32H753.md</text>
+</svg>

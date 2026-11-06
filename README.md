@@ -1,381 +1,386 @@
-# GSE — Ground Support Equipment
+# ESP32-S3 dual SG90 servo firmware
 
-Operator console, wire protocol and flight-hardware firmware for a two-board
-rocket ground support station:
+C firmware (ESP-IDF v5.x) that drives **two SG90 micro servos** on an ESP32-S3
+board and lets you switch them on and off — individually or together — from a
+serial console.
 
-- **Ground board** — STMicroelectronics **`NUCLEO-H753ZI`** ([DigiKey `21348937`](https://www.digikey.com/en/products/detail/stmicroelectronics/NUCLEO-H753ZI/21348937)) connected to the operator laptop over USB / ST-LINK Virtual COM Port (`USART3`, configurable **`9600–460800 Bd`**) and bridged to either:
-  - **DX-SMART `DX-LR42-24T12D`** 2.4 GHz Semtech SX1281 UART transceiver ([Amazon `B0H8NR5QPY`](https://www.amazon.com/dp/B0H8NR5QPY?plpRedirect=mhFallback&ref=clp_cat_related_p_0)) over `USART6` (configurable **`2400–115200 Bd`**), or
-  - **CDEBYTE [`E28-2G4M27S`](https://www.cdebyte.com/products/E28-2G4M27S/4#Downloads)** 2.4 GHz Semtech `SX1280`/`SX1281` **`500 mW` (`+27 dBm`)** SPI + PA/LNA LoRa transceiver over **`SPI1` (`4 MHz`)**.
-- **Vehicle board** — paired **`NUCLEO-H753ZI`** + **`DX-LR42-24T12D`** or **`E28-2G4M27S`** on the rocket driving the fill valve servo (`FILL`), vehicle servos (`SRV`) and igniter relay (`IGN`).
+```
+servo> help
+servo> on servo1          -> servo 1 starts pulsing, centred at 1.5 ms
+servo> on servo2          -> servo 2 starts pulsing
+servo> on both            -> both at once
+servo> servo1 45deg       -> aim servo 1 at 45 degrees
+servo> both 1.8ms         -> aim both (explicit pulse width)
+servo> off servo2         -> servo 2 stops pulsing (goes limp)
+servo> sweep both         -> slow 0 -> 180 -> 0 movement test
+servo> status             -> state + pulse width + approximate angle
+```
 
-The host application (`gse-app`) uses the `serialport` crate for consistent
-cross-platform USB serial behavior in both normal GSE operation and the opt-in
-PING/PONG regression test. In normal operation it serves an embedded
-terminal-style browser console on port `8765`, speaks a
-compact COBS + CRC-16 framed protocol over USB serial (or TCP against the
-built-in simulator), and enforces deterministic launch interlocks across two
-selectable operating modes (**`LIVE`** and **`TEST`**). Every safety rule is
-independently re-checked in the `no_std` vehicle firmware — the vehicle never
-trusts the ground station.
+Two ways to get it onto the board:
 
-<img width="8192" height="4465" alt="image" src="https://github.com/user-attachments/assets/0d05bd30-e619-4844-92db-64ce1e42b475" />
+* **A — flash the prebuilt image** (no toolchain needed, ~1 minute)
+* **B — build from source and flash** (ESP-IDF, ~15 minutes first time)
 
-## Features
+**Wiring: see [WIRING.md](WIRING.md)** (diagram: [docs/wiring.svg](docs/wiring.svg) ·
+[docs/wiring.png](docs/wiring.png)) — read §4 about power before you connect anything.
 
-- **Terminal-style web operator console** served locally (`127.0.0.1:8765` by
-  default) with per-session token auth, live Server-Sent Events (`/api/events`),
-  and zero external/CDN assets.
-- **Selectable `LIVE` and `TEST` operating modes** in **Settings** (or by
-  clicking the **`SETUP`** status pill in the header):
-  - **`LIVE` mode (`op_mode: "live"`, default)** — streamlined 2-button launch
-    interface (**`FILL[ON/OFF]`** + combined **`SRV+IGN[ON/OFF]`**) with a
-    configurable on-screen launch countdown (default `5 s`).
-  - **`TEST` mode (`op_mode: "test"`)** — 3-button checkout interface
-    (**`FILL[ON/OFF]`**, **`SRV[ON/OFF]`**, **`IGN[PWR/SAFE]`**) for testing
-    vehicle channels independently with full safety interlocks.
-- **Configurable sequence timers & pause/resume/abort controls** in **Settings** (`1..=600 s`):
-  - **Fill duration** (`fill_seconds`, default `60 s`) — auto-closes `FILL` at
-    expiry and marks the fill sequence complete. Turning `FILL -> OFF` prior to
-    expiry **pauses** the fill timer (`fill_remaining_ms` preserved), unlocks
-    `SRV` (`TEST`) / `SRV+IGN` (`LIVE`), and lets subsequent `FILL -> ON`
-    **resume** from the paused remaining time.
-  - **Ignition countdown** (`countdown_seconds`, default `5 s`) — displayed live
-    on screen before `SRV+IGN -> ON` (`LIVE`) or `IGN -> PWR` (`TEST`), and can
-    be aborted mid-countdown at any time (cancelling ignition immediately,
-    returning `SRV -> OFF` if powered, and keeping `FILL` progress intact).
-- **Live dropdown selectors & flash persistence for baud rates and radio modules** in **Settings**:
-  - **USB CDC baud rate** (`USART3` host ↔ ground board: `9600`, `19200`, `38400`, `57600`, `115200`, `230400`, `460800` baud).
-  - **UART baud rate** (`USART6` MCU ↔ UART radio: `2400`, `4800`, `9600`, `19200`, `38400`, `57600`, `115200` baud — live `AT+BAUDx` reconfiguration).
-  - **Radio module selector** (**`DX-LR42-24T12D`** UART LoRa vs **`E28-2G4M27S`** `500 mW` `+27 dBm` `SPI1` LoRa) — non-destructively probes `SX1280`/`SX1281` over `SPI1`, orchestrates an atomic two-phase `Vehicle → Ground → Host` handover with zero lost ACKs, and persists settings to STM32 Bank 2 Sector 7 internal flash (`0x081E_0000`) across power cycles.
-- **Rebindable keyboard shortcuts** — defaults:
-  - `F` — `FILL` toggle (`ON` / `OFF`)
-  - `L` — `SRV+IGN` toggle (`LIVE` mode)
-  - `S` — `SRV` toggle (`TEST` mode)
-  - `I` — `IGN` toggle (`TEST` mode)
-  - `E` — `ALL SAFE · E-STOP`
-  - `Shift+R` — `Reset controls` (forces `OFF/SAFE` and clears latches)
-  - `R` — `Reset fill seq`
-  - `Shift+C` — `Clear faults`
-- **Live telemetry & system monitor rail** — ground/vehicle link status, RTT,
-  firmware version, device UID, safety-gate status, decoded vehicle flags,
-  latched faults, and frame counters.
-- **Session logging** — real-time filterable log stream in the UI plus
-  append-only `session-<timestamp>.log` on disk and one-click CSV download.
-- **Cross-platform USB serial** — shared `serialport` backend for the live
-  application and regression test, with automatic ground-board port discovery
-  (`port: "auto"`).
-- **Hardware-accurate simulator (`gse-sim`)** — executes the exact `no_std`
-  ground-bridge and vehicle state machines over TCP with configurable RF
-  latency, packet drops and bit errors.
-
-## Operating modes (`LIVE` vs `TEST`)
-
-Operators can switch between **`LIVE`** and **`TEST`** in **Settings → Operating
-Mode** whenever all vehicle outputs are `OFF/SAFE` and no launch countdown or
-activating command is in progress.
-
-| Aspect | `LIVE` Mode (`op_mode: "live"`, default) | `TEST` Mode (`op_mode: "test"`) |
+| Signal | ESP32-S3 | SG90 wire |
 |---|---|---|
-| Console controls | `FILL[ON/OFF]` + `SRV+IGN[ON/OFF]` (2 buttons) | `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]` (3 buttons) |
-| Fill sequence & pause/resume | `FILL ON` → auto `FILL OFF` after `fill_seconds` (`FILL_SEQ_COMPLETE`), or manual `FILL OFF` prior to expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) so `FILL ON` resumes | Identical (`FILL ON` → auto `FILL OFF`, or manual `FILL OFF` pauses timer and `FILL ON` resumes) |
-| Pre-fill lock | `SRV+IGN` starts `OFF/SAFE` and unlocks once `FILL` completes or is paused `OFF` | `SRV` and `IGN` start locked and `SRV` unlocks once `FILL` completes or is paused `OFF`; `IGN` additionally requires `SRV = ON` |
-| Firing sequence | Pressing `SRV+IGN` runs an on-screen countdown (`countdown_seconds`, default `5 s`), then holds at `T-0.0 s` with outputs `OFF/SAFE`; operator must press `L` to command `Control::SrvIgn` (`ON`) → `ON/PWR` | Operator enables `SRV ON`, then pressing `IGN` (optional confirm dialog) runs the countdown and holds at `T-0.0 s`; operator must press `L` to command `Control::Ign` (`ON`) → `PWR` |
-| Safe shutoff | Pressing `SRV+IGN` while `ON/PWR` commands `Control::SrvIgn` (`OFF`) → safes `IGN` first, then `SRV` → `OFF/SAFE` | Operator commands `IGN SAFE`, then `SRV OFF` (`SRV OFF` is blocked while `IGN` is `PWR`) |
-| Countdown abort | Pressing `Shift+L`, clicking `ABORT` / the safe toggle, or posting `abort_countdown` cancels the countdown with outputs `OFF/SAFE` and preserves `FILL` state | Pressing `Shift+L`, clicking `ABORT` / `IGN SAFE`, or posting `abort_countdown` cancels `IGN`, commands `SRV -> OFF`, and preserves `FILL` state |
+| Servo 1 PWM | **GPIO4** | orange |
+| Servo 2 PWM | **GPIO5** | orange |
+| Power | **5 V** (external supply ≥ 1 A recommended) | red |
+| Ground | **GND** (common with the supply) | brown |
 
-- **LIVE sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → press SRV+IGN → (abortable countdown) → HOLD at 0.0 s → manually press L to trigger SRV+IGN ON/PWR → SRV+IGN OFF/SAFE`
-- **TEST sequence:** `FILL ON → (auto FILL OFF, or early FILL OFF pause / FILL ON resume) → SRV ON → press IGN → (abortable countdown) → HOLD at 0.0 s → manually press L to trigger IGN PWR → IGN SAFE → SRV OFF`
-- **No automatic ignition:** countdown completion never energises IGN; it stays at `0.0 s` with outputs `OFF/SAFE` until the operator explicitly presses `L`. `Shift+L` cancels the active countdown; the abort button and safe-toggle also remain available.
+### Supported servos
 
-## Safety interlocks
+| Servo | Build / image | Power per servo |
+|---|---|---|
+| **SG90 / MG90S** (micro) | default, `SERVO_TYPE=1` | ~0.25 A moving, 0.36 A stall |
+| **DSSERVO DS3225MG 25 kg** (180° or 270°) | `SERVO_TYPE=2`, images `ds3225-*` | **1–2 A moving, 2.1–2.9 A stall** |
 
-Every gate is evaluated in `gse-app` (greying out buttons with human-readable
-reasons and rejecting API/keyboard requests) **and** re-evaluated independently
-on the STM32H753ZI vehicle board. There is **no override** in either layer.
+Both use the same 50 Hz / 3-wire interface, so the wiring is identical — but the
+25 kg servos need a **separate 5–6.8 V supply of ≥ 6 A for two units** and much
+bigger bulk capacitance. Full details: **[WIRING.md §9](WIRING.md)**.
 
-| # | Rule | Where enforced |
-|---|------|----------------|
-| 1 | `FILL` and `SRV` can never be `ON` simultaneously | `safety.rs`, `fsm.rs`, `vehicle.rs` |
-| 2 | `FILL` closes automatically after `fill_seconds` (`FILL_SEQ_COMPLETE`), while manual `FILL OFF` before expiry pauses `fill_remaining_ms` (`FILL_PAUSED`) for later resume; only uncommanded fault closes (`E-STOP` / RF timeout mid-fill) set `FILL_SEQ_ABORTED` | `engine.rs` auto-off on board timer + vehicle `close_fill` & 2 s hardware backstop in `vehicle.rs` |
-| 3 | `SRV ON` (`TEST`), `IGN PWR` (`TEST`), and `SRV+IGN ON` (`LIVE`) stay locked until `FILL` has completed or been paused `OFF` without an uncommanded abort | `safety.rs` + `fsm.rs` + `vehicle.rs` |
-| 4 | In `TEST` mode, `IGN PWR` requires `SRV = ON`, runs an abortable `countdown_seconds` countdown, and `SRV OFF` is refused while `IGN = PWR` | `safety.rs` + `engine.rs` + `fsm.rs` + `vehicle.rs` |
-| 5 | Aborting an active countdown (`IGN` or `SRV+IGN`) immediately cancels ignition, closes `SRV` if powered, and keeps `FILL` progress intact | `safety.rs` + `engine.rs` |
-| 6 | Operating mode (`LIVE` ↔ `TEST`) cannot be changed while any output is active, targeted active, or counting down | `http.rs` (`HTTP 400`) + `engine.rs` |
-| 7 | Losing the RF link forces all outputs `OFF/SAFE` after 5 s and latches `INHIBITED` | `vehicle.rs` (`check_link` + `LINK_LOSS_SAFE`) |
-| 8 | `ALL SAFE · E-STOP` always wins immediately, cancelling any active countdown or in-flight command and latching `ESTOP` | `engine.rs` + `vehicle.rs` |
-| 9 | Hardware watchdog timeout (~4 s) or MCU fault resets/de-energises every pin | STM32H753 `IWDG1` + `panic` safe-park handler |
-| 10 | Every session and reconnect starts in `INIT` with all controls locked until the vehicle confirms `FILL=OFF SRV=OFF IGN=SAFE` | `engine.rs` startup safe handshake |
-| 11 | `Reset controls` always sends `SAFE_ALL` followed by `RESET_FILL`, returning the system to initial `OFF/SAFE` with latches cleared | `engine.rs` + `fsm.rs` + `vehicle.rs` |
-| 12 | Shutting down `gse-app` commands `ALL SAFE` first and waits up to 2.5 s for the vehicle `ACK` before exiting | `engine.rs` (`begin_shutdown`) |
+Pick the travel to match your servo — the 180° and 270° DS3225 variants share the
+same 500–2500 µs pulse range, so this only changes the angle maths:
 
-## Deterministic control state machine
+```bash
+make build SERVO_TYPE=2 SERVO_TRAVEL_DEG=180    # DS3225 180 deg version
+make build SERVO_TYPE=2 SERVO_TRAVEL_DEG=270    # DS3225 270 deg version
+make servo-type                                 # show what is selected
+```
 
-`FILL`, `SRV` and `IGN` are governed by a single pure transition table in
-[`crates/gse-proto/src/fsm.rs`](crates/gse-proto/src/fsm.rs), shared verbatim by
-`gse-app`, `gse-sim` and both STM32 firmware images.
+---
 
-Confirmed states are `FILL OFF|ON`, `SRV OFF|ON` and `IGN SAFE|PWR`, starting at
-`FILL OFF · SRV OFF · IGN SAFE`. Every event returns one of three outcomes:
+## What's in here
 
-| Outcome | Meaning | Console | Vehicle |
+```
+esp32s3-servo-fw/
+├── README.md                  <- you are here
+├── WIRING.md                  <- wiring + power + calibration guide
+├── docs/
+│   ├── wiring.svg             <- wiring diagram (vector)
+│   └── wiring.png             <- wiring diagram (raster)
+├── flash.sh                   <- flash the prebuilt image with esptool
+├── monitor.sh                 <- find the serial port and open the console
+├── prebuilt/
+│   ├── esp32s3_servo_usb_full.bin                <- SG90/micro, native USB
+│   ├── esp32s3_servo_uart_full.bin               <- SG90/micro, UART0
+│   ├── esp32s3_servo_ds3225_180_usb_full.bin     <- DS3225MG 180 deg, native USB
+│   ├── esp32s3_servo_ds3225_180_uart_full.bin    <- DS3225MG 180 deg, UART0
+│   ├── esp32s3_servo_ds3225_270_usb_full.bin     <- DS3225MG 270 deg, native USB
+│   └── esp32s3_servo_ds3225_270_uart_full.bin    <- DS3225MG 270 deg, UART0
+├── firmware/                  <- the ESP-IDF project
+│   ├── CMakeLists.txt
+│   ├── Makefile               <- make build / flash / monitor wrappers
+│   ├── sdkconfig.defaults     <- USB-console build config
+│   ├── sdkconfig.defaults.uart<- UART-console build config
+│   └── main/
+│       ├── app_main.c         <- command console (the "on/off" interface)
+│       ├── servo.c/.h         <- SG90 driver on the LEDC PWM peripheral
+│       ├── position.c/.h      <- position/pulse parser (host-testable)
+│       ├── console_io.c/.h    <- line input over USB-Serial-JTAG or UART
+│       └── CMakeLists.txt
+└── tests/
+    ├── test_position.c        <- unit tests for the parser (runs on a PC)
+    └── Makefile               <- make -C tests
+```
+
+---
+
+## A. Flash the prebuilt image (fastest)
+
+The images in `prebuilt/` are complete: **bootloader + partition table +
+application** merged into one file, flashed at offset `0x0`. They were built
+with ESP-IDF v5.4.1 for the ESP32-S3, 8 MB flash, 80 MHz.
+
+### A.1 Install esptool
+
+```bash
+pip install esptool
+# or, if you already have ESP-IDF:  . $IDF_PATH/export.sh
+```
+
+### A.2 Plug in the board
+
+Two different USB ports exist on ESP32-S3 boards:
+
+| Port on the board | What it is | Port name you get | Which build to use |
 |---|---|---|---|
-| `Allowed(next)` | legal transition to `next` | button enabled | actuates output, waits settle time, sends `ACK` (`Ok`) |
-| `NoOp(same)` | already in target state | button disabled with `"already …"` | sends `ACK` (`Ok`), no actuation |
-| `Blocked(reason)` | safety gate refuses move | button disabled with blocking reason | sends `ACK` (`RejectedSafety`, `reason`) |
+| **USB** (native, labelled "USB" / "OTG" / "USB-Serial-JTAG") | the chip's built-in USB peripheral | `ttyACM0` · `cu.usbmodem*` · `COMx` | `usb` (default) |
+| **UART / COM** (labelled "COM" / "UART", next to it) | a USB-UART bridge chip (CP210x / CH340) | **`ttyUSB0`** · `cu.usbserial*` · `COMx` | **`uart`** |
 
-Confirmed state in the console updates **only when the vehicle `ACK` lands**.
-While a command is in flight, the console displays the target after `→` without
-changing confirmed state badges.
+**The port name tells you which build you need:**
 
-| Event | Preconditions | Result |
-|---|---|---|
-| `FILL ON` | `FILL=OFF, SRV=OFF, IGN=SAFE` | `FILL=ON` (resumes saved `fill_remaining_ms` if `FILL_PAUSED`, else starts `fill_seconds`) |
-| `FILL OFF` | `FILL=ON` | `FILL=OFF` (pauses `fill_remaining_ms` + unlocks downstream channels if closed before expiry) |
-| `SRV ON` (`TEST`) | `FILL=OFF, IGN=SAFE`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON` (`Blocked` otherwise) |
-| `SRV OFF` (`TEST`) | `SRV=ON, IGN=SAFE` | `SRV=OFF` (`Blocked` while `IGN=PWR`) |
-| `IGN PWR` (`TEST`) | `FILL=OFF, SRV=ON`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `IGN=PWR` (`Blocked` otherwise) |
-| `IGN SAFE` (`TEST`) | `IGN=PWR` | `IGN=SAFE` (`NoOp` if already `SAFE`) |
-| `SRV+IGN ON` (`LIVE`) | `FILL=OFF`, `(fill_seq_complete \|\| fill_paused)`, `!fill_seq_aborted`, `!inhibited`, `!estop` | `SRV=ON, IGN=PWR` (`NoOp` if already `ON/PWR`, `Blocked` otherwise) |
-| `SRV+IGN OFF` (`LIVE`) | `SRV=ON` or `IGN=PWR` | `SRV=OFF, IGN=SAFE` (`NoOp` if already `OFF/SAFE`) |
-| `SAFE ALL` / `RESET` | any state | `FILL=OFF, SRV=OFF, IGN=SAFE` |
+* `ttyACM*` / `cu.usbmodem*` → this is the native USB port → flash the **`usb`** image.
+* `ttyUSB*` / `cu.usbserial*` / `cu.wchusbserial*` → this is the UART bridge → either
+  plug into the native USB port instead, or flash the **`uart`** image.
 
-## Quick start with the simulator
+A mismatch here is the classic "the port opens but nothing prints, and `screen`
+exits immediately" symptom. `./monitor.sh` now detects it for you.
+
+### A.3 Flash
 
 ```bash
-cargo build --workspace
-cargo run -p gse-app -- --sim   # starts gse-sim automatically; console at http://127.0.0.1:8765/
+./flash.sh                     # SG90 build, USB console, auto-detect port
+./flash.sh /dev/ttyACM0        # explicit port
+./flash.sh /dev/ttyUSB0 uart   # SG90 build, UART console
+
+# DS3225MG 25 kg servos (see WIRING.md section 9)
+./flash.sh /dev/ttyACM0 ds3225-180        # 180 deg version
+./flash.sh /dev/ttyACM0 ds3225-270        # 270 deg version
+./flash.sh /dev/ttyUSB0 ds3225-180-uart   # ... UART console variants exist too
 ```
 
-Use `--no-browser` on headless machines and `--host 0.0.0.0` when serving to a
-remote browser or container preview:
+Or do it by hand (same thing):
 
 ```bash
-./target/debug/gse-app --sim --no-browser --host 0.0.0.0 --http-port 8765
+esptool.py --chip esp32s3 -b 460800 write_flash \
+    --flash_mode dio --flash_freq 80m --flash_size 8MB \
+    0x0 prebuilt/esp32s3_servo_usb_full.bin
+
+# (that is exactly what flash.sh runs; add "-p /dev/ttyACM0" to pick the port)
 ```
 
-To simulate degraded RF conditions (latency, packet drops and bit errors):
+No button presses are needed on a normal board: esptool resets the chip into its
+downloader automatically (DTR/RTS). If it still can't connect: **hold BOOT, tap
+RESET, release BOOT**, then run the command again.
+
+> **4 MB board?** The image is built for 8 MB flash (the usual N2R8/N8R8 module).
+> The image header says 8 MB; on a 4 MB part, erase and rebuild from source with
+> `CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y` — see part B. The app itself is ~205 KB, so
+> it fits anywhere; it's only the header's flash-size field that matters.
+
+### A.4 Open the console
+
+**First, find the port** — `/dev/ttyACM0` is only a *guess*; on macOS it is
+`/dev/cu.usbmodemXXXX`, and on some boards it is `/dev/ttyUSB0`:
 
 ```bash
-cargo run -p gse-sim -- --latency 60 --noise   # terminal 1
-cargo run -p gse-app -- --sim                  # terminal 2
+./monitor.sh --list      # show which serial ports actually exist
+./monitor.sh             # open the one it finds
+./monitor.sh /dev/ttyACM0
 ```
 
-## Running against real hardware
-
-1. Flash `gse-ground` and `gse-vehicle` (see [Firmware](#firmware) and
-   [docs/HARDWARE.md](docs/HARDWARE.md)).
-2. Plug the ground NUCLEO-H753ZI USB cable into the laptop.
-3. Launch the console:
+Or open it yourself:
 
 ```bash
-gse-app                        # auto-detects the ground board on any serial port
-gse-app --port /dev/ttyACM0    # Linux explicit port
-gse-app --port COM5 --verbose  # Windows
-gse-app --port /dev/tty.usbmodem14201
+# Linux (USB-Serial-JTAG) - baud rate is irrelevant, it is a virtual COM port
+screen /dev/ttyACM0 115200              # quit: Ctrl-A then K
+# macOS:  screen /dev/cu.usbmodem1234 115200
+# Windows: PuTTY -> Serial -> COMx -> 115200
+# no screen?  python3 -m serial.tools.miniterm /dev/ttyACM0 115200
 ```
 
-Linux users need serial group permission once:
+You should see:
+
+```
+==================================================
+ ESP32-S3  -  dual SG90 servo test firmware
+==================================================
+  servo1 : signal on GPIO4   (state: off)
+  servo2 : signal on GPIO5   (state: off)
+--------------------------------------------------
+ Type 'help' for commands.
+ ...
+servo>
+```
+
+Type `1` + Enter → servo 1 pulses to centre. Type `0` + Enter → everything off.
+
+---
+
+## B. Build from source
+
+### B.1 Install ESP-IDF (once)
 
 ```bash
-sudo usermod -aG dialout "$USER"   # log out and back in
+git clone -b v5.4.1 --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+./install.sh esp32s3
+. ./export.sh          # do this in every new terminal
 ```
 
-### Command line
+(ESP-IDF v5.0 – v5.4 should also work; the code only uses stable public APIs.)
 
-```text
-gse-app [OPTIONS]
-  --sim                 use the built-in TCP simulator (tcp:127.0.0.1:8787)
-  --port <PORT>         serial port, tcp:host:port, or 'auto' (default)
-  --baud <RATE>         serial baud rate (default 115200)
-  --config <PATH>       path to configuration JSON file
-  --host <ADDR>         HTTP bind address (default 127.0.0.1)
-  --http-port <PORT>    HTTP console port (default 8765)
-  --no-browser          do not open a browser window on startup
-  --open                force opening a browser even in headless environments
-  --verbose             print protocol diagnostics on stderr
-  -h, --help / -V, --version
-```
-
-### Configuration
-
-Persisted atomically as pretty-printed JSON on every change in **Settings**:
-
-| OS | Default path |
-|----|--------------|
-| Linux | `~/.config/gse/config.json` (honours `XDG_CONFIG_HOME`) |
-| macOS | `~/Library/Application Support/GSE/config.json` |
-| Windows | `%APPDATA%\GSE\config.json` |
-
-```json
-{
-  "op_mode": "live",
-  "fill_seconds": 60,
-  "countdown_seconds": 5,
-  "port": "auto",
-  "baud": 115200,
-  "uart_baud": 9600,
-  "radio": "dx-lr42-24t12d",
-  "confirm_ign": true,
-  "sound": true,
-  "host": "127.0.0.1",
-  "http_port": 8765,
-  "shortcuts": {
-    "fill_toggle": "F",
-    "srv_ign_toggle": "L",
-    "srv_toggle": "S",
-    "ign_toggle": "I",
-    "estop": "E",
-    "reset_controls": "Shift+R",
-    "reset_fill": "R",
-    "clear_faults": "Shift+C"
-  }
-}
-```
-
-Session logs are written alongside state files under `logs/session-<timestamp>.log`.
-
-## Using the console
-
-- **Top bar**: shows live `GROUND`, `VEHICLE`, `LINK` RTT, `SETUP` (`LIVE` or
-  `TEST`, clickable to open **Settings**), and `TARGET` (`SIMULATOR` or
-  `HARDWARE`) pills, plus `connect`, `disconnect` and `settings`.
-- **`SYS // MONITOR` left rail**: displays process health (`setup`, `gse-app`,
-  `gse-sim`, `dx-lr42-rf`), live interlock gates (`init safe`, `fill ↔ srv`,
-  `fill seq`, `srv+ign` / `ign gate`), and bus dispatch state.
-- **Control toggles**: horizontal terminal switches (`FILL[ON/OFF]`,
-  `SRV+IGN[ON/OFF]` in `LIVE`; `FILL[ON/OFF]`, `SRV[ON/OFF]`, `IGN[PWR/SAFE]`
-  in `TEST`). Whenever a gate is closed, the button is disabled and displays the
-  exact reason underneath.
-- **On-screen countdown & abort (`LIVE` & `TEST` modes)**: pressing `SRV+IGN`
-  (`LIVE`) or `IGN` (`TEST`) displays `#countdown-banner` (`T - X.X s`, progress
-  bar, and **`ABORT`** button) counting down to `0.0 s`. Aborting during the
-  countdown immediately cancels ignition, closes `SRV` if powered, and keeps
-  `FILL` progress intact.
-- **Settings modal**: configures **Operating Mode** (`LIVE` / `TEST`), serial
-  port & baud rate, **fill duration (seconds)** (`1..=600`), **ignition
-  countdown (seconds)** (`1..=600`), `ask before IGN PWR` (`TEST` mode),
-  `audible alerts`, and click-to-record keyboard shortcuts.
-
-## HTTP & SSE API
-
-All endpoints require the per-session `X-GSE-Token` header (or `?token=` query
-parameter on `GET /api/events` and `GET /api/log.csv`), except `GET /`, static
-assets, and `GET /api/health`.
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/api/health` | `GET` | Liveness check (`{"ok":true,"subscribers":N}`) |
-| `/api/state` | `GET` | Full JSON snapshot (`config`, `ground`, `vehicle`, `controls`, `fill`, `countdown`, `actions`, `stats`) |
-| `/api/events` | `GET` | SSE stream emitting `state` and `log` events |
-| `/api/command` | `POST` | Dispatch action (`fill_on`, `fill_off`, `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`, `abort_countdown`, `reset_controls`, `reset_fill`, `clear_faults`, `estop`) |
-| `/api/config` | `POST` | Patch configuration (`op_mode`, `fill_seconds`, `countdown_seconds`, `port`, `baud`, `confirm_ign`, `sound`) |
-| `/api/shortcuts` | `POST` | Rebind `{action, combo}` or reset `{reset: true}` |
-| `/api/ports` | `GET` | Enumerate available serial ports |
-| `/api/connect` / `/api/disconnect` | `POST` | Open/rescan or close the serial/TCP link |
-| `/api/log` / `/api/log.csv` / `/api/log/clear` | `GET` / `POST` | Query recent log entries, export CSV, or clear in-memory log |
-| `/api/shutdown` | `POST` | Command `ALL SAFE`, await `ACK`, and stop `gse-app` |
-
-## Firmware
-
-`firmware/stm32h753` contains the `no_std` STM32H753ZI package with two
-binaries:
-
-- `gse-ground` — USB CDC (`USART3`, `PD8`/`PD9`) ↔ `DX-LR42-24T12D` (`USART6`,
-  `PG14`/`PG9` + `PG10` `AUX` + `PG12`/`PG13` `M0`/`M1`) transparent frame
-  bridge + AT self-recovery + `LINKSTAT` diagnostics.
-- `gse-vehicle` — `DX-LR42-24T12D` transceiver + `TIM1` 50 Hz servo PWM (`PE9`
-  `FILL`, `PE11` `SRV`), push-pull `IGN` output (`PE13`), 250 ms telemetry,
-  5 s RF link-loss failsafe, and 4 s hardware watchdog (`IWDG1`).
+### B.2 Build and flash
 
 ```bash
-rustup target add thumbv7em-none-eabihf
-rustup component add llvm-tools
-cargo install cargo-binutils
-cd firmware/stm32h753
+cd esp32s3-servo-fw/firmware
 
-cargo build --release --bin gse-ground
-cargo objcopy --release --bin gse-ground -- -O binary ../../artifacts/gse-ground.bin
-cargo build --release --bin gse-vehicle
-cargo objcopy --release --bin gse-vehicle -- -O binary ../../artifacts/gse-vehicle.bin
+make build             # console on USB Serial/JTAG (default)
+make flash             # auto-detect port
+make monitor
+
+# or, straight idf.py:
+idf.py set-target esp32s3
+idf.py build flash monitor
 ```
 
-Cargo keeps the linked ELF files under
-`firmware/stm32h753/target/thumbv7em-none-eabihf/release/`; `cargo objcopy`
-creates the flashable flat `.bin` files in the repository's `artifacts/`
-directory. From the repository root, flash each image to a separate NUCLEO-H753ZI
-at `0x08000000` (for example, with STM32CubeProgrammer):
+For the UART-console variant, everything is the same but with `-uart`:
 
 ```bash
-STM32_Programmer_CLI -c port=SWD -w artifacts/gse-ground.bin 0x08000000 -v -rst
-# Connect the vehicle NUCLEO and flash it separately:
-STM32_Programmer_CLI -c port=SWD -w artifacts/gse-vehicle.bin 0x08000000 -v -rst
+make build-uart
+make flash-uart PORT=/dev/ttyUSB0
+make monitor-uart
 ```
 
-For a blank config sector, add `--no-default-features --features radio-e28-2g4m27s`
-to each `cargo build` and `cargo objcopy` command to select the E28 compile-time
-default; persisted board settings take precedence. `artifacts/` is generated and
-git-ignored. Alternatively, from `firmware/stm32h753`, run
-`cargo run --release --bin gse-ground` or `cargo run --release --bin gse-vehicle`
-to flash via `probe-rs` when installed. For an isolated USART3-only heartbeat
-regression that temporarily bypasses normal Ground/app logic, see
-[Temporary ping/pong regression](docs/HARDWARE.md#temporary-pingpong-regression-in-the-current-gse-binaries).
+Each variant keeps its own config and build directory (`build/`,
+`build-uart/`), so they never overwrite each other.
 
-Two factory-fresh `DX-LR42-24T12D` modules work out of the box (`9600 8N1`,
-`2424 MHz`, `LEVEL 3` `10 kbps`, `+13 dBm` on `5V`). To inspect or provision a
-custom channel / `3.7 km` long-range `LEVEL 1` preset over a `3.3 V` USB-UART
-adapter:
+### B.3 Changing pins or travel limits
+
+| What | Where |
+|---|---|
+| Servo model / travel | `make build SERVO_TYPE=2 SERVO_TRAVEL_DEG=180` (no source edit) |
+| PWM pins (default GPIO4 / GPIO5) | `main/servo.c` → `s_servos[]` |
+| Pulse range (default 500–2500 µs) | `main/servo.h` → `SERVO_MIN/MAX_PULSE_US` |
+| Sweep step/delay | `main/app_main.c` → `SWEEP_STEP_US`, `SWEEP_DELAY_MS` |
+
+Rebuild and re-flash after editing.
+
+---
+
+## Commands
+
+| Command | Effect |
+|---|---|
+| `on servo1`, `on servo2`, `on both` | start the 50 Hz pulse train, centred (1.5 ms ≈ 90°) |
+| `off servo1`, `off servo2`, `off both` | stop pulses, park the signal line low → servo goes limp |
+| `servo1 90`, `servo2 45deg` | aim by angle (0–180) |
+| `servo1 1.5ms`, `both 1500us`, `both 1500` | aim by pulse width |
+| `center both` | back to 1.5 ms |
+| `sweep servo1` / `sweep both` | slow 0 → 180 → 0, ~6 s |
+| `status` or `s` | state, pulse width, approximate angle |
+| `help` or `?` | the menu |
+
+**One-key shortcuts** (just press the key + Enter):
+
+| Key | Action |
+|---|---|
+| `1` | servo 1 on (centre) |
+| `2` | servo 2 on (centre) |
+| `3` | both on (centre) |
+| `0` | both off |
+| `9` | sweep both |
+| `s` | status |
+| `?` | help |
+
+Commands are case-insensitive and tolerate extra words, e.g.
+`please turn on servo 1` works. Values are clamped to the safe pulse range
+instead of being rejected, so a typo can't drive the servo into its end stop.
+
+### What "off" means
+
+`off` stops the pulse train and holds the signal pin **low**. A servo with no
+valid pulse stops driving — it goes **limp**, it does **not** return to a park
+position, and it draws almost nothing. If you want a "parked at 90° and
+holding", use `on both` (or `center both`) — it keeps holding torque, which
+costs a little current and a little gear wear.
+
+---
+
+## How it works (for the curious)
+
+* **SG90 control**: a pulse every 20 ms, width 1.0–2.0 ms → 0–180°.
+* **Hardware PWM**: the ESP32-S3's LEDC peripheral generates it in hardware —
+  no timer jitter, nothing for the CPU to babysit. One 50 Hz timer feeds two
+  channels (LEDC channels 0 and 1 on timer 0).
+* **Resolution**: LEDC on the S3 is 14-bit → 16384 steps per 20 ms →
+  **1.22 µs per step ≈ 0.1°**, far finer than the SG90's own slop.
+* **Duty maths**: `duty = pulse_us / 20000.0 * 16384`, so 1500 µs → 1229.
+* **Start/stop**: `off` calls `ledc_stop(..., idle_level=0)`; `on` re-applies
+  `ledc_channel_config()` and sets the duty. The LEDC timer keeps running in
+  both cases, so re-enabling is instant.
+* **Console input** is read through the driver layer
+  (`usb_serial_jtag_read_bytes` / `uart_read_bytes`) with a 20 ms timeout, so the
+  parser can tell "no line yet" from "empty line", and left/right-arrow escape
+  sequences don't corrupt commands.
+* **No dynamic allocation** in the command path — it all runs on `app_main`'s
+  task with static buffers.
+
+### Tests
+
+The position parser is pure C with no ESP-IDF dependencies and has a host-side
+test suite:
 
 ```bash
-python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --inspect
-python3 scripts/configure_dx_lr42.py --port /dev/ttyUSB0 --preset long-range --channel 2440MHz --key 27182 --lock-pins
+make -C tests
 ```
 
-See [docs/HARDWARE.md](docs/HARDWARE.md) for the full 7-pin wiring table, `5.0 V`
-`VCC` / `3.3 V` CMOS rules, fail-safe pull-downs, and bench bring-up checklist.
-
-## Project layout
-
-```text
-crates/gse-proto      no_std wire framing (COBS, CRC-16), DX-LR42 constants & shared FSM
-crates/gse-fw-core    no_std ground bridge, vehicle FSM & DX-LR42 UART stream adapter
-crates/gse-app        host service, safety gates, HTTP/SSE server & embedded web UI
-crates/gse-sim        two-board TCP RF link simulator using real firmware cores
-crates/gse-fw-check   host unit tests for STM32 register, ring-buffer & AUX helpers
-firmware/stm32h753    NUCLEO-H753ZI hardware abstraction & firmware binaries
-scripts/              smoke tests, SSE state trace & DX-LR42 AT provisioning helper
-docs/                 protocol spec, hardware/wiring guide & recorded state trace
-```
-
-## Testing
-
-```bash
-cargo test --workspace --lib --bins --tests
-cargo clippy --workspace --all-targets -- -D warnings
-cargo fmt --all -- --check
-```
-
-End-to-end verification against compiled `gse-sim` + `gse-app` binaries:
-
-```bash
-cargo build --workspace
-./scripts/smoke.sh                           # 51 end-to-end checks (LIVE + TEST modes, custom countdown, E-STOP, reconnect & shutdown ALL SAFE)
-python3 scripts/state_trace.py               # full SSE transition trace across LIVE & TEST sequences
-```
-
-See [docs/state-machine-trace.md](docs/state-machine-trace.md) for a recorded
-trace and [docs/PROTOCOL.md](docs/PROTOCOL.md) for the byte-level specification.
+---
 
 ## Troubleshooting
 
-| Symptom | Check |
+| Symptom | Likely cause / fix |
 |---|---|
-| `No serial ports found` | Use a data-capable USB cable, power the board, verify ST-LINK VCP driver |
-| `No ground board responded …` | Confirm `gse-ground` is flashed, baud is `115200`, user is in `dialout` on Linux |
-| Ground `online`, vehicle stays `pinging` | Check `VCC` (`5V`, `CN8` pin 9), `PG9`/`PG14` ↔ `DX-LR42-24T12D` Pin 4 `TX` / Pin 3 `RX` (`3.3 V` TTL), matching `AT+CHANNEL` / `AT+LEVEL` / `AT+KEY`, `M0`/`M1` (`PG12`/`PG13`), and `2.4 GHz` antennas |
-| `SRV+IGN` (`LIVE`) or `SRV` (`TEST`) greyed out | Run `FILL` and let it auto-complete or click `FILL` again to pause it `OFF` (if an earlier fault set `FILL_SEQ_ABORTED`, press `Reset fill seq` first) |
-| Mode switch refused in Settings | Return all controls to `OFF/SAFE` and cancel any active countdown before switching `LIVE` ↔ `TEST` |
-| Shortcut binding rejected | Key combination is already bound to another action (named in the error toast) |
+| `screen /dev/ttyACM0 115200` → `cannot exec ...: No such file or directory` | `/dev/ttyACM0` does not exist on your machine. Run `./monitor.sh --list` to see the real name (macOS: `/dev/cu.usbmodemXXXX`, some boards: `/dev/ttyUSB0`). |
+| Port is `/dev/ttyUSB0` and `screen` exits immediately with `[screen is terminating]` | You are on the board's **USB-UART bridge** (UART0), but flashed the `usb` image whose console is on the native USB port. Run `./flash.sh /dev/ttyUSB0 uart` — or plug into the board's **USB/OTG** port and use the default build. |
+| No serial port shows up at all | Try the **other USB port** on the board; use a **data** cable; check `dmesg \| tail -20` on Linux (`cdc_acm` = native USB, `ch341`/`cp210x` = UART bridge) or install the CH340 driver on macOS/Windows. |
+| `esptool` can't find the port (USB build) | Try the other USB port on the board. On Linux your user may need the `dialout` group, or run with `sudo`. |
+| `Failed to connect ... Wrong boot mode` | Hold **BOOT**, tap **RESET**, release **BOOT**, retry. |
+| Console prints but ignores my typing (USB build) | Close any other program that has the serial port open (Arduino IDE, another monitor). Only one reader at a time. |
+| Nothing on the UART port | You flashed the `usb` build. Use 115200 8N1 **and** the `uart` image for the COM port. |
+| DS3225 twitches, buzzes, or the board resets when it moves | Almost always **power**: these stall at 2.1–2.9 A each. Use a 5–6.8 V supply ≥ 6 A for two, thick ground, ≥ 2200 µF at the servos. [WIRING.md §9.3](WIRING.md) |
+| DS3225 stops 90° short at one end | You flashed the 180° image for a **270°** servo (or vice versa). Flash the other travel build — [WIRING.md §9.2](WIRING.md) |
+| DS3225 draws current and gets warm while idle | It is holding torque against a load (normal) or fighting a mechanical stop (bad). Use `off` to unload it. |
+| Servo twitches or the board resets when it moves | Power. The servos are browning out the supply → see [WIRING.md](WIRING.md) §4: external 5 V ≥ 1 A, common ground, 470–1000 µF cap. |
+| Servo is silent but wired | Run the bench test in [WIRING.md](WIRING.md) §6. Check the orange wire is on GPIO4/GPIO5 and the firmware was built with the same pins. |
+| Servo buzzes/hunts at one end | Narrow `SERVO_MIN/MAX_PULSE_US` — [WIRING.md](WIRING.md) §7. |
+| Servo turns the wrong way / offset | That's mechanical, not a bug: re-mount the horn at the position you want while the servo is at `center`. |
+| Servo gets warm when idle | It's holding torque against a load, or fighting its end stop. Narrow the range or use `off`. |
+| Console garbled on the UART build | Wrong baud rate, or the wrong port selected. |
 
-## License
+---
 
-MIT OR Apache-2.0.
+## Notes / limits
+
+* SG90 is an **analog, non-feedback** servo: the firmware commands an angle, it
+  can never read one back. `status` shows what was *commanded*.
+* Servo horns are keyed but can be re-seated: centre the servo (`center both`)
+  before pressing a horn on, so "90°" really looks like the middle.
+* Only two servos are configured, but `servo.c` is table-driven — add entries to
+  `s_servos[]` (and bump `SERVO_COUNT`) to drive up to 8 on the S3's LEDC
+  channels, sharing the same timer.
+
+---
+
+## NUCLEO-H753ZI (STM32) version
+
+This repository now also contains a **bare-metal C firmware for the
+NUCLEO-H753ZI** (STM32H753ZIT6) that drives the same two servos — the
+**DSSERVO DS3225MG 25 kg** digital servos from the Amazon 4-pack
+([B09SB8RMTT](https://www.amazon.com/dp/B09SB8RMTT)). It has the same terminal
+command set as the ESP32-S3 build (`on servo1`, `on both`, `servo2 45deg`,
+`off servo1`, `sweep both`, `status`, …) but talks to the registers directly:
+no HAL, no RTOS, ~1100 lines of C11, 13 KB image.
+
+| | ESP32-S3 build | **NUCLEO-H753ZI build** |
+|---|---|---|
+| Console | USB-Serial-JTAG or UART0 | **ST-LINK virtual COM port (USART3, PD8/PD9)** |
+| PWM | LEDC, 14-bit | **TIM1, 1 µs per tick** |
+| Servo 1 signal | GPIO4 | **PE9 — CN10 pin 4 (D6)** |
+| Servo 2 signal | GPIO5 | **PE11 — CN10 pin 6 (D5)** |
+| Toolchain | ESP-IDF v5.x | **arm-none-eabi-gcc** (any build) |
+| Flash | `esptool` | **ST-LINK: drag-and-drop / CubeProgrammer / OpenOCD** |
+
+* Firmware + flashing + commands:
+  **[firmware/stm32h753/README.md](firmware/stm32h753/README.md)**
+* **Wiring: [WIRING-STM32H753.md](WIRING-STM32H753.md)**
+  (diagram: [docs/wiring-stm32h753.svg](docs/wiring-stm32h753.svg) ·
+  [docs/wiring-stm32h753.png](docs/wiring-stm32h753.png))
+* Prebuilt images: `firmware/stm32h753/prebuilt/nucleo_h753zi_servo_180.bin`
+  (and `_270.bin`)
+
+```bash
+cd firmware/stm32h753
+make            # build
+make flash      # ST-LINK (CubeProgrammer / OpenOCD / drag-and-drop)
+make monitor    # finds the ST-LINK COM port, checks it, opens 115200
+make ports      # which serial port is actually the NUCLEO?
+```
+
+> **Power:** two DS3225MG can pull 4–6 A. They need their own 5–6.8 V supply
+> (≥ 6 A) and 2200 µF of bulk capacitance — never the dev board's 5 V pin.
+> Details in [WIRING-STM32H753.md §5](WIRING-STM32H753.md).

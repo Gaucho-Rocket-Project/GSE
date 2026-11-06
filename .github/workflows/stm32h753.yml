@@ -1,0 +1,62 @@
+name: stm32h753 firmware
+
+# Builds the NUCLEO-H753ZI servo firmware and runs the host-side parser tests.
+on:
+  push:
+    paths:
+      - 'firmware/stm32h753/**'
+      - 'tests/test_position_stm32.c'
+      - 'tests/Makefile'
+      - '.github/workflows/stm32h753.yml'
+  pull_request:
+    paths:
+      - 'firmware/stm32h753/**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: parser unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C tests test-stm32
+
+  build:
+    name: build (arm-none-eabi-gcc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Arm GNU toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi
+          arm-none-eabi-gcc --version | head -1
+      - name: Build 180 deg image
+        working-directory: firmware/stm32h753
+        run: make build TRAVEL=180
+      - name: Build 270 deg image
+        working-directory: firmware/stm32h753
+        run: make clean && make build TRAVEL=270
+      - name: Check the image header
+        working-directory: firmware/stm32h753
+        run: |
+          python3 - <<'PY'
+          import struct, sys
+          d = open('out/servo.bin', 'rb').read()
+          sp, reset = struct.unpack_from('<II', d, 0)
+          print('size  %d bytes' % len(d))
+          print('stack 0x%08x' % sp)
+          print('reset 0x%08x' % reset)
+          assert sp == 0x24080000, 'stack pointer must be top of AXI SRAM'
+          assert reset & 1 == 1, 'reset vector must be a Thumb address'
+          assert 0x08000000 <= (reset & ~1) < 0x08200000, 'reset vector not in flash'
+          assert len(d) > 4096, 'image suspiciously small'
+          assert len(d) < 2048 * 1024, 'image does not fit in flash'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nucleo-h753zi-servo-firmware
+          path: |
+            firmware/stm32h753/out/servo.bin
+            firmware/stm32h753/out/servo.hex
+            firmware/stm32h753/out/servo.elf
