@@ -247,7 +247,8 @@
     <tr><th style="width:6%">Line</th><th style="width:22%">Part Number</th><th>Description</th>
         <th style="width:9%" class="num">Unit</th><th style="width:6%" class="num">Qty</th>
         <th style="width:9%" class="num">Cost</th><th style="width:16%">Context</th></tr>
-    <tr><td>38</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit with native USB (or N16R8 / 8 MB equivalent)</td>
+    <tr><td>38</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit with native USB (or N16R8 / 8 MB equivalent;
+        or ESP-32S / ESP32-WROOM-32 devkit, see note)</td>
         <td class="num">$8.00</td><td class="num">2</td><td class="num">$16.00</td><td>TX node, pad node</td></tr>
     <tr><td>39</td><td>DX-LR41-24T12S</td><td>2.4 GHz SX1281 LoRa module, UART, 13 dBm</td>
         <td class="num">$9.50</td><td class="num">2</td><td class="num">$19.00</td><td>Radio pair</td></tr>
@@ -369,7 +370,7 @@
   <div class="gather">
   <table>
     <tr><th style="width:8%">QTY</th><th style="width:26%">Part Number</th><th>Description</th></tr>
-    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>PAD</b> node</td></tr>
+    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>PAD</b> node<br>(or ESP-32S, see note)</td></tr>
     <tr><td>1</td><td>DX-LR41-24T12S</td><td>2.4 GHz LoRa module</td></tr>
     <tr><td>1</td><td>ANT-24G-SMA-3DBI</td><td>2.4 GHz antenna</td></tr>
     <tr><td>1</td><td>PRINTED-CARRIER</td><td>Pad-node carrier board</td></tr>
@@ -405,16 +406,20 @@
 
     <li>Wire the three servo outputs to the carrier headers, observing the pin order used by the vehicle harness:
     signal → <b>D4</b> (FILL), <b>D5</b> (VEHICLE, both servos via the existing Y-harness), <b>D6</b> (PURGE);
-    +5 V from the DROK regulator to the header power pins; ground common to the regulator ground.</li>
+    +5 V from the DROK regulator to the header power pins; ground common to the regulator ground.
+    <b>ESP-32S board:</b> PURGE moves from D6 to <b>D15</b>, the igniter from D7 to <b>D13</b> and the heartbeat
+    from D8 to <b>D33</b> (GPIO6–11 are the SPI flash on an ESP32-WROOM-32). D4 and D5 do not move. Label the
+    harness for the board actually fitted.</li>
 
     <li>Wire the ignition branch:
       <ol type="a">
         <li>12 V battery positive → <b>F1</b> (5 A) → <b>SW1</b> → DROK regulator input and the ignition branch;</li>
         <li>ignition branch → <b>SW2</b> arm key → relay module contact (NO) → the <span class="mono">IGN</span>
         NEMA outlet (longer slot), exactly as the rev 01 relay was wired;</li>
-        <li>relay module coil − → <b>Q2</b> drain, whose gate is <b>D7</b> and whose source is battery negative;</li>
-        <li><b>Q1</b> in series between Q2 source and ground, gate driven from <b>D8</b> through the RC pump
-        shown in Figure 6.1 panel B;</li>
+        <li>relay module coil − → <b>Q2</b> drain, whose gate is <b>D7</b> (ESP-32S board: <b>D13</b>) and whose
+        source is battery negative;</li>
+        <li><b>Q1</b> in series between Q2 source and ground, gate driven from <b>D8</b> (ESP-32S board:
+        <b>D33</b>) through the RC pump shown in Figure 6.1 panel B;</li>
         <li>1N5819 flyback across the relay coil terminals, cathode to +12 V.</li>
       </ol>
     </li>
@@ -456,7 +461,7 @@
   <div class="gather">
   <table>
     <tr><th style="width:8%">QTY</th><th style="width:26%">Part Number</th><th>Description</th></tr>
-    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>TX</b> node (or NUCLEO-H753ZI, see note)</td></tr>
+    <tr><td>1</td><td>ESP32-S3-DEVKITC-1</td><td>ESP32-S3 devkit — <b>TX</b> node (or NUCLEO-H753ZI or ESP-32S, see note)</td></tr>
     <tr><td>1</td><td>DX-LR41-24T12S</td><td>2.4 GHz LoRa module</td></tr>
     <tr><td>1</td><td>ANT-24G-SMA-3DBI</td><td>2.4 GHz antenna</td></tr>
     <tr><td>1</td><td>PRINTED-CARRIER</td><td>TX-node carrier (small; may be a 3-pin harness)</td></tr>
@@ -512,11 +517,25 @@
     <tr><th style="width:18%">Signal</th><th style="width:18%">Pad-node pin</th><th>Connector</th><th>Note</th></tr>
     <tr><td>FILL PWM</td><td>D4</td><td>3-pin header, signal on the outside pin</td><td>matches the vehicle harness order</td></tr>
     <tr><td>VEHICLE PWM</td><td>D5</td><td>3-pin header, feeds the Y-harness</td><td>both valves move together</td></tr>
-    <tr><td>PURGE PWM</td><td>D6</td><td>3-pin header</td><td>optional valve</td></tr>
-    <tr><td>IGN</td><td>D7 → relay</td><td>NEMA outlet, longer slot = +12 V</td><td>identical to rev 01 outlet wiring</td></tr>
-    <tr><td>HEARTBEAT</td><td>D8</td><td>on-carrier only</td><td>25 Hz, drives Q1</td></tr>
+    <tr><td>PURGE PWM</td><td>D6 <i>(ESP-32S: D15)</i></td><td>3-pin header</td><td>optional valve</td></tr>
+    <tr><td>IGN</td><td>D7 → relay <i>(ESP-32S: D13)</i></td><td>NEMA outlet, longer slot = +12 V</td><td>identical to rev 01 outlet wiring</td></tr>
+    <tr><td>HEARTBEAT</td><td>D8 <i>(ESP-32S: D33)</i></td><td>on-carrier only</td><td>25 Hz, drives Q1</td></tr>
     <tr><td>UART</td><td>D16 / D17 / D18</td><td>4-pin header</td><td>9600 8N1</td></tr>
   </table>
+
+  <div class="note">
+    <b>Optional pad/TX board: ESP-32S.</b> The &ldquo;ESP-32S Development Board 2.4 GHz Dual-Mode
+    WiFi+Bluetooth&rdquo;
+    (ESP32-WROOM-32, 30/38-pin) may replace either ESP32-S3 devkit with no change to the radio wiring, the
+    protocol, the failsafes, the GUI or any procedure in this section. Build it with
+    <span class="mono">-e tx-node-esp32s</span> / <span class="mono">-e pad-node-esp32s</span>; the three
+    pad-node pads listed in OP 6 step 4 move as noted there. Its single micro-USB socket is an ordinary COM port
+    (CP2102/CH340) for both flashing and the application, so the two-socket upload caution does not apply; in
+    exchange the status LED is a single blue LED, read by blink rate: <b>5 Hz</b> radio fault, <b>2 Hz</b> no
+    link, <b>1 Hz</b> link OK not armed, <b>10 Hz</b> igniter energised, solid = booting. The boot banner prints
+    <span class="mono">board=</span> and every pin number — confirm them against the harness before connecting a
+    servo.
+  </div>
 
   <div class="note">
     <b>Why the heartbeat exists.</b> The relay coil is wired in series with a MOSFET that only conducts while the

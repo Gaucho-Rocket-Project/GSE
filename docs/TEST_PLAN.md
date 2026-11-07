@@ -10,7 +10,7 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 
 | Gate | Tests | Blocks |
 |---|---|---|
-| G1 — modules alive | T-01, T-02 | anything |
+| G1 — modules alive | T-01, T-01a, T-02 | anything |
 | G2 — link | T-03, T-05, T-07 | servo integration |
 | G3 — safety | T-04, T-06 | connecting a real e-match |
 | G4 — flight worthiness | T-08, T-09, T-10 | the first live oxidizer fill |
@@ -26,6 +26,23 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 5. Repeat for the second module; it must show the mirrored channel (`0e`) and `MAC=00,01`.
 
 **Pass:** both banners match the values in `firmware/src/config.h`. Attach the banners to the test record.
+
+---
+
+## T-01a · Board variant identification (B) — required if either node is not an ESP32-S3
+
+Purpose: prove the board in the hand matches the firmware in it. The ESP-32S variant moves three pad-node
+pads (PURGE D6→D15, IGNITER D7→D13, heartbeat D8→D33) because GPIO6–11 are SPI flash on a WROOM-32.
+
+1. Open each node's USB port at 115200 and power-cycle it.
+2. TX node must print `LOG TX esp32s3 fw 1.0 ready`, `LOG TX esp32s fw 1.0 ready` or
+   `LOG TX stm32 fw 1.0 ready`; the board name must match the board.
+3. Pad node must print `LOG PAD boot fw 1.0 board=<board> pins FILL=… VEH=… PRG=… IGN=… HB=…`.
+   ESP32-S3: `PRG=6 IGN=7 HB=8`. ESP-32S: `PRG=15 IGN=13 HB=33`.
+4. With a lamp (never an igniter) on IGN: confirm the relay clicks only on the pad listed in the banner.
+
+**Pass:** banner board and pin numbers match the physical harness; no probing needed to find out which
+pad does what. Record board type and environment name for both nodes.
 
 ---
 

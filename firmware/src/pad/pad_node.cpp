@@ -62,6 +62,37 @@ static uint32_t  lastDiagMs = 0, lastByteMs = 0, lastLedMs = 0;
 static bool      phase = false;
 static uint32_t  rxBytes = 0, sfFrames = 0;   /* anything at all off the module */
 
+/* ------------------------------------------------------------------- status
+ * One place that maps "what is the pad doing" to "what the indicator shows",
+ * because the two board variants have different indicators: a WS2812 that can
+ * show a colour (ESP32-S3) and a single blue LED that cannot (ESP-32S).  The
+ * colour build keeps its original colours; the single-LED build gets a blink
+ * pattern instead.  Either way the state is readable without a serial port,
+ * which is the point -- USB is often the thing that is broken.            */
+enum : uint8_t { LED_BOOT, LED_RADIO_FAULT, LED_NO_LINK, LED_LINK_OK, LED_IGN_ON };
+
+static void led_show(uint8_t mode, bool ph)
+{
+#if GSE_HAS_RGB_LED
+    switch (mode) {
+    case LED_RADIO_FAULT: diag::led(40, 0, 0);  break;   /* red             */
+    case LED_NO_LINK:     diag::led(ph ? 40 : 0, 12, 0); break; /* amber    */
+    case LED_LINK_OK:     diag::led(0, ph ? 40 : 0, 10); break; /* green    */
+    case LED_IGN_ON:      diag::led(40, 0, 50); break;   /* purple          */
+    default:              diag::led(0, 0, 40);  break;   /* blue: booting   */
+    }
+#else
+    (void)ph;                    /* the pattern is generated inside led_simple */
+    switch (mode) {
+    case LED_RADIO_FAULT: diag::led_simple(1, 100); break;  /* 5 Hz fast    */
+    case LED_NO_LINK:     diag::led_simple(1, 250); break;  /* 2 Hz         */
+    case LED_LINK_OK:     diag::led_simple(1, 500); break;  /* 1 Hz         */
+    case LED_IGN_ON:      diag::led_simple(1,  50); break;  /* 10 Hz urgent */
+    default:              diag::led_simple(1,   0); break;  /* solid on     */
+    }
+#endif
+}
+
 /* ------------------------------------------------------------------ helpers */
 /* 50 Hz, 12-bit LEDC: period 20 000 us == 4096 counts -> 0.2048 counts/us  */
 #define US_TO_DUTY(us) ((uint32_t)(((uint32_t)(us) * 4096u) / 20000u))
@@ -217,6 +248,7 @@ void setup()
     pinMode(PIN_RELAY_IGN, OUTPUT);
     digitalWrite(PIN_RELAY_IGN, LOW);
     pinMode(PIN_HB, OUTPUT);
+    diag::led_pin_begin();                    /* plain LED board only      */
 
     const int pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
@@ -231,10 +263,10 @@ void setup()
     driveOutputs(safe);                                /* safe before radio  */
 
     diag::begin();
-    diag::line("PAD boot fw %u.%u  pins FILL=%d VEH=%d PRG=%d IGN=%d HB=%d",
-               GSE_FW_MAJOR, GSE_FW_MINOR, PIN_SERVO_FILL, PIN_SERVO_VEH,
-               PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
-    diag::led(0, 0, 40);                       /* blue: booting            */
+    diag::line("PAD boot fw %u.%u board=%s pins FILL=%d VEH=%d PRG=%d IGN=%d HB=%d",
+               GSE_FW_MAJOR, GSE_FW_MINOR, GSE_BOARD_NAME,
+               PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
+    led_show(LED_BOOT, false);                 /* blue / solid: booting    */
 
     lora.begin(DXLR41_BAUD);
     diag::line("PAD radio provisioning: MODE1 LEVEL%u CH%02X KEY%u MAC%02X,%02X",
@@ -247,11 +279,11 @@ void setup()
         padState = GSE_PAD_LATCHED;
         diag::line("PAD RADIO FAULT: %s", cfgFault);
         diag::line("PAD outputs held SAFE; fix the module wiring/baud and reset.");
-        diag::led(40, 0, 0);                   /* red: radio fault         */
+        led_show(LED_RADIO_FAULT, false);      /* red / fast: radio fault  */
     } else {
         padState = GSE_PAD_WAIT_HELLO;
         diag::line("PAD RADIO OK  (waiting for the TX node)");
-        diag::led(40, 20, 0);                  /* amber: no link yet       */
+        led_show(LED_NO_LINK, false);          /* amber / 2 Hz: no link    */
     }
     /* Software watchdog: a wedged loop must not leave a valve commanded open
      * forever.  Reboot -> setup() re-asserts the safe outputs.                */
@@ -304,11 +336,11 @@ void loop()
         digitalWrite(PIN_HB, !digitalRead(PIN_HB));       /* 25 Hz square */
 
         /* status LED: the only channel that works when USB is broken */
-        if (ignOn)               diag::led(40, 0, 50);   /* purple          */
-        else if (cfgFault[0])    diag::led(40, 0, 0);    /* red             */
-        else if (o.comms_loss)   diag::led((phase ? 40 : 0), 12, 0);
-        else                     diag::led(0, (phase ? 40 : 0), 10);
         if (now - lastLedMs >= 500) { lastLedMs = now; phase = !phase; }
+        if (ignOn)               led_show(LED_IGN_ON, phase);
+        else if (cfgFault[0])    led_show(LED_RADIO_FAULT, phase);
+        else if (o.comms_loss)   led_show(LED_NO_LINK, phase);
+        else                     led_show(LED_LINK_OK, phase);
     }
 
     /* 4. edge events ------------------------------------------------------ */

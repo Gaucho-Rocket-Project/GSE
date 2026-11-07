@@ -11,7 +11,9 @@ come back.** That narrows it fast: the laptop↔TX half is proven, so the fault 
 Before anything else, check the TX node's own log. It prints these lines even when the GUI is connected:
 
 ```
-LOG TX esp32 fw 1.0 ready                         <- radio_provision() succeeded
+LOG TX esp32s3 fw 1.0 ready                       <- radio_provision() succeeded
+                                                  (TX esp32s on an ESP-32S board,
+                                                   TX stm32 on a Nucleo)
 LOG tx fwd=812 state=0 safe=0 dropped=0 radio=ok  <- once a second
 ```
 

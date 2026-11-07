@@ -1,14 +1,25 @@
 /*
- * tx_platform_esp32.cpp  --  Arduino/ESP32-S3 platform layer for the TX core
+ * tx_platform_esp32.cpp  --  Arduino/ESP32 platform layer for the TX core
  * ---------------------------------------------------------------------------
  * Same behaviour as the original tx_node.cpp, now placed underneath the
  * portable core in firmware/src/common/gse_tx_core.c so that the STM32 and the
  * ESP32 run byte-identical bridging logic.
  *
- * ESP32-S3 pins:  D16 = module TXD -> UART1 RX   (PIN_LORA_RX)
- *                 D17 = module RXD <- UART1 TX   (PIN_LORA_TX)
- *                 D18 = module AUX              (PIN_LORA_AUX)
- * USB-C native CDC = laptop side, 115200 8N1.
+ * Builds for both ESP32 board variants (see the board-variant block in
+ * config.h and the envs in platformio.ini):
+ *
+ *   ESP32-S3 (env tx-node)          ESP-32S / WROOM-32 (env tx-node-esp32s)
+ *   ------------------------------  ----------------------------------------
+ *   D16 = module TXD -> UART1 RX    D16 = module TXD -> UART1 RX
+ *   D17 = module RXD <- UART1 TX    D17 = module RXD <- UART1 TX
+ *   D18 = module AUX                D18 = module AUX
+ *   laptop on native USB-CDC        laptop on the CP2102/CH340 bridge, UART0
+ *
+ * The radio is on UART1 in both cases, so the ESP-32S's bridge on UART0 is
+ * never shared with it.  GSE_HOST_IS_BRIDGE (config.h) says which one this
+ * build has; the only consequence here is that a bridge board must keep
+ * UART0's default pins (GPIO1/GPIO3) and must never be reconfigured, while the
+ * S3 build has to make sure the CDC port is switched on at all.
  */
 #include <Arduino.h>
 #include <stdarg.h>
@@ -20,6 +31,10 @@
 
 #ifdef GSE_ROLE_PAD
 #error "tx_platform_esp32.cpp must be built with -DGSE_ROLE_TX"
+#endif
+
+#if !GSE_HOST_IS_BRIDGE && !defined(ARDUINO_USB_CDC_ON_BOOT)
+#warning "ESP32-S3 TX build without ARDUINO_USB_CDC_ON_BOOT: the laptop may not see a port"
 #endif
 
 static HardwareSerial &kRadio = Serial1;
@@ -83,7 +98,10 @@ bool gse_radio_provision(uint8_t level, uint8_t channel_hex, uint16_t key,
 /* --------------------------------------------------------------- lifecycle */
 void setup()
 {
-    Serial.begin(115200);                    /* USB-CDC to the laptop       */
+    /* laptop port.  On an S3 this is USB-CDC (ARDUINO_USB_CDC_ON_BOOT makes
+     * Serial the CDC device); on an ESP-32S it is UART0 behind the bridge
+     * chip.  Same call, same 115200, same cable on the other end.           */
+    Serial.begin(GSE_HOST_BAUD);
     radio.begin(DXLR41_BAUD);
     gse_tx_init();                           /* provisions the module       */
 }

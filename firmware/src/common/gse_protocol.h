@@ -2,8 +2,10 @@
  * gse_protocol.h  --  Mojave Sphinx / HCR-5100 GSE radio link protocol
  * -------------------------------------------------------------------------
  * Shared, header-only wire protocol used by:
- *      - tx-node  (ESP32-S3 #1, USB-C to laptop, drives DX-LR41 -> air)
- *      - pad-node (ESP32-S3 #2, drives 3 servo PWM channels + igniter relay)
+ *      - tx-node  (ESP32 #1, USB to laptop, drives DX-LR41 -> air)
+ *      - pad-node (ESP32 #2, drives 3 servo PWM channels + igniter relay)
+ *    either node may be built on an ESP32-S3 devkit (default) or on an
+ *    "ESP-32S" ESP32-WROOM-32 devkit (optional; -D GSE_BOARD_ESP32S)
  *      - tools/   (host-side unit tests, simulation)
  *      - software/gse_control/protocol.py  (byte-for-byte mirror for the GUI)
  *

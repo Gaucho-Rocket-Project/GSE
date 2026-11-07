@@ -26,6 +26,15 @@
 - **Hold** the fire control. It is hold-to-fire with a hard limit (0.5 s default) and one pulse per press.
 - If nothing happens: release, check `rejected frames`, `armed`, `age`, then try again. Do **not** hold the button down.
 
+## Status light (no terminal needed)
+| ESP32-S3 (WS2812) | ESP-32S (blue LED) | Meaning |
+|---|---|---|
+| blue solid | solid on | booting |
+| red solid | 5 Hz fast blink | **RADIO FAULT** — module did not answer, do not fly |
+| amber blink | 2 Hz blink | radio fine, **no link** from the TX node |
+| green blink | 1 Hz blink | link OK, **not armed** |
+| purple | 10 Hz fast blink | igniter energised |
+
 ## If the link drops
 - Banner turns red, pad side goes to **FILL closed / PURGE closed / VEHICLE open / IGN off** on its own.
 - Do not restart the application in a hurry. Reconnect, confirm the banner, and continue only after a deliberate re-arm.

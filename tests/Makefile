@@ -6,6 +6,11 @@ COREHDR  = ../firmware/src/common/gse_tx_core.h ../firmware/src/common/gse_hal.h
 
 all: test_protocol host_hal
 
+# ESP32 board variants are compile-checked with the host compiler (no Espressif
+# toolchain needed); see esp32_syntax_check.sh.
+variants:
+	sh esp32_syntax_check.sh
+
 test_protocol: test_protocol.c $(HDR)
 	$(CC) $(CFLAGS) -o $@ test_protocol.c
 
@@ -16,7 +21,8 @@ host_hal: host_hal_stub.c $(CORE) $(COREHDR) $(HDR)
 run: test_protocol host_hal
 	./test_protocol
 	./host_hal
+	$(MAKE) --no-print-directory variants
 
 clean:
 	rm -f test_protocol host_hal
-.PHONY: all run clean
+.PHONY: all run clean variants
