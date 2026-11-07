@@ -220,7 +220,7 @@ the ones that matter.
 
 | File | What it says about the transport |
 |---|---|
-| `firmware/src/link.h` | the seam itself; both adapters; the BLE topology and its API-compatibility notes |
+| `firmware/src/link.h` | the seam itself; both adapters; the BLE topology and its API-compatibility notes (`GseLink gseLink;` is named that way on purpose — see the note in `pad_node.cpp`: the core's `Arduino.h` brings in POSIX `link()` via lwIP, and `tests/esp32_stub/Arduino.h` now declares the same names so the host check catches it) |
 | `firmware/src/config.h` | `GSE_LINK_BLE` / `GSE_LINK_LORA`, the "exactly one" rule, BLE names/UUIDs, the security note |
 | `firmware/platformio.ini` | the four `-ble` environments |
 | `firmware/src/pad/pad_node.cpp`, `firmware/src/tx/tx_platform_esp32.cpp` | one code path; `link.send()` / `link.read()` / `link.poll()` |

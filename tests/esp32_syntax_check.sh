@@ -114,6 +114,10 @@ for core in 3 2; do
 done
 
 echo "negative cases (these must NOT build)"
+# The host stub must keep exposing the POSIX names the real core drags in
+# through Arduino.h, or a firmware object called `link` (which collides with
+# POSIX link()) compiles here and fails on the bench.  This probe is the guard.
+check "a global called 'link' (POSIX shadow)" fail "$HERE/tripwire/posix_shadow_probe.cpp"
 check "pad  ESP-32S with PURGE on GPIO6 (flash)" fail "$PAD" \
       -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S -D GSE_PIN_SERVO_PRG=6
 check "pad  ESP-32S with IGN on strapping GPIO12" fail "$PAD" \

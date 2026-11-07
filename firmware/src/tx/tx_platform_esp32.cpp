@@ -65,8 +65,12 @@ static bool radioOk = false;
 
 /* The transport seam (src/link.h): LoRa module on UART1, or BLE.  The driver
  * needs the trace hook at *its* compile time, i.e. before the object exists --
- * GSE_RADIO_TRACE is defined above, the object here. */
-static GseLink link;
+ * GSE_RADIO_TRACE is defined above, the object here.
+ *
+ * Named gseLink, not `link`: <unistd.h> (pulled in by the core's Arduino.h)
+ * declares POSIX `int link(const char*, const char*)`, which collides with a
+ * global-scope variable of that name.  See the longer note in pad_node.cpp. */
+static GseLink gseLink;
 
 /* ------------------------------------------------------------------ HAL */
 extern "C" {
@@ -79,13 +83,13 @@ void gse_tx_write(const uint8_t *buf, size_t len)
      * address + channel (see air_send() in gse_tx_core.c).  sendRaw() keeps
      * that prefix for the module and strips it for BLE, where it is not
      * addressing but noise. */
-    link.sendRaw(buf, len);
+    gseLink.sendRaw(buf, len);
 }
 
 bool gse_tx_read_byte(uint8_t *out)
 {
-    if (!link.available()) return false;
-    int r = link.read();
+    if (!gseLink.available()) return false;
+    int r = gseLink.read();
     if (r < 0) return false;
     *out = (uint8_t)r;
     return true;
@@ -121,7 +125,7 @@ bool gse_radio_provision(uint8_t level, uint8_t channel_hex, uint16_t key,
      * step (see dxlr41.h -- AT+RESET does not save MODE/LEVEL/CHANNEL/MAC).
      * On BLE there is nothing to write: it re-starts the scan, which is what
      * "RADIO CONFIG" means on that transport. */
-    String err = link.provision(level, channel_hex, key, my_addr, GSE_ADDR_PAD);
+    String err = gseLink.provision(level, channel_hex, key, my_addr, GSE_ADDR_PAD);
     radioOk = (err.length() == 0);
     if (!radioOk) gse_log("link: %s", err.c_str());
 #if defined(GSE_LINK_LORA)
@@ -144,8 +148,8 @@ void setup()
     /* Named before anything can fail: a TX node and a pad built with different
      * GSE_LINK_* values cannot hear each other, and this is the line that says
      * which one this is. */
-    gse_log("link: %s -- %s", link.transport(), link.describe().c_str());
-    link.begin();
+    gse_log("link: %s -- %s", gseLink.transport(), gseLink.describe().c_str());
+    gseLink.begin();
     gse_tx_init();                           /* provisions the link         */
 }
 
@@ -153,7 +157,7 @@ static uint32_t s_lastDiag;
 
 void loop()
 {
-    link.poll();                  /* BLE scan/connect state machine; no-op LoRa */
+    gseLink.poll();                  /* BLE scan/connect state machine; no-op LoRa */
     gse_tx_tick();
 
     /* once a second, say whether the radio is producing anything at all --

@@ -55,10 +55,19 @@
 static_assert(GSE_MAX_FRAME + 3 <= 64, "frame fits the module chunk");
 
 /* ------------------------------------------------------------------ objects
- * `link` is the transport seam (src/link.h): LoRa module or BLE, chosen at
+ * gseLink is the transport seam (src/link.h): LoRa module or BLE, chosen at
  * build time.  Everything else in this file is transport-agnostic -- it feeds
- * bytes from link.read() to the parser and hands frames to link.send(). */
-static GseLink link;
+ * bytes from gseLink.read() to the parser and hands frames to gseLink.send().
+ *
+ * Why it is not called `link`: the real arduino-esp32 Arduino.h pulls in
+ * <unistd.h> (via lwIP and IPAddress.h), which declares the POSIX
+ * `int link(const char*, const char*)` at global scope.  A variable named
+ * `link` at namespace scope is then a redeclaration clash, and every
+ * `link.send()` becomes "request for member 'send' in 'link', which is of
+ * non-class type 'int(const char*, const char*)'".  The host syntax check in
+ * tests/ did not catch this until tests/esp32_stub/Arduino.h grew the same
+ * POSIX declarations -- which it now has, on purpose. */
+static GseLink gseLink;
 static gse_parser_t parser;
 
 /* -------------------------------------------------------------------- state */
@@ -149,7 +158,7 @@ static void sendFrame(uint8_t type, const void *payload, uint8_t len)
 {
     uint8_t frame[GSE_MAX_FRAME];
     size_t n = gse_encode(type, seqOut++, payload, len, frame);
-    link.send(GSE_ADDR_TX, GSE_CH_PEER(0), frame, n);
+    gseLink.send(GSE_ADDR_TX, GSE_CH_PEER(0), frame, n);
 }
 
 static void sendEvent(uint8_t code, uint8_t arg)
@@ -292,21 +301,21 @@ void setup()
     /* The transport, named in the log before anything can fail.  A pad and a
      * TX node built with different GSE_LINK_* values cannot hear each other,
      * and this is the line that makes that obvious instead of mysterious.  */
-    diag::line("PAD link: %s -- %s", link.transport(), link.describe().c_str());
-    link.begin();
+    diag::line("PAD link: %s -- %s", gseLink.transport(), gseLink.describe().c_str());
+    gseLink.begin();
 #if defined(GSE_LINK_LORA)
     diag::line("PAD radio provisioning: MODE1 LEVEL%u CH%02X KEY%u MAC%02X,%02X",
                GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
                GSE_ADDR_PAD >> 8, GSE_ADDR_PAD & 0xFF);
 #endif
-    String fault = link.provision(GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
+    String fault = gseLink.provision(GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
                                   GSE_ADDR_PAD, GSE_ADDR_TX);
     if (fault.length()) {
         strncpy(cfgFault, fault.c_str(), sizeof(cfgFault) - 1);
         padState = GSE_PAD_LATCHED;
         diag::line("PAD LINK FAULT: %s", cfgFault);
         diag::line("PAD outputs held SAFE; fix the %s link and reset.",
-                   link.transport());
+                   gseLink.transport());
         led_show(LED_RADIO_FAULT, false);      /* red / fast: radio fault  */
     } else {
         padState = GSE_PAD_WAIT_HELLO;
@@ -320,8 +329,8 @@ void setup()
          * of looking like a silent radio. */
         diag::line("PAD radio mode select: SWITCH=%s; M0/M1 must be tied low if "
                    "the module ever runs SWITCH=1",
-                   link.switchMode() < 0 ? "? (no answer)" :
-                   link.switchMode() ? "1 (PINS - fault!)" : "0 (AT commands)");
+                   gseLink.switchMode() < 0 ? "? (no answer)" :
+                   gseLink.switchMode() ? "1 (PINS - fault!)" : "0 (AT commands)");
 #else
         diag::line("PAD BLE: advertising as \"%s\"; the TX node must also be "
                    "built with -DGSE_LINK_BLE", GSE_BLE_NAME);
@@ -352,7 +361,7 @@ void loop()
      *    BLE needs the stack serviced (scan, connect, drop detection); the
      *    LoRa transport's poll() is empty.  It never blocks, so the 20 ms
      *    safe tick below cannot be delayed by a radio that is thinking.  */
-    link.poll();
+    gseLink.poll();
 
     /* 1. drain the link ---------------------------------------------------
      *    Every byte goes to the parser.  In fixed-point mode the *sending*
@@ -363,8 +372,8 @@ void loop()
      *    data byte is ever dropped by us, which is the failure this used to
      *    have: a `skipPrefix` counter that nothing ever set, sitting in the
      *    receive path and reading as though it worked.                       */
-    while (link.available()) {
-        int r = link.read();
+    while (gseLink.available()) {
+        int r = gseLink.read();
         if (r < 0) break;
         uint8_t b = (uint8_t)r;
         rxBytes++;
@@ -429,7 +438,7 @@ void loop()
 #else
             diag::line("PAD nothing over BLE (%s): is the TX node built with "
                        "-DGSE_LINK_BLE, powered, and in range?",
-                       link.linkState());
+                       gseLink.linkState());
 #endif
         }
     }
