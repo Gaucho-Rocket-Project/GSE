@@ -42,7 +42,8 @@ static_assert(GSE_MAX_FRAME + 3 <= 64, "frame fits the 64-byte module chunk");
 
 /* ------------------------------------------------------------------ objects */
 HardwareSerial LoraSerial(1);
-DxLr41 lora(LoraSerial, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1);
+DxLr41 lora(LoraSerial, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1,
+            PIN_LORA_AUX_PULLUP != 0);
 static gse_parser_t parser;
 
 /* -------------------------------------------------------------------- state */
@@ -275,6 +276,10 @@ void setup()
     led_show(LED_BOOT, false);                 /* blue / solid: booting    */
 
     lora.begin(DXLR41_BAUD);
+    diag::line("PAD radio wiring: RX<-D%d TX->D%d AUX=%s M0/M1=%s",
+               PIN_LORA_RX, PIN_LORA_TX,
+               PIN_LORA_AUX >= 0 ? "wired" : "NOT WIRED (pacing only)",
+               PIN_LORA_M0 >= 0 ? "driven low" : "tie to GND at the module");
     diag::line("PAD radio provisioning: MODE1 LEVEL%u CH%02X KEY%u MAC%02X,%02X",
                GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
                GSE_ADDR_PAD >> 8, GSE_ADDR_PAD & 0xFF);

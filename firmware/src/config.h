@@ -281,12 +281,42 @@ static_assert(GSE_PIN_RELAY_IGN != 0 && GSE_PIN_RELAY_IGN != 2 &&
 
 #define PIN_BUZZER           -1       /* optional active buzzer               */
 
-/* DX-LR41 wiring on the pad node (UART1) -- identical on both boards        */
-#define PIN_LORA_RX          16       /* ESP32 RX  <- module TXD  */
-#define PIN_LORA_TX          17       /* ESP32 TX  -> module RXD  */
-#define PIN_LORA_AUX         18       /* module AUX (high = busy) */
-#define PIN_LORA_M0          -1       /* tie low on the PCB, AT+SWITCH=0  */
-#define PIN_LORA_M1          -1
+/* ------------------------------------------------ DX-LR42/LR41 pin wiring
+ * Identical on both boards and on both roles.  The vendor's own reference
+ * circuit (LR42 technical manual, Figure 6) is:
+ *
+ *      module RX  (3) <- MCU TXD          module M0 (1) <- MCU IO   (or GND)
+ *      module TX  (4) -> MCU RXD          module M1 (2) <- MCU IO   (or GND)
+ *      module AUX (5) -> MCU IO           module VCC (6) <- 5 V (LR42) / 3V3 (LR41)
+ *      module GND (7) -- GND
+ *
+ * so on the ESP32 side the serial lines are crossed: module RX (3) is fed from
+ * D17, and module TX (4) feeds D16.  AUX (5) is an INPUT to the ESP32.
+ *
+ * Not connected?  Each line can be left off in a pinch:
+ *   AUX  -DGSE_LORA_AUX_NONE : define it (or set PIN_LORA_AUX to -1) and the
+ *        firmware never reads GPIO18.  That pin then floats, which is fine --
+ *        it is an unused input -- but you lose the "module is busy" flow
+ *        control, so the 20 Hz command stream relies on pacing alone.  Fine at
+ *        LEVEL 3 (one 22-byte frame is ~27 ms of a 50 ms slot), risky at
+ *        LEVEL 8/FLRC.  AUX is a module OUTPUT; do not tie it to GND or 3V3.
+ *   M0/M1  must be tied to GND at the module (see hardware/wiring.md §1.2);
+ *        they are module outputs only while AT+SWITCH=0.
+ */
+#define PIN_LORA_RX          16       /* ESP32 D16 <- module TX pad (4)    */
+#define PIN_LORA_TX          17       /* ESP32 D17 -> module RX pad (3)    */
+#ifdef GSE_LORA_AUX_NONE
+#  undef  PIN_LORA_AUX
+#  define PIN_LORA_AUX       -1       /* AUX not wired: no busy-poll       */
+#else
+#  define PIN_LORA_AUX       18       /* module AUX (5), high = busy       */
+#endif
+#define PIN_LORA_AUX_PULLUP  0        /* 0 = INPUT (AUX is a push-pull out),
+                                       * 1 = INPUT_PULLUP (harmless)       */
+#define PIN_LORA_M0          -1       /* not driven: tie M0 to GND at the  */
+#define PIN_LORA_M1          -1       /* module.  A GPIO here would also work
+                                       * (driver drives both LOW) but is only
+                                       * safe while the module is AT+SWITCH=0 */
 
 /* ------------------------------------------------------------- host console */
 /* The pad node talks to the laptop, and the TX node talks to the laptop, on

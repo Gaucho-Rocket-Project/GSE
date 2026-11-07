@@ -5,23 +5,63 @@ Pin numbers refer to `firmware/src/config.h`; change them there, not here.
 
 ---
 
-## 1. Node ↔ DX-LR41-24T12S
+## 1. Node ↔ radio module (DX-LR42-24T12D / DX-LR41-24T12S)
 
 Both nodes use the same five-wire connection, on every board we support. The TX node may be an ESP32-S3,
 an **ESP-32S** (ESP32-WROOM-32 devkit) or a NUCLEO-H753ZI — the pad does not know or care which, and the
 pad node itself may be built on either ESP32 board. See
-[§1.1 ESP-32S variant](#11-esp-32s-variant-optional-board) for the three pins that move.
+[§1.3 ESP-32S variant](#13-esp-32s-variant-optional-board) for the three pins that move.
 
-| Module pin | ESP32-S3 | ESP-32S | Notes |
+| Module pin (LR42) | ESP32-S3 | ESP-32S | Notes |
 |---|---|---|---|
-| VCC | 3V3 (**LR41 only, see below**) | 3V3 (**LR41 only**) | **LR42 accepts 3.3–5.5 V; LR41 is 3.3 V only** — read the next paragraph before you power anything |
-| GND | GND | GND | |
-| TXD | GPIO 16 (RX) | GPIO 16 = **RX2** | crossed |
-| RXD | GPIO 17 (TX) | GPIO 17 = **TX2** | crossed |
-| AUX | GPIO 18 | GPIO 18 | input, pull-up; high = module busy |
-| M0 / M1 | **tie low** | **tie low** | never leave floating — see [§1.2](#12-m0--m1-do-not-leave-them-floating) |
+| 6 — VCC | 5V **or** 3V3 | 5V **or** 3V3 | **LR42: 3.3–5.5 V, 5 V typical, ≥5 V for full power. LR41: 3.3 V only.** UART is 3.3 V either way — read the paragraph below before powering |
+| 7 — GND | GND | GND | common ground, including the servo/12 V return |
+| 3 — RX (data **in**) | **GPIO 17** (TX) | **GPIO 17** = TX2 | crossed: module in ← ESP32 out |
+| 4 — TX (data **out**) | **GPIO 16** (RX) | **GPIO 16** = RX2 | crossed: module out → ESP32 in |
+| 5 — AUX | GPIO 18 (or leave off, see §1.1a) | GPIO 18 | input; high = module busy. **Never** tied to GND/3V3 |
+| 1 — M0 | **tie to GND** | **tie to GND** | never leave floating — see [§1.2](#12-m0--m1-do-not-leave-them-floating) |
+| 2 — M1 | **tie to GND** | **tie to GND** | ditto |
 
 Add 100 µF electrolytic + 100 nF ceramic across VCC/GND at the module. Antenna **must** be fitted before power-up.
+
+### 1.1 The vendor's own reference circuit (LR42 manual, Figure 6)
+
+Worth comparing against your harness, because it is the picture of "correct":
+
+```
+                          DX-LR42-24T12D                     ESP32
+   VIN ──┬── 100 µF ──┐   1  M0  <────────────────────── IO   (or GND)
+         ├── 0.1 µF ──┴── 6  VCC  2  M1  <────────────── IO   (or GND)
+         │               7  GND  3  RX  <────────────── TXD
+        GND                     4  TX  ──────────────> RXD
+                                5  AUX ──────────────> IO
+```
+
+Four things this picture makes explicit, and they are the four things that go wrong:
+
+1. **The serial lines are crossed.** Module `RX` (pin 3, "serial port data **input**") is fed from the MCU's TX; module
+   `TX` (pin 4, "data **output**") feeds the MCU's RX. On our boards that is **module RX ← D17** and **module TX → D16**.
+   Getting this backwards is the single most common wiring error, and it looks like a dead link because the module
+   receives nothing while happily sending.
+2. **AUX goes to an input**, and is only a status output (high = transmitting / receiving / switching mode). The
+   vendor also feeds M0/M1 from the MCU; on our nodes they are **not** driven — tie them to GND (see §1.2).
+3. **Both capacitors go at the module**, not at the regulator: 100 µF electrolytic **and** 100 nF ceramic, close to VCC
+   and GND pins, because the RF burst pulls a current spike the supply impedance has to absorb.
+4. **VIN is 5 V for an LR42** (3.3–5.5 V; ≥5 V for full power) — but the UART is 3.3 V, which is what the ESP32 gives.
+
+### 1.1a If AUX is not wired
+
+AUX is optional in practice. Leave GPIO18 unconnected, or build with `-DGSE_LORA_AUX_NONE` (or set `PIN_LORA_AUX` to
+`-1`) and the firmware stops polling it. Both nodes print which is the case at boot:
+
+```
+LOG PAD radio wiring: RX<-D16 TX->D17 AUX=NOT WIRED (pacing only) M0/M1=tie to GND at the module
+```
+
+What you give up is flow control: the driver can no longer wait for "module busy" to clear, so the 20 Hz command
+stream relies on pacing alone. At the default LEVEL 3 a 22-byte frame is ~27 ms of a 50 ms slot, so this is fine; at
+LEVEL 8/FLRC it is still fine (air time is shorter). It is *not* fine for anything that bursts — do not change the
+command rate without wiring AUX. **Never** tie AUX to GND or 3V3: it is a push-pull output from the module.
 
 > **3.3 V or 5 V depends on which module you actually have — check the silkscreen.**
 > * **DX-LR42-24T12D** (SX1281, 7-pin stamp module): VCC accepts **3.3–5.5 V, 5 V typical**, and ≥5 V is what guarantees
@@ -90,7 +130,7 @@ prints — and the pad's `bytes=` counter stays at 0 forever.
 > radio that decides whether the igniter can fire. GND (or a GPIO held low, which is the same electrical state) is safe;
 > toggling them is not.
 
-### 1.1 ESP-32S variant (optional board)
+### 1.3 ESP-32S variant (optional board)
 
 "ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth" is the classic 30/38-pin ESP32-WROOM-32
 devkit. It runs the same firmware, from the same source, on the same wires — with three exceptions, all of
@@ -134,7 +174,7 @@ Notes for this board:
   dead-man, same channel map, same GUI, same test plan. A mixed pair (ESP-32S pad + ESP32-S3 TX, or the
   reverse) is a supported configuration and is what the syntax check builds.
 
-### Same module on a Nucleo-H753ZI TX node
+### 1.4 Same module on a Nucleo-H753ZI TX node
 
 | DX-LR41 pin | Nucleo pin | Morpho | Notes |
 |---|---|---|---|
@@ -217,6 +257,20 @@ outlet or a pressure source connected.
 
 Do this with a **lamp or resistor** on the IGN outlet and **no pressure source** connected.
 
+### Wiring check before anything else
+
+The checklist that catches this class of fault in a minute, on both modules:
+
+| # | Check | Right answer |
+|---|---|---|
+| 1 | Module RX (3) ← ESP32 **D17** | crossed, module pin 3 |
+| 2 | Module TX (4) → ESP32 **D16** | crossed, module pin 4 |
+| 3 | VCC at the module | LR42: 5 V (3.3–5.5 V); LR41: 3.3 V |
+| 4 | M0 (1) and M1 (2) | **tied to GND** on both modules |
+| 5 | AUX (5) | wired to D18, or left floating + `-DGSE_LORA_AUX_NONE` |
+| 6 | Antenna | fitted on **both** modules before power-up |
+| 7 | Boot log | `AUX=wired` (or "NOT WIRED"), `RADIO OK`, `SWITCH:0` |
+
 1. **Power the TX node only** → open a terminal at 115200 → expect `LOG TX esp32s3 fw 1.0 ready`
    (`LOG TX esp32s fw 1.0 ready` on an ESP-32S, `LOG TX stm32 fw 1.0 ready` on a Nucleo), or
    `RADIO FAULT …` — if so, the module wiring or its baud rate is wrong. Typing `INFO` re-prints the same
@@ -224,8 +278,10 @@ Do this with a **lamp or resistor** on the IGN outlet and **no pressure source**
    board in your hand you flashed the wrong environment.
 2. **Power the pad node** → expect `LOG` lines on its own USB port, starting with
    `LOG PAD boot fw 1.0 board=esp32s3 pins FILL=4 VEH=5 PRG=6 IGN=7 HB=8`
-   (`board=esp32s … PRG=15 IGN=13 HB=33` on an ESP-32S) followed by `RADIO OK` / `RADIO FAULT`. Check that
-   the printed pins are where your harness actually is before you connect a servo.
+   (`board=esp32s … PRG=15 IGN=13 HB=33` on an ESP-32S), then
+   `LOG PAD radio wiring: RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module`,
+   then `RADIO OK` / `RADIO FAULT`, then the module's own `LOG RADIO` banner. Check that the printed pins are
+   where your harness actually is before you connect a servo, and that `AUX=` matches reality.
 3. **Start the GUI** → `python software/run_gui.py` → select the TX port → Connect → banner should turn amber
    (`LINK OK — NOT ARMED`) within a second.
 4. **Read the diagnostics** in the read-back panel: `valid CMDs` climbing, `rejected frames` 0, `age` < 100 ms.

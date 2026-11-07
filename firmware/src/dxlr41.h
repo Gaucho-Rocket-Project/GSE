@@ -53,12 +53,18 @@
 
 class DxLr41 {
 public:
-    DxLr41(HardwareSerial &uart, int pinAux, int pinM0 = -1, int pinM1 = -1)
-        : _uart(uart), _aux(pinAux), _m0(pinM0), _m1(pinM1) { _lastBanner[0] = 0; }
+    DxLr41(HardwareSerial &uart, int pinAux, int pinM0 = -1, int pinM1 = -1,
+           bool auxPullup = true)
+        : _uart(uart), _aux(pinAux), _m0(pinM0), _m1(pinM1),
+          _auxPullup(auxPullup) { _lastBanner[0] = 0; }
 
     void begin(unsigned long baud)
     {
-        if (_aux >= 0) pinMode(_aux, INPUT_PULLUP);
+        /* AUX is an output from the module, so pull-up or not makes no
+         * functional difference to it -- but INPUT (no pull-up) is used when
+         * the pin can float, so a module that is unpowered or unconnected does
+         * not hold the line low against the module's own push-pull output. */
+        if (_aux >= 0) pinMode(_aux, _auxPullup ? INPUT_PULLUP : INPUT);
         /* Drive M0/M1 low when the board wires them (PIN_LORA_M0/M1).  Low/low
          * is high-timeliness mode if the module is ever in AT+SWITCH=1, and
          * harmless in the SWITCH=0 default.  Boards that leave them
@@ -71,13 +77,21 @@ public:
         while (_uart.available()) _uart.read();     /* flush boot noise */
     }
 
+    /* Polled only when AUX is actually wired (PIN_LORA_AUX >= 0).  When the
+     * node is built with -DGSE_LORA_AUX_NONE the pin is not read at all and
+     * flow control is by pacing alone -- see config.h. */
+    bool auxEnabled() const { return _aux >= 0; }
     bool busy() const { return _aux >= 0 && digitalRead(_aux) == HIGH; }
 
     /* Blocking write; waits for AUX to clear so a slow air rate cannot
-     * silently overflow the module's 230-byte buffer.                     */
+     * silently overflow the module's 230-byte buffer.  With AUX not wired
+     * this is a plain write, and the caller's pacing (the 20 Hz command
+     * stream) is what keeps the module's FIFO from overflowing: at LEVEL 3
+     * one 22-byte frame occupies the air for ~27 ms of a 50 ms slot.       */
     size_t write(const uint8_t *data, size_t len, uint16_t timeoutMs = 60)
     {
         size_t n = _uart.write(data, len);
+        if (_aux < 0) return n;
         uint32_t t0 = millis();
         while (busy() && (millis() - t0) < timeoutMs) delay(1);
         return n;
@@ -251,6 +265,7 @@ private:
 
     HardwareSerial &_uart;
     int _aux, _m0, _m1;
+    bool _auxPullup;
     char _lastBanner[600] = {0};
 };
 

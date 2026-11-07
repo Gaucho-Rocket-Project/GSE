@@ -72,6 +72,10 @@ the USB/LED plumbing differ. **A pad node on either board talks to a TX node on 
   [`hardware/wiring.md` §1.2](hardware/wiring.md#12-m0--m1-do-not-leave-them-floating).
 * **LR42 and LR41 are not the same on VCC.** LR42-24T12D takes 3.3–5.5 V (5 V typical, ≥5 V for full power);
   LR41-24T12S is 3.3 V only. UART levels are 3.3 V on both. Check the silkscreen before you power the board.
+* **The UART is crossed.** LR42 pin 3 is `RX` (input) and goes to the ESP32's **D17**; pin 4 is `TX` (output) and
+  goes to **D16**. The vendor's reference circuit is reproduced in [`hardware/wiring.md` §1.1](hardware/wiring.md#11-the-vendors-own-reference-circuit-lr42-manual-figure-6).
+* **AUX is optional.** Wire it to D18, or leave it off and build with `-DGSE_LORA_AUX_NONE` (you lose busy-flow
+  control, nothing else). The boot log says which mode the firmware is in.
 
 Both nodes print the module's own `AT+HELP` dump at provisioning (`LOG RADIO ... SWITCH:0 ...`), so the
 configuration that decides whether the link works is in the log instead of assumed.

@@ -37,10 +37,13 @@ Purpose: two silent, "everything looks configured" failures are excluded before 
 2. Confirm `SWITCH:0`. If it reads `1`, the module is in hardware-mode-select and **M0/M1 must not be floating** —
    send `AT+SWITCH0`, then tie M0 and M1 to GND and re-power. A floating pin in that state parks the module in AT,
    WOR or sleep mode: it answers commands and never receives.
-3. Record **which module** is fitted — `DX-LR41-24T12S` (3.3 V only) or `DX-LR42-24T12D` (3.3–5.5 V, 5 V typical) —
+3. Confirm the UART direction: module **pin 3 (`RX`, data in) ← D17**, module **pin 4 (`TX`, data out) → D16**.
+   With the node's firmware running, a module wired backwards answers no AT commands and provisioning stops at
+   `AT entry failed`.
+4. Record **which module** is fitted — `DX-LR41-24T12S` (3.3 V only) or `DX-LR42-24T12D` (3.3–5.5 V, 5 V typical) —
    and measure VCC against it. UART signalling is 3.3 V for both.
 
-**Pass:** `SWITCH:0` on both modules, M0/M1 tied to GND on both, VCC within the datasheet range of the module
+**Pass:** `SWITCH:0` on both modules, M0/M1 tied to GND on both, UART crossed as above, VCC within the datasheet range of the module
 actually fitted (LR41: 3.2–3.4 V; LR42: 3.3–5.5 V). Record the two module part numbers in the log book.
 
 ---

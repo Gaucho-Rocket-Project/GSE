@@ -56,7 +56,8 @@ static bool radioOk = false;
 
 /* The driver needs the trace hook at *its* compile time, i.e. before the
  * object exists -- GSE_RADIO_TRACE is defined above, the object here. */
-static DxLr41 radio(kRadio, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1);
+static DxLr41 radio(kRadio, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1,
+                    PIN_LORA_AUX_PULLUP != 0);
 
 /* ------------------------------------------------------------------ HAL */
 extern "C" {
@@ -120,6 +121,10 @@ void setup()
      * chip.  Same call, same 115200, same cable on the other end.           */
     Serial.begin(GSE_HOST_BAUD);
     radio.begin(DXLR41_BAUD);
+    gse_log("radio wiring: D%u<-module TX, D%u->module RX, AUX=%s, M0/M1=%s",
+            PIN_LORA_RX, PIN_LORA_TX,
+            radio.auxEnabled() ? "wired" : "NOT WIRED (pacing only)",
+            PIN_LORA_M0 >= 0 ? "driven low" : "tie to GND at the module");
     gse_tx_init();                           /* provisions the module       */
 }
 

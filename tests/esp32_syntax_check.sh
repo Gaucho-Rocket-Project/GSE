@@ -87,6 +87,12 @@ for core in 3 2; do
           -D ARDUINO_USB_CDC_ON_BOOT=1
 done
 
+# a node with AUX not wired must still build and still pace
+check "pad  ESP-32S, AUX not wired" ok "$PAD" -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S \
+      -D GSE_LORA_AUX_NONE
+check "tx   no flag, AUX not wired" ok "$TX" -D GSE_ROLE_TX -D GSE_LORA_AUX_NONE \
+      -D ARDUINO_USB_CDC_ON_BOOT=1
+
 echo "negative cases (these must NOT build)"
 check "pad  ESP-32S with PURGE on GPIO6 (flash)" fail "$PAD" \
       -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S -D GSE_PIN_SERVO_PRG=6

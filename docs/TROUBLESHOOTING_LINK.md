@@ -97,6 +97,27 @@ Leave AT mode with `+++` (the module reboots):
 +++                ->  Exit AT / Power On
 ```
 
+## 2-0. Is the UART crossed the right way? (check this first)
+
+The vendor's own reference circuit (LR42 technical manual, Figure 6) is unambiguous, and it is the most common wiring
+error on this link:
+
+```
+module pin 3 "RX  — serial port data INPUT"   <── ESP32 D17 (TX)
+module pin 4 "TX  — serial port data OUTPUT"  ──> ESP32 D16 (RX)
+```
+
+So **module RX goes to the ESP32's TX**, and **module TX goes to the ESP32's RX**. "RX to RX, TX to TX" is the mistake
+that looks most natural and is wrong.
+
+What it costs you: the module's transmitter still fires (it does not care what is on its RX pin), so the link *looks*
+alive, but the module never receives a byte of configuration or data. Provisioning then fails at the first AT command
+(`AT entry failed`) because the module never heard `+++`.
+
+Quick test that does not need the firmware: unplug the two signal wires, and with the module powered, jumper **module
+RX to the ESP32's D17** only (leave TX off), then start a terminal at 9600 on the module's UART and type `AT`. If it
+answers `OK`, the direction you have is right. If it answers nothing, swap to the other pin.
+
 ## 2a. M0 / M1 floating (a module that provisions but never receives)
 
 Check this *before* the wiring table below, because it produces the exact symptom and touches no wire you have
@@ -134,7 +155,8 @@ Fixed-point silence is almost always wiring, and always in the same three places
 
 | Suspect | Why it bites | How to check |
 |---|---|---|
-| **TX/RX not crossed** | Module `TXD` must go to the MCU's **RX**. Both ends are labelled from the module's point of view. | The pad's 1 Hz line reports `bytes=0` if it never receives, and `bytes>0` if it does. Crossed-wrong gives 0. |
+| **TX/RX crossed the wrong way** | The module's pins are labelled from *its* point of view: `RX` is an input and must come from the MCU's TX. | See §2-0. The pad's 1 Hz line reports `bytes=0` if it never receives; `bytes>0` if it does. |
+| **AUX not wired but firmware polls it** | If AUX is left off, GPIO18 reads whatever the floating pin picks up, and a spurious "busy" stalls every write. | Boot log says `AUX=wired` or `NOT WIRED`; if not wired, build with `-DGSE_LORA_AUX_NONE`. |
 | **Module fed the wrong voltage** | **DX-LR42** is specified 3.3–5.5 V (5 V typical) and needs ≥5 V for full power; **DX-LR41** is 3.3 V only, and 5 V makes it answer AT commands then behave erratically. Both take 3.3 V UART levels. | Measure VCC at the module. LR41: 3.2–3.4 V. LR42: 3.3–5.5 V, and note that 3.3 V costs you output power. Check which module the silkscreen says you have. |
 | **No common ground** | Two separately-powered boards with no GND reference read each other's UART as noise. | Continuity from pad GND to module GND to the 12 V return. |
 

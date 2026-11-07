@@ -396,8 +396,10 @@
     nuts. The carrier must be rigid: it carries the servo connectors and the 12 V ignition terminal. <b>Do not</b>
     mount the ESP32-S3 in a breadboard.</li>
 
-    <li>Fit the DX-LR41-24T12S to the carrier. Connect 3V3 to the module VCC, GND to GND, D16 to module TXD, D17 to
-    module RXD, D18 to module AUX, and <b>M0 and M1 both to GND</b>. <b>Do not connect the module to 5 V.</b> (If the
+    <li>Fit the radio module to the carrier. Connect 3V3 to the module VCC, GND to GND, <b>D17 to the module's
+    <span class="mono">RX</span> pin (pin 3, data <i>in</i>)</b>, <b>D16 to the module's <span class="mono">TX</span>
+    pin (pin 4, data <i>out</i>)</b> — the serial lines are <b>crossed</b> — D18 to module AUX, and <b>M0 and M1
+    both to GND</b>. <b>Do not connect the module to 5 V.</b> (If the
     module in hand is a <b>DX-LR42-24T12D</b> it may be run from 5 V and needs ≥5 V for full output power; an
     LR41 is 3.3 V only. The UART is 3.3 V either way — check the silkscreen.) Fit the 100 µF and 100 nF capacitors
     across the module supply pins.</li>

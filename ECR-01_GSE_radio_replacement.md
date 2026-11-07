@@ -131,6 +131,8 @@ Option B was selected by the design owner. This ECR documents its consequences h
 | Power | `AT+POWE 0..13` dBm, default 13 dBm (~20 mW) | ibid. |
 | Handshake pin | `AUX` high while busy, asserted 2–3 ms before received data | ibid. |
 | Mode-select pins | `M0`/`M1`: **outputs** (driven low) when `AT+SWITCH=0` (default); **inputs with weak pull-up** when `AT+SWITCH=1`, selecting high-timeliness / air-wakeup / AT / sleep. Vendor: with `SWITCH=1` they must never float, or mode switching malfunctions | LR42 tech. manual v2.0 §2.3.4 |
+| Pin functions | LR42 is a **7-pad stamp module, pins 1–7 = M0, M1, RX (data in), TX (data out), AUX, VCC, GND** — i.e. `RX` is an input and is fed from the MCU's TX. Reference circuit: LR42 tech. manual v2.0 Figure 6 | ibid. |
+| FLRC (LEVEL 8) | payload must be **6–127 bytes**; key encryption is disabled and cannot be enabled; CAD/WOR unavailable | LR42 UART application guide v2.0 §5.3.2, §5.3.8 |
 | FLRC caveat | `LEVEL 8`: payload ≥ 6 bytes, ≤ 127 bytes, key feature unavailable | ibid. |
 
 Provisioning used by the firmware (both nodes write these at boot and verify with `AT+HELP`):
@@ -146,6 +148,11 @@ AT+POWE13           13 dBm
 AT+SLEEP2           high-timeliness mode: always listening
 AT+RESET            commit
 ```
+
+The module's pin numbering used above is the LR42's (7-pad stamp, `1 = M0 … 7 = GND`); the LR41-24T12S carrier
+presents the same seven signals on a through-hole header. **`RX` (pin 3) is an input** and is driven by the node's
+`D17`; `TX` (pin 4) is an output and drives `D16`. A harness built "RX to RX, TX to TX" leaves the module unable to
+receive anything, which is why the wiring sheet now prints the direction next to every pin.
 
 `AT+SWITCH` is left at its factory default of `0` (mode selected by AT commands), so `M0`/`M1` are module *outputs* and
 are electrically irrelevant in that state. They are nevertheless **tied to GND on both nodes**: if a module is ever in

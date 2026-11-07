@@ -8,6 +8,8 @@
 - [ ] IGN outlet **unloaded**, leads insulated from each other
 - [ ] Antennas fitted to both modules
 - [ ] **M0 and M1 tied to GND on both modules** (not left floating — see wiring sheet §1.2)
+- [ ] UART **crossed**: module RX (pin 3) ← D17, module TX (pin 4) → D16
+- [ ] AUX wired to D18, or firmware built with `-DGSE_LORA_AUX_NONE` (boot log says which)
 
 ## Start-up (at the pad, before anyone goes downrange)
 1. Start the application → select the TX-node port → **Connect**
