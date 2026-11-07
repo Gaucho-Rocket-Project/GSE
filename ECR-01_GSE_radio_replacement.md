@@ -120,7 +120,7 @@ Option B was selected by the design owner. This ECR documents its consequences h
 
 | Parameter | Value | Source |
 |---|---|---|
-| Supply | 3.3 V (module); break-out boards usually accept 5 V and regulate | vendor |
+| Supply | **LR42-24T12D: 3.3–5.5 V (5 V typical, ≥5 V for full power). LR41-24T12S: 3.3 V only.** UART levels are 3.3 V on both; 5 V TTL on the UART risks damage | vendor datasheets |
 | UART | default 9600 8N1; 2400…115200 selectable (`AT+BAUD 0..6`) | 串口应用指导 v2.0 |
 | Air rate presets | `AT+LEVEL 0..7` LoRa (0.5 → 150 kbit/s), `AT+LEVEL 8` FLRC (1.04 Mbit/s) | ibid. |
 | Default preset | LEVEL 3 = SF8 / BW 406 kHz / 10 kbit/s, ≈2.2 km quoted LOS | ibid. |
@@ -130,6 +130,7 @@ Option B was selected by the design owner. This ECR documents its consequences h
 | Chunking | `AT+PACKET 0..3` = 32/64/128/230 bytes | ibid. |
 | Power | `AT+POWE 0..13` dBm, default 13 dBm (~20 mW) | ibid. |
 | Handshake pin | `AUX` high while busy, asserted 2–3 ms before received data | ibid. |
+| Mode-select pins | `M0`/`M1`: **outputs** (driven low) when `AT+SWITCH=0` (default); **inputs with weak pull-up** when `AT+SWITCH=1`, selecting high-timeliness / air-wakeup / AT / sleep. Vendor: with `SWITCH=1` they must never float, or mode switching malfunctions | LR42 tech. manual v2.0 §2.3.4 |
 | FLRC caveat | `LEVEL 8`: payload ≥ 6 bytes, ≤ 127 bytes, key feature unavailable | ibid. |
 
 Provisioning used by the firmware (both nodes write these at boot and verify with `AT+HELP`):
@@ -145,6 +146,14 @@ AT+POWE13           13 dBm
 AT+SLEEP2           high-timeliness mode: always listening
 AT+RESET            commit
 ```
+
+`AT+SWITCH` is left at its factory default of `0` (mode selected by AT commands), so `M0`/`M1` are module *outputs* and
+are electrically irrelevant in that state. They are nevertheless **tied to GND on both nodes**: if a module is ever in
+`AT+SWITCH=1` — including a unit that arrived configured that way from a previous user — the pins become weakly
+pulled-up *inputs* that select the operating mode, and a floating pin then silently puts the module in AT mode, WOR or
+sleep. The mode is re-sampled on every power-up and every `AT+RESET`, and the symptom ("provisions fine, never
+receives") is indistinguishable from a broken radio. Both nodes now also print the module's `AT+HELP` dump at
+provisioning (`LOG RADIO ... SWITCH:0 ...`), so the state is visible rather than inferred.
 
 **Two-channel scheme.** The module is half-duplex. To keep the 20 Hz command stream and the 10 Hz telemetry from colliding, each module listens on one channel and transmits on the other using fixed-point addressing: pad listens 2424 MHz (`0C`) / transmits 2428 MHz (`0E`); TX node the reverse. This must be confirmed on the bench (test T-07); if a firmware revision ignores the destination channel the fallback is `-DGSE_SINGLE_CHANNEL` (both ends on `0C`) with telemetry at 5 Hz and the 20 Hz command stream reserved.
 
@@ -217,7 +226,7 @@ All three builds execute the *same* portable core (`firmware/src/common/gse_tx_c
 
 Two traps worth printing on the sheet: the Nucleo's VCP is **USART3 (PD8/PD9)** through solder bridges SB5/SB6, *not* USART2, and its Arduino-header **D0/D1 are PG9/PG14 and are not a UART**. The radio lives on USART2 at PD5/PD6, which appears on the morpho header as CN11 pins 41/43.
 
-**Power.** 3.3 V logic. The DX-LR41 must be fed 3.3 V (do *not* feed it 5 V unless the carrier board has its own regulator — check the silkscreen). Servos keep their existing 5 V supply from the DROK regulator. Total added load: ≈ 90 mA (module TX peak ≈ 120 mA) + two ESP32-S3 at ≈ 60 mA. The existing 3 A buck is adequate; add 100 µF at each LR41 supply pin.
+**Power.** 3.3 V logic. **Check which module you have before powering it:** the DX-LR41-24T12S is 3.3 V only, while the DX-LR42-24T12D accepts 3.3–5.5 V and needs ≥5 V for full output power. Both take 3.3 V UART levels, so a 5 V supply (if the module is an LR42) must not be accompanied by 5 V signalling. Servos keep their existing 5 V supply from the DROK regulator. Total added load: ≈ 90 mA (module TX peak ≈ 120 mA) + two ESP32-S3 at ≈ 60 mA. The existing 3 A buck is adequate; add 100 µF at each LR41 supply pin.
 
 ### 4.5 Protocol
 
@@ -445,6 +454,7 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
 | R5 | Igniter relay module needs a real flyback and a snubber | contact welding, EMI resetting the MCU | A5/A7; add a 100 nF across the contacts; test with a lamp before an e-match | build team |
 | R6 | Operator unfamiliarity with a computerised control | procedural error under time pressure | rehearsals T-08/T-09, quick-reference card, keep the physical SW2 key | launch ops |
 | R7 | No independent telemetry of *actual* valve position | a stripped servo spline would be invisible | audible/visual check in the on-pad checkouts; optional micro-switch feedback in a future revision | future work |
+| R8a | A module left in `AT+SWITCH=1` with floating M0/M1 lands in AT/WOR/sleep mode | silent no-receive, indistinguishable from a dead radio | M0/M1 tied to GND on both nodes (§4.3); `SWITCH:` printed in the boot log; `docs/TROUBLESHOOTING_LINK.md` §2a | builder |
 | R8 | The DX-LR41 is not a certified module in every jurisdiction | legal | jurisdiction check (§6.3); the vendor offers a CE/FCC variant of the SX1281 family | launch ops |
 
 ---
@@ -503,7 +513,9 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
    pio run -e pad-node -t upload      # second board, one at a time
    ```
    Label the boards **TX** and **PAD** as soon as they are flashed. Label before the radio modules are fitted.
-2. Fit each DX-LR41 to its board: 3V3 → module VCC, GND → GND, D16 → module TXD, D17 → module RXD, D18 → module AUX. **Do not** connect the module to 5 V.
+2. Fit each DX-LR41 to its board: 3V3 → module VCC, GND → GND, D16 → module TXD, D17 → module RXD, D18 → module AUX,
+and **M0 and M1 both to GND**. **Do not** connect the module to 5 V (an LR42 tolerates it and wants it for full power;
+an LR41 does not — check the silkscreen before deciding).
 3. Fit the antenna to each module. Never power a module without an antenna.
 4. On the pad-node carrier board, wire, in this order:
    a. servo headers SIGNAL → D4/D5/D6, +5 V → existing servo rail, GND → common;

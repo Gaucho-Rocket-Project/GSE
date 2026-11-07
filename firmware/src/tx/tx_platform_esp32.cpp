@@ -29,6 +29,20 @@
 #include "gse_tx_core.h"
 #include "dxlr41.h"
 
+/* Same trick as the pad node: echo the driver's AT+HELP read-back to the
+ * laptop console, prefixed like every other text line. */
+#define GSE_RADIO_TRACE(fmt, ...) radioTrace(fmt)
+
+static void radioTrace(const char *text)
+{
+    Serial.print("LOG RADIO ");
+    for (const char *p = text; *p; ++p) {
+        if (*p == '\n') Serial.print("\r\nLOG | ");
+        else Serial.write((uint8_t)*p);
+    }
+    Serial.print("\r\n");
+}
+
 #ifdef GSE_ROLE_PAD
 #error "tx_platform_esp32.cpp must be built with -DGSE_ROLE_TX"
 #endif
@@ -38,8 +52,11 @@
 #endif
 
 static HardwareSerial &kRadio = Serial1;
-static DxLr41 radio(kRadio, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1);
 static bool radioOk = false;
+
+/* The driver needs the trace hook at *its* compile time, i.e. before the
+ * object exists -- GSE_RADIO_TRACE is defined above, the object here. */
+static DxLr41 radio(kRadio, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1);
 
 /* ------------------------------------------------------------------ HAL */
 extern "C" {

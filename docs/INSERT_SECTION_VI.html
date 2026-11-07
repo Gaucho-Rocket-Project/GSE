@@ -397,7 +397,9 @@
     mount the ESP32-S3 in a breadboard.</li>
 
     <li>Fit the DX-LR41-24T12S to the carrier. Connect 3V3 to the module VCC, GND to GND, D16 to module TXD, D17 to
-    module RXD, and D18 to module AUX. <b>Do not connect the module to 5 V.</b> Fit the 100 µF and 100 nF capacitors
+    module RXD, D18 to module AUX, and <b>M0 and M1 both to GND</b>. <b>Do not connect the module to 5 V.</b> (If the
+    module in hand is a <b>DX-LR42-24T12D</b> it may be run from 5 V and needs ≥5 V for full output power; an
+    LR41 is 3.3 V only. The UART is 3.3 V either way — check the silkscreen.) Fit the 100 µF and 100 nF capacitors
     across the module supply pins.</li>
 
     <li>Fit the antenna to the module, and route the SMA bulkhead through the existing antenna cover hole in the
@@ -534,7 +536,11 @@
     exchange the status LED is a single blue LED, read by blink rate: <b>5 Hz</b> radio fault, <b>2 Hz</b> no
     link, <b>1 Hz</b> link OK not armed, <b>10 Hz</b> igniter energised, solid = booting. The boot banner prints
     <span class="mono">board=</span> and every pin number — confirm them against the harness before connecting a
-    servo.
+    servo. <b>M0/M1:</b> both modules must have M0 and M1 tied to GND. They are module outputs while the factory-default
+    <span class="mono">AT+SWITCH=0</span> is in force, but if a module is ever in <span class="mono">AT+SWITCH=1</span>
+    they become weakly-pulled-up mode inputs, and a floating pin silently parks the module in AT mode, wake-on-radio or
+    sleep — which looks exactly like a radio that provisions but never receives. The boot log prints the module's own
+    <span class="mono">SWITCH:</span> value; it must read <span class="mono">0</span>.
   </div>
 
   <div class="note">

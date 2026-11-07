@@ -28,6 +28,12 @@
 #include "dxlr41.h"
 #include "pad_diag.h"
 
+/* Every AT+HELP read-back the driver performs is echoed to the console.  This
+ * is the "is the module actually what I think it is" line: MODE / LEVEL /
+ * Frequency / MAC / SWITCH / SLEEP in the pad's own log, at the moment of
+ * provisioning, whether or not the verification then passes. */
+#define GSE_RADIO_TRACE(fmt, ...) diag::blob("RADIO", (fmt))
+
 #ifdef GSE_ROLE_TX
 #error "pad_node.cpp must be built with -DGSE_ROLE_PAD"
 #endif
@@ -284,6 +290,11 @@ void setup()
         padState = GSE_PAD_WAIT_HELLO;
         diag::line("PAD RADIO OK  (waiting for the TX node)");
         led_show(LED_NO_LINK, false);          /* amber / 2 Hz: no link    */
+        /* M0/M1 are only a mode input when the module is in AT+SWITCH=1.
+         * Say which scheme is in force so a floating-pin module is visible in
+         * the log instead of looking like a silent radio.                    */
+        diag::line("PAD radio mode select: AT commands (AT+SWITCH=0 expected); "
+                   "M0/M1 must be tied low if the module ever runs SWITCH=1");
     }
     /* Software watchdog: a wedged loop must not leave a valve commanded open
      * forever.  Reboot -> setup() re-asserts the safe outputs.                */

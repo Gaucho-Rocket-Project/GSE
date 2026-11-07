@@ -10,7 +10,7 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 
 | Gate | Tests | Blocks |
 |---|---|---|
-| G1 — modules alive | T-01, T-01a, T-02 | anything |
+| G1 — modules alive | T-00, T-01, T-01a, T-02 | anything |
 | G2 — link | T-03, T-05, T-07 | servo integration |
 | G3 — safety | T-04, T-06 | connecting a real e-match |
 | G4 — flight worthiness | T-08, T-09, T-10 | the first live oxidizer fill |
@@ -26,6 +26,22 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 5. Repeat for the second module; it must show the mirrored channel (`0e`) and `MAC=00,01`.
 
 **Pass:** both banners match the values in `firmware/src/config.h`. Attach the banners to the test record.
+
+---
+
+## T-00 · Mode-select pins and module identity (B) — do this first
+
+Purpose: two silent, "everything looks configured" failures are excluded before any other test.
+
+1. With the module powered, read its `AT+HELP` banner (terminal at 9600, or the node's own `LOG RADIO` block).
+2. Confirm `SWITCH:0`. If it reads `1`, the module is in hardware-mode-select and **M0/M1 must not be floating** —
+   send `AT+SWITCH0`, then tie M0 and M1 to GND and re-power. A floating pin in that state parks the module in AT,
+   WOR or sleep mode: it answers commands and never receives.
+3. Record **which module** is fitted — `DX-LR41-24T12S` (3.3 V only) or `DX-LR42-24T12D` (3.3–5.5 V, 5 V typical) —
+   and measure VCC against it. UART signalling is 3.3 V for both.
+
+**Pass:** `SWITCH:0` on both modules, M0/M1 tied to GND on both, VCC within the datasheet range of the module
+actually fitted (LR41: 3.2–3.4 V; LR42: 3.3–5.5 V). Record the two module part numbers in the log book.
 
 ---
 

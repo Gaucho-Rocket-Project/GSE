@@ -7,6 +7,7 @@
 - [ ] Pad powered: SW1 on, **SW2 (arm key) OFF and in your pocket**
 - [ ] IGN outlet **unloaded**, leads insulated from each other
 - [ ] Antennas fitted to both modules
+- [ ] **M0 and M1 tied to GND on both modules** (not left floating — see wiring sheet §1.2)
 
 ## Start-up (at the pad, before anyone goes downrange)
 1. Start the application → select the TX-node port → **Connect**
@@ -34,6 +35,12 @@
 | amber blink | 2 Hz blink | radio fine, **no link** from the TX node |
 | green blink | 1 Hz blink | link OK, **not armed** |
 | purple | 10 Hz fast blink | igniter energised |
+
+## If the pad hears nothing
+Banner `NO PAD TELEMETRY` and the pad's line says `bytes=0`: the modules are not talking at all.
+1. Boot log must say `SWITCH:0`. If it says `1`, tie M0/M1 to GND and power-cycle.
+2. Then check, in order: antennas fitted, TXD/RXD crossed, 3V3 on both, common ground.
+3. `bytes>0` but `valid=0` is a different fault (LEVEL / KEY / channel) — see TROUBLESHOOTING_LINK.md.
 
 ## If the link drops
 - Banner turns red, pad side goes to **FILL closed / PURGE closed / VEHICLE open / IGN off** on its own.

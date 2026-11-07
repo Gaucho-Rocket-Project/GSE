@@ -12,16 +12,26 @@ an **ESP-32S** (ESP32-WROOM-32 devkit) or a NUCLEO-H753ZI — the pad does not k
 pad node itself may be built on either ESP32 board. See
 [§1.1 ESP-32S variant](#11-esp-32s-variant-optional-board) for the three pins that move.
 
-| DX-LR41 pin | ESP32-S3 | ESP-32S | Notes |
+| Module pin | ESP32-S3 | ESP-32S | Notes |
 |---|---|---|---|
-| VCC (3.3 V) | 3V3 | 3V3 | **3.3 V only.** If your carrier board has a regulator and an "5 V" pad, use the 3V3 pad. |
+| VCC | 3V3 (**LR41 only, see below**) | 3V3 (**LR41 only**) | **LR42 accepts 3.3–5.5 V; LR41 is 3.3 V only** — read the next paragraph before you power anything |
 | GND | GND | GND | |
 | TXD | GPIO 16 (RX) | GPIO 16 = **RX2** | crossed |
 | RXD | GPIO 17 (TX) | GPIO 17 = **TX2** | crossed |
 | AUX | GPIO 18 | GPIO 18 | input, pull-up; high = module busy |
-| M0 / M1 | tied low | tied low | only relevant if `AT+SWITCH=1`; the firmware uses AT mode |
+| M0 / M1 | **tie low** | **tie low** | never leave floating — see [§1.2](#12-m0--m1-do-not-leave-them-floating) |
 
 Add 100 µF electrolytic + 100 nF ceramic across VCC/GND at the module. Antenna **must** be fitted before power-up.
+
+> **3.3 V or 5 V depends on which module you actually have — check the silkscreen.**
+> * **DX-LR42-24T12D** (SX1281, 7-pin stamp module): VCC accepts **3.3–5.5 V, 5 V typical**, and ≥5 V is what guarantees
+>   the full +13 dBm. UART levels are still **3.3 V** and the datasheet says 5 V TTL "risks burning" it — so power it
+>   from 5 V if you like, but keep D16/D17/D18 at 3.3 V (they are, on both devkits).
+> * **DX-LR41-24T12S** (what this ECR specifies): **3.3 V only.**
+>
+> The board you are holding may say either. Feeding an LR41 5 V is the fastest way to make it answer AT commands and
+> then behave erratically; feeding an LR42 3.3 V works but gives up output power. Neither mistake is recoverable by
+> re-flashing.
 
 Serial parameters after provisioning: **9600 8N1**, AT commands end with `\r\n`, `+++` toggles AT mode.
 
@@ -29,6 +39,56 @@ Serial parameters after provisioning: **9600 8N1**, AT commands end with `\r\n`,
 > verified with `AT+HELP` before *and after* leaving AT mode, and a mismatch is reported as a named
 > `RADIO FAULT`. Never issue `AT+RESET` from a terminal and expect the module to keep its configuration; re-flash
 > or re-run provisioning instead.
+
+### 1.2 M0 / M1 do not leave them floating
+
+**Short answer: unconnected is only safe if you are certain the module is (and stays) in `AT+SWITCH=0`.** Tie both pins
+to GND and the question disappears. This costs two pieces of wire and is the difference between a link that works and
+one that "provisions fine but never receives".
+
+From the vendor documentation (LR42 technical manual v2.0 §2.3.4, and the same text in the LR41 application guide):
+
+* `AT+SWITCH=0` (the **factory default**): M0/M1 are **outputs** from the module, driven low. Mode switching happens
+  over the UART with `AT+SLEEP` / `+++`. This is the scheme the firmware uses, so the pins are electrically irrelevant
+  *in this state* and leaving them unconnected appears to work.
+* `AT+SWITCH=1`: M0/M1 become **inputs with a weak pull-up**, and they select the operating mode:
+
+  | M0 | M1 | Mode |
+  |---|---|---|
+  | low | low | high-timeliness (normal transmit/receive) — **what you want** |
+  | low | high | air-wakeup (WOR) — **receives nothing on a normal frame** |
+  | high | low | AT command mode — **receives nothing** |
+  | high | high | sleep — **receives nothing** |
+
+  The manual is explicit: with `SWITCH=1` the pins are weakly pulled up, and *"you must never leave the pins floating,
+  or mode switching will malfunction."* Floating inputs sit at the weak pull-up level, which is **M0=1, M1=1 = sleep**,
+  or they pick up noise from the servo harness and land in any of the four states. And the mode is re-sampled **at every
+  power-up and every `AT+RESET`**, of which the firmware's provisioning does several.
+
+So the failure mode that matches your symptom exactly is: the module sits in AT or sleep mode while the firmware is
+happily writing command frames into its UART. `AT+HELP` still answers, provisioning still verifies, `RADIO OK` still
+prints — and the pad's `bytes=` counter stays at 0 forever.
+
+**What to do**
+
+1. Wire **M0 → GND** and **M1 → GND** on both modules (directly at the module; a 10 kΩ to GND is fine if you prefer
+   not to solder to the pin, but a direct link is better).
+2. Optionally let the MCU hold them: `firmware/src/config.h` has `PIN_LORA_M0` / `PIN_LORA_M1`, currently `-1`
+   (not driven). Set them to spare GPIOs (e.g. `-1` → `4`/`5` on a TX node, which uses no servos) and the driver drives
+   them low in `begin()` — belt and braces, and it survives a module that was left in `SWITCH=1`.
+3. Confirm the module's own view of it in the boot log. The firmware now prints the module's `AT+HELP` dump:
+
+   ```
+   LOG RADIO ... SWITCH:0 ...
+   LOG PAD RADIO OK  (waiting for the TX node)
+   ```
+
+   `SWITCH:` must be `0`. If it reads `1`, clear it with `AT+SWITCH0` (it reboots), then tie the pins low anyway.
+
+> **Do not** try to drive M0/M1 from the MCU while the module is in `AT+SWITCH=0`: in that state the pins are the
+> module's **outputs**, and an ESP32 driving them low/high against an output is a contention path you do not want on a
+> radio that decides whether the igniter can fire. GND (or a GPIO held low, which is the same electrical state) is safe;
+> toggling them is not.
 
 ### 1.1 ESP-32S variant (optional board)
 
@@ -78,12 +138,12 @@ Notes for this board:
 
 | DX-LR41 pin | Nucleo pin | Morpho | Notes |
 |---|---|---|---|
-| VCC (3.3 V) | 3V3 | CN11 pin 5 | 3.3 V only |
+| VCC (3.3 V) | 3V3 | CN11 pin 5 | LR41: 3.3 V only. LR42 accepts 3.3–5.5 V, but keep it on 3V3 here |
 | GND | GND | CN11 pin 8 | |
 | TXD | PD6 | CN11 pin 43 | USART2_RX — crossed |
 | RXD | PD5 | CN11 pin 41 | USART2_TX — crossed |
 | AUX | PD7 | CN11 pin 45 | input, pull-up |
-| M0 / M1 | tied low | — | as above |
+| M0 / M1 | **tie low** | — | as above, §1.2 — do not leave floating |
 
 Everything else is unchanged: the same six wires, the same 100 µF + 100 nF across the module, the same antenna
 rule. The laptop connects through the ST-LINK USB-C connector (USART3, PD8/PD9, via SB5/SB6 at their default ON

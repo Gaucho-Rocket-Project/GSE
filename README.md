@@ -64,6 +64,18 @@ the USB/LED plumbing differ. **A pad node on either board talks to a TX node on 
 | Status LED | WS2812 on GPIO48, five colours | on-board blue LED on GPIO2, blink pattern |
 | Wiring that moves | -- | PURGE D6→**D15**, IGNITER D7→**D13**, heartbeat D8→**D33** (GPIO6–11 are SPI flash) |
 
+### Module wiring: two things that bite
+
+* **M0 and M1 → GND on both modules.** They are module outputs while the factory-default `AT+SWITCH=0` is in force,
+  but the moment a module is in `AT+SWITCH=1` they become weakly-pulled-up *mode inputs*, and a floating pin parks the
+  module in AT mode, wake-on-radio or sleep — it provisions cleanly and never receives. See
+  [`hardware/wiring.md` §1.2](hardware/wiring.md#12-m0--m1-do-not-leave-them-floating).
+* **LR42 and LR41 are not the same on VCC.** LR42-24T12D takes 3.3–5.5 V (5 V typical, ≥5 V for full power);
+  LR41-24T12S is 3.3 V only. UART levels are 3.3 V on both. Check the silkscreen before you power the board.
+
+Both nodes print the module's own `AT+HELP` dump at provisioning (`LOG RADIO ... SWITCH:0 ...`), so the
+configuration that decides whether the link works is in the log instead of assumed.
+
 The three pad-node pins that move do so because GPIO6..11 are wired to the SPI flash on every
 ESP32-WROOM-32; an ESP32-S3 devkit can drive GPIO6, a WROOM-32 cannot. Everything else is the same wire.
 `src/config.h` refuses to build a pad node that puts a servo, the relay or the heartbeat on a flash pin

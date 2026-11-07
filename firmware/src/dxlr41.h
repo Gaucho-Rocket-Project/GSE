@@ -21,6 +21,14 @@
  *     stop the occasional neighbour's LR41 from being understood.
  *   - AUX pin: high while the module is busy (TX in progress / RX / config).
  *     The module raises AUX 2-3 ms *before* it starts pushing received bytes.
+ *   - AT+SWITCH 0 (factory default) = modes selected over the UART with AT
+ *     commands.  AT+SWITCH 1 = modes selected by the M0/M1 PINS, and the
+ *     vendor is explicit that with SWITCH=1 those pins are weakly pulled up
+ *     and "must not be left floating, or mode switching becomes abnormal".
+ *     We use mode 0 (AT commands) and pin M0/M1 low anyway -- see the
+ *     "M0/M1" note in hardware/wiring.md.  A module whose M0/M1 float can
+ *     random-walk between high-timeliness / AT / WOR / sleep at every reset,
+ *     which looks exactly like "the radio provisions but never receives".
  *   - "+++" toggles AT mode; it resets the module and is NOT saved.
  *
  * The driver deliberately uses the module's *defaults* for transport and only
@@ -34,14 +42,27 @@
 #include <Arduino.h>
 #include "gse_protocol.h"
 
+/* Optional hook: the node firmware defines GSE_RADIO_TRACE to a function that
+ * prints one line, so the module's own AT+HELP dump ends up in the console log
+ * of whichever board is being debugged (see pad_diag.h / the TX platform).   */
+#ifdef GSE_RADIO_TRACE
+#define DXLR41_TRACE(...) GSE_RADIO_TRACE(__VA_ARGS__)
+#else
+#define DXLR41_TRACE(...) do { } while (0)
+#endif
+
 class DxLr41 {
 public:
     DxLr41(HardwareSerial &uart, int pinAux, int pinM0 = -1, int pinM1 = -1)
-        : _uart(uart), _aux(pinAux), _m0(pinM0), _m1(pinM1) {}
+        : _uart(uart), _aux(pinAux), _m0(pinM0), _m1(pinM1) { _lastBanner[0] = 0; }
 
     void begin(unsigned long baud)
     {
         if (_aux >= 0) pinMode(_aux, INPUT_PULLUP);
+        /* Drive M0/M1 low when the board wires them (PIN_LORA_M0/M1).  Low/low
+         * is high-timeliness mode if the module is ever in AT+SWITCH=1, and
+         * harmless in the SWITCH=0 default.  Boards that leave them
+         * unconnected must tie them low at the module -- see wiring.md. */
         if (_m0  >= 0) { pinMode(_m0, OUTPUT); digitalWrite(_m0, LOW); }
         if (_m1  >= 0) { pinMode(_m1, OUTPUT); digitalWrite(_m1, LOW); }
         _uart.begin(baud, SERIAL_8N1, PIN_LORA_RX, PIN_LORA_TX);
@@ -103,6 +124,7 @@ public:
     String configure(uint8_t level, uint8_t channelHex, uint16_t key,
                      bool fixedPoint, uint16_t myAddr, uint16_t peerAddr)
     {
+        _lastBanner[0] = 0;
         if (!enterAt()) return F("AT entry failed");
         if (!at("AT+MODE1")) return F("AT+MODE1 rejected");
         if (!at((String("AT+LEVEL") + String(level)).c_str())) return F("AT+LEVEL rejected");
@@ -128,7 +150,13 @@ public:
          * therefore puts back whatever was last saved, silently undoing
          * everything above.  Verify, and say exactly what is wrong.          */
         char help[600];
-        if (!help_(help, sizeof help)) return F("AT+HELP silent");
+        bool gotHelp = help_(help, sizeof help);
+        copyBanner(gotHelp ? help : "");
+        /* Print what the module says it is, *before* the first mismatch can
+         * return early: the banner is the whole diagnosis, and leaving AT mode
+         * wipes the reader's chance to ask again without another handshake. */
+        if (gotHelp) DXLR41_TRACE("%s", help);
+        if (!gotHelp) return F("AT+HELP silent");
         if (!strstr(help, "MODE:1"))        return F("MODE did not stick");
         {
             char want[24];
@@ -162,6 +190,8 @@ public:
 
         if (!enterAt()) return F("AT re-entry failed (module lost config)");
         if (!help_(help, sizeof help)) return F("AT+HELP silent after reset");
+        copyBanner(help);
+        DXLR41_TRACE("%s", help);   /* post-reboot read-back, same reason */
         if (!strstr(help, "MODE:1")) return F("reset wiped MODE (config not saved)");
         at("+++", "Power On", 900);           /* back to transparent mode */
         delay(250);
@@ -175,6 +205,13 @@ public:
         return help(buf, bufLen);
     }
 
+    /* The module's own AT+HELP dump from the last configure(), NUL-terminated
+     * and line-ended with '\n' (see copyBanner()).  Both nodes print it to
+     * their console: the values that decide whether the two ends can hear each
+     * other (MODE / LEVEL / Frequency / MAC / SWITCH / SLEEP) are then in the
+     * log instead of "it looked fine".  Empty until configure() has run.      */
+    const char *banner() const { return _lastBanner; }
+
     /* Compose an uplink packet in fixed-point mode: dst(2) + chan(1) + data */
     size_t buildFixedPoint(uint8_t *out, uint16_t dst, uint8_t chan,
                            const uint8_t *data, size_t len)
@@ -186,6 +223,19 @@ public:
     }
 
 private:
+    /* help() strips '\r' but keeps '\n'; normalise to '\n' line ends and cap
+     * the size so diag::blob() can print it one "LOG | " line at a time.     */
+    void copyBanner(const char *help)
+    {
+        size_t j = 0;
+        for (size_t i = 0; help[i] && j + 2 < sizeof _lastBanner; ++i) {
+            char c = help[i];
+            if (c == '\r') continue;
+            _lastBanner[j++] = c;
+        }
+        _lastBanner[j] = 0;
+    }
+
     bool _collect(const char *expect, uint32_t timeoutMs)
     {
         String resp;
@@ -201,6 +251,7 @@ private:
 
     HardwareSerial &_uart;
     int _aux, _m0, _m1;
+    char _lastBanner[600] = {0};
 };
 
 #endif /* DXLR41_H */
