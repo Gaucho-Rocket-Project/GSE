@@ -69,3 +69,7 @@ Testing/
 # Python bytecode (software/ runs in place)
 __pycache__/
 *.pyc
+
+# host test binaries (make -C tests) -- build products, not sources
+tests/host_hal
+tests/test_protocol

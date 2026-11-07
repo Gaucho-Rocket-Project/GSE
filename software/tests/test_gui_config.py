@@ -298,10 +298,10 @@ def test_node_log_lines_reach_the_event_log():
     """The pad's own banner/link/counter lines used to be collected silently."""
     ctl = Controller(port="SIM")
     ctl.connect()
-    ctl.link.node_log = ["PAD link: ble -- BLE peripheral \"GSE-PAD\"",
+    ctl.link.node_log = ["PAD link: espnow -- ESP-NOW peer 24:6f:28:aa:bb:01, channel 1",
                          "PAD LINK OK  (waiting for the TX node)"]
     ctl.tick()
-    assert any("PAD link: ble" in l for l in ctl.events), ctl.events
+    assert any("PAD link: espnow" in l for l in ctl.events), ctl.events
     # and they are only shown once
     before = len(ctl.events)
     ctl.tick()
@@ -321,11 +321,11 @@ def test_tx_transport_is_named_in_the_banner():
     ctl.link.state = None                      # no telemetry at all
     ctl.link.node_log = [
         "TX esp32s fw 1.0 ready",
-        "link: ble -- BLE central, scanning for service ff00 for \"GSE-PAD\"",
+        "link: espnow -- ESP-NOW peer 24:6f:28:aa:bb:01, channel 1, no module, no pairing",
     ]
     colour, text = ctl.verdict()
     assert colour == "red", (colour, text)
-    assert "ble" in text and "pad never answered" in text, text
+    assert "espnow" in text and "pad never answered" in text, text
 
     ctl.link.node_log = ["link: lora -- LoRa UART1 RX<-D16 TX->D17"]
     colour, text = ctl.verdict()
@@ -333,7 +333,7 @@ def test_tx_transport_is_named_in_the_banner():
 
     # a pad-side line in the log (e.g. pasted by an operator) must not be
     # mistaken for the TX node's own transport
-    ctl.link.node_log = ["PAD link: ble -- BLE peripheral \"GSE-PAD\""]
+    ctl.link.node_log = ["PAD link: espnow -- ESP-NOW peer 24:6f:28:aa:bb:01"]
     colour, text = ctl.verdict()
     assert text == "NO PAD TELEMETRY", text
     ctl.disconnect()

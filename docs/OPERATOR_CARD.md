@@ -4,11 +4,15 @@
 
 ## Know which link you are carrying
 - [ ] Both nodes are the **same transport**. The first `LOG ... link:` line on each says so:
-      `link: lora -- LoRa UART1 ...` or `link: ble -- BLE peripheral "GSE-PAD" ...`
-      (LoRa envs `pad-node` / `tx-node`, Bluetooth envs `pad-node-ble` / `tx-node-ble`.)
-      **A LoRa pad and a Bluetooth TX node will never link.**
-- [ ] If it is the Bluetooth build, there are **no modules and no antennas** to pack — but the range is
-      tens of metres, not kilometres, and T-11 (range test) has to be signed for that vehicle.
+      `link: lora -- LoRa UART1 ...` or `link: espnow -- ESP-NOW ch 1, local ... -> peer ...`
+      (LoRa envs `pad-node` / `tx-node`, ESP-NOW envs `pad-node-now` / `tx-node-now`.)
+      **A LoRa pad and an ESP-NOW TX node will never link.**
+- [ ] If it is the ESP-NOW build, there are **no modules and no antennas** to pack — but it is a 2.4 GHz
+      802.11 radio, so it competes with phones and hotspots, and T-11 (range test) has to be signed for
+      that vehicle.
+- [ ] If it is the ESP-NOW build, the two nodes are **MAC-paired**: swapping either board for a spare
+      needs both MACs in `config.h` and a reflash of both. A spare pad flashed with the old MAC pair
+      will print `peer MAC NOT CONFIGURED`, hold its outputs safe and never link — that is by design.
 
 ## Before you leave the prep area
 - [ ] Laptop charged, GSE application installed, TX-node cable in the box
@@ -43,18 +47,22 @@
 | ESP32-S3 (WS2812) | ESP-32S (blue LED) | Meaning |
 |---|---|---|
 | blue solid | solid on | booting |
-| red solid | 5 Hz fast blink | **LINK FAULT** — LoRa: module did not answer. BLE: stack did not start. Do not fly |
-| amber blink | 2 Hz blink | radio fine (or BLE advertising), **no link** from the TX node |
+| red solid | 5 Hz fast blink | **LINK FAULT** — LoRa: module did not answer. ESP-NOW: Wi-Fi did not start, or the peer MAC is not configured. Do not fly |
+| amber blink | 2 Hz blink | radio fine, **no link** from the TX node |
 | green blink | 1 Hz blink | link OK, **not armed** |
 | purple | 10 Hz fast blink | igniter energised |
 
 ## If the pad hears nothing
 Banner `NO PAD TELEMETRY` and the pad's line says `bytes=0`: the modules are not talking at all.
 1. **LoRa build:** boot log must say `SWITCH=0` (pad line `PAD radio mode select: SWITCH=0 ...`). If it says
-   `1`, tie M0/M1 to GND and power-cycle. **Bluetooth build:** the boot log must say `PAD link: ble ...` and the
-   TX node must be powered and within range.
-2. Then check, in order: antennas fitted, TXD/RXD crossed, 3V3 on both, common ground.
-3. `bytes>0` but `valid=0` is a different fault (LEVEL / KEY / channel) — see TROUBLESHOOTING_LINK.md.
+   `1`, tie M0/M1 to GND and power-cycle. **ESP-NOW build:** the pad line must say
+   `PAD link: espnow ... -> peer ...` (not `peer MAC NOT CONFIGURED`), both nodes must print the same
+   channel, and the TX node must be powered and within range.
+2. **LoRa build**, then check in order: antennas fitted, TXD/RXD crossed, 3V3 on both, common ground.
+   **ESP-NOW build:** check nothing else is using that channel (phone hotspot, another AP) and back away
+   from the pad — 2.4 GHz does not go through a vehicle.
+3. `bytes>0` but `valid=0` is a different fault (LEVEL / KEY / channel, or interference) — see
+   TROUBLESHOOTING_LINK.md.
 
 ## If the link drops
 - Banner turns red, pad side goes to **FILL closed / PURGE closed / VEHICLE open / IGN off** on its own.

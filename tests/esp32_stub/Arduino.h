@@ -158,7 +158,9 @@ typedef struct {
     bool     trigger_panic;
 } esp_task_wdt_config_t;
 
-typedef enum { ESP_OK_S = 0, ESP_ERR_INVALID_STATE_S = 0x103 } esp_err_t;
+/* The real core reaches esp_err_t through esp_err.h; the stub does the same so
+ * a firmware TU that includes both (link.h does) sees ONE definition. */
+#include "esp_err.h"
 esp_err_t esp_task_wdt_init(uint32_t timeout_s, bool panic);
 esp_err_t esp_task_wdt_reconfigure(const esp_task_wdt_config_t *);
 esp_err_t esp_task_wdt_add(void *);

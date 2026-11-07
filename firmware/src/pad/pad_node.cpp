@@ -3,7 +3,7 @@
  * -------------------------------------------------------------------------
  * Link in  : DX-LR42/LR41-24T12x (UART pipe, 2.4 GHz LoRa/FLRC) by default,
  *            or Bluetooth Low Energy on the ESP32's own radio
- *            (-DGSE_LINK_BLE).  Both carry the identical 7E protocol; see
+ *            (-DGSE_LINK_ESPNOW).  Both carry the identical 7E protocol; see
  *            src/link.h and docs/LINK_OPTIONS.md.  Everything below the
  *            transport -- watchdog, failsafes, igniter interlock -- is
  *            unchanged either way, which is the point of the seam.
@@ -332,8 +332,10 @@ void setup()
                    gseLink.switchMode() < 0 ? "? (no answer)" :
                    gseLink.switchMode() ? "1 (PINS - fault!)" : "0 (AT commands)");
 #else
-        diag::line("PAD BLE: advertising as \"%s\"; the TX node must also be "
-                   "built with -DGSE_LINK_BLE", GSE_BLE_NAME);
+        diag::line("PAD ESP-NOW: %s; the TX node must be built with "
+                   "-DGSE_LINK_ESPNOW on the same channel, and its MAC must be "
+                   "the one in this build's config.h",
+                   gseLink.linkState());
 #endif
     }
     /* Software watchdog: a wedged loop must not leave a valve commanded open
@@ -436,9 +438,10 @@ void loop()
                        "3V3, and that both modules are Level%u Ch%02X",
                        GSE_LEVEL_DEFAULT, GSE_CH_SELF(0));
 #else
-            diag::line("PAD nothing over BLE (%s): is the TX node built with "
-                       "-DGSE_LINK_BLE, powered, and in range?",
-                       gseLink.linkState());
+            diag::line("PAD nothing over ESP-NOW (%s): is the TX node built "
+                       "with -DGSE_LINK_ESPNOW, powered, on channel %d, and is "
+                       "its MAC the one in GSE_NOW_TX_MAC?",
+                       gseLink.linkState(), (int)GSE_NOW_CHANNEL);
 #endif
         }
     }

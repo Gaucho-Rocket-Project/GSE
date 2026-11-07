@@ -4,7 +4,7 @@
  * One object, one method set, two possible radios underneath:
  *
  *      GSE_LINK_LORA (default)   DX-LR42/LR41-24T12x on UART1, 9600 8N1
- *      GSE_LINK_BLE              the ESP32's own Bluetooth Low Energy radio
+ *      GSE_LINK_ESPNOW           ESP-NOW -- the ESP32's own Wi-Fi radio
  *
  * Everything above this header -- the 7E frames in gse_protocol.h, the CRC,
  * the sequence numbers, the pad's watchdog and arming rules, the TX node's
@@ -14,50 +14,68 @@
  * (tests/test_protocol.c) cover both because both carry the same frames.
  *
  * Why two radios
- *   * LoRa is the ECR configuration: hundreds of metres, no pairing, no
- *     phones, works with Bluetooth and Wi-Fi off.  It is the default, and the
- *     only link the current test plan signs off for flight.
- *   * BLE exists so the pair works with NO radio module at all: no UART
+ *   * LoRa is the ECR configuration: hundreds of metres, its own radio, no
+ *     Wi-Fi, no pairing.  It is the default, and the only link the current
+ *     test plan signs off for flight.
+ *   * ESP-NOW exists so the pair works with NO radio module at all: no UART
  *     wiring, no AT provisioning, no AUX pin, nothing to buy.  Two ESP32s and
- *     a laptop is enough for a bench run, a spare pad, or a short-range link
- *     when the modules are lost or delayed.  Its range is a fraction of the
- *     LoRa link's -- see docs/LINK_OPTIONS.md, which is the operator-facing
- *     comparison, and the security note in config.h.
+ *     a laptop is enough for a bench run, a spare pad, or a short/medium-range
+ *     link when the modules are lost or delayed.
+ *
+ * Why ESP-NOW rather than Bluetooth
+ *   Bluetooth (BLE) was the first attempt at a no-module link and it worked,
+ *   but it is the wrong shape for this traffic:
+ *     - it is connection-oriented, so there is pairing/bonding/GATT and a
+ *       connected/disconnected state machine to reason about at power-up;
+ *     - the default ATT payload is 20 bytes, so a 39-byte frame had to be
+ *       chunked and reassembled;
+ *     - "is the far end hearing me" is inferred, not measured.
+ *   ESP-NOW is connectionless: a datagram addressed to the peer's MAC address,
+ *   no association, no SSID, no router, one 250-byte packet, a per-packet
+ *   delivery status from the link layer, and CCMP encryption keyed from
+ *   compile-time constants instead of a pairing step.  A link failure is just
+ *   "packets stop", which is precisely the condition the pad's watchdog
+ *   already handles -- so no new failure mode is introduced.
  *
  * Selecting it
- *   -DGSE_LINK_BLE on BOTH nodes (platformio.ini envs pad-node-ble /
- *   tx-node-ble and their -esp32s twins).  config.h enforces "exactly one of
- *   the two", and refuses BLE on the STM32 build, which has no Bluetooth.
+ *   -DGSE_LINK_ESPNOW on BOTH nodes (platformio.ini envs pad-node-now /
+ *   tx-node-now and their -esp32s twins).  config.h enforces "exactly one of
+ *   the two" and refuses ESP-NOW on the STM32 build, which has no Wi-Fi.
  *
- * A LoRa pad cannot hear a BLE TX node and vice versa.  That is not a fault
- * mode you should have to deduce: each node prints its transport in the boot
- * banner ("PAD link: ble ..."), and a mismatched pair shows NO-LINK forever.
+ *   The peer's MAC address is compiled in (config.h, GSE_NOW_PAD_MAC /
+ *   GSE_NOW_TX_MAC): a pad that accepted "whoever spoke first" would be a pad
+ *   a stranger's sender could command.  First flash with the placeholders
+ *   prints each board's own MAC; type the two MACs in, rebuild both, and the
+ *   link comes up.
+ *
+ * A LoRa pad cannot hear an ESP-NOW TX node and vice versa.  That is not a
+ * fault mode you should have to deduce: each node prints its transport on its
+ * first log line ("PAD link: espnow ..."), and a mismatched pair shows
+ * NO-LINK for ever while both boards look healthy.
  *
  * Method set (the seam)
- *   begin()                start the radio / the Bluetooth stack
- *   poll()                 per-loop housekeeping (BLE scan + connect); no-op
- *                          on LoRa.  Must never block.
+ *   begin()                start the radio / the Wi-Fi stack + ESP-NOW
+ *   poll()                 per-loop housekeeping; empty for both transports
+ *                          (ESP-NOW delivers through its own callbacks)
  *   describe()             one line for the boot banner: what this link is
  *   provision(...)         LoRa: write and verify the AT parameters.
- *                          BLE: nothing to provision -- the link parameters
- *                          are compile-time constants in config.h -- so it
- *                          only reports whether the stack started.  Returns
- *                          an empty String for "no fault", exactly like LoRa,
- *                          so the callers' RADIO OK / RADIO FAULT logic is
- *                          one piece of code.
+ *                          ESP-NOW: apply the channel and register the peer;
+ *                          returns "" on success and the reason on failure, so
+ *                          the callers' RADIO OK / RADIO FAULT logic is one
+ *                          piece of code.
  *   send(dst, ch, frame, n)  frame is a bare 7E frame.  LoRa prefixes the
- *                          fixed-point destination address + channel; BLE has
- *                          its own addressing and sends it unchanged.
+ *                          fixed-point destination address + channel; ESP-NOW
+ *                          addresses by MAC and sends it unchanged.
  *   sendRaw(pkt, n)        pkt already carries the LoRa 3-byte prefix (the
  *                          portable TX core builds it, see gse_tx_core.c).
- *                          LoRa writes it untouched; BLE strips it, because
- *                          over BLE those three bytes are not addressing, they
- *                          are noise the parser would have to resync past.
+ *                          LoRa writes it untouched; ESP-NOW strips it, because
+ *                          those three bytes are not addressing here, they are
+ *                          noise the parser would have to resync past.
  *   read() / available()   the same polled byte stream in both builds.
- *   linkUp()               LoRa: always true (the module is a dumb pipe;
- *                          whether the far end is alive is the protocol's
- *                          business, and the watchdog already covers it).
- *                          BLE: an actual GATT connection exists.
+ *   linkUp()               LoRa: always true (the module is a dumb pipe).
+ *                          ESP-NOW: radio initialised, peer MAC configured and
+ *                          registered.  Whether the far end is alive is the
+ *                          protocol's business (HELLO/STATE + the watchdog).
  */
 #ifndef GSE_LINK_H
 #define GSE_LINK_H
@@ -73,162 +91,120 @@
 #  define GSE_LINK_IS_PAD 0
 #endif
 
-#if defined(GSE_LINK_BLE)
+#if defined(GSE_LINK_ESPNOW)
 
-/* ------------------------------------------------------------------------- *
- *  Bluetooth Low Energy transport
- * ------------------------------------------------------------------------- *
+/* ========================================================================== *
+ *  ESP-NOW transport
+ * ========================================================================== *
  *
- * Topology: the PAD is the peripheral (GATT server, advertises GSE_BLE_NAME),
- * the TX node is the central (GATT client, scans for that service).  Chosen
- * deliberately:
+ * API compatibility.  This matters, because the IDF API changed under us and
+ * this repo supports both Arduino cores:
  *
- *   * the pad never initiates anything, so nothing that goes wrong on the TX
- *     side can stall the pad's 20 ms control loop;
- *   * a phone cannot become the pad's peer by accident -- the pad does not
- *     advertise to scanners that look only for names, and it ignores writes
- *     from a central that is not subscribed to the right characteristics.
- *     There is no pairing, so this is "not easy to stumble into", not
- *     "impossible": see the security note in config.h;
- *   * the TX node, which has a laptop attached and a human watching it, is
- *     where "it is scanning, nothing found" is a useful message.
+ *   arduino-esp32 2.x  ->  ESP-IDF 4.4
+ *       typedef void (*esp_now_recv_cb_t)(const uint8_t *mac_addr,
+ *                                         const uint8_t *data, int data_len);
+ *       RSSI lives in wifi_pkt_rx_ctrl_t and is not passed to the callback.
  *
- * Only the BLE API common to arduino-esp32 2.x and 3.x is used (this repo
- * supports both cores; tests/esp32_stub/ stands in for them on a host build).
- * The three API differences that actually matter here, and how each is
- * avoided:
+ *   arduino-esp32 3.x  ->  ESP-IDF 5.x
+ *       typedef void (*esp_now_recv_cb_t)(const esp_now_recv_info_t *info,
+ *                                         const uint8_t *data, int data_len);
+ *       RSSI is info->rx_ctrl->rssi.
  *
- *   * BLEScan::start() returns BLEScanResults by value in 2.x and by pointer
- *     in 3.x -- the scan is driven by callbacks and stop() instead, and the
- *     return value is never touched;
- *   * BLEAdvertisedDevice::getName() returns std::string in 2.x and String in
- *     3.x -- devices are matched on the advertised service UUID, with a name
- *     check done through .c_str(), which is the same call in both;
- *   * BLEDevice::init() returns void in 2.x and bool in 3.x -- called as a
- *     statement, value ignored.
- *
- * Payload size: a GSE frame is up to GSE_MAX_FRAME (39) bytes and the default
- * ATT MTU allows 20 bytes per write/notification, so every frame goes out as
- * two chunks and is reassembled by the peer's byte-stream parser.  MTU
- * negotiation is deliberately not attempted: 40 packets/s at 20 Hz is nothing
- * for BLE, and it is one fewer thing that can differ between core versions.  A
- * lost chunk costs exactly one frame (20 ms); the parser resyncs on the next
- * 0x7E with a valid version byte, so half a frame can never be mistaken for a
- * command, and the pad's watchdog does not even notice a single 20 ms gap.
- *
- * Threading: all four callbacks run in the Bluetooth task, not in loop().  They
- * only copy bytes into a critical-section-protected ring buffer, set a flag or
- * record a MAC address.  No parsing, no logging, no allocation in there.
+ * Everything else used here -- esp_now_init, esp_now_add_peer, esp_now_send,
+ * esp_now_register_recv_cb, esp_now_register_send_cb, esp_now_set_pmk,
+ * esp_now_peer_info_t, ESP_NOW_MAX_DATA_LEN, ESP_ERR_ESPNOW_EXIST,
+ * ESP_NOW_SEND_SUCCESS -- is byte-identical in 4.4 and 5.x.  Only the receive
+ * callback is version-specific, so it is the only thing shimmed: one function
+ * with the signature this IDF actually declares, normalising to
+ * (src_mac, data, len, rssi) before any project code sees it.
  */
 
-#include <BLEDevice.h>
-#include <BLE2902.h>
-#include <BLEUtils.h>
+#include <esp_err.h>
+#include <esp_event.h>
+#include <esp_idf_version.h>
+#include <esp_netif.h>
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include <stdio.h>
+#include <string.h>
+
+/* ESP-IDF's key types are fixed 16-byte arrays.  A silently truncated key
+ * would fail at run time as "send failed", which reads like a radio fault, so
+ * the length is a build-time requirement instead. */
+static_assert(sizeof(GSE_NOW_KEY_TEXT) - 1 == 16,
+              "GSE_NOW_KEY_TEXT must be exactly 16 characters");
+static_assert(sizeof(GSE_NOW_PMK_TEXT) - 1 == 16,
+              "GSE_NOW_PMK_TEXT must be exactly 16 characters");
 
 class GseLink;
 
-/* One link per node, so a file-scope pointer is the right amount of machinery.
- * The Bluetooth task reaches the object through it; it is bound in begin(),
- * before the stack can fire a callback.  `static` because exactly one
- * translation unit per firmware image includes this header (pad_node.cpp or
- * tx_platform_esp32.cpp) -- see the note in tests/esp32_stub/BLE*.h. */
-static GseLink *gse_ble_link = nullptr;
+/* One link per node.  The receive callback runs in the Wi-Fi task, so it can
+ * only reach the object through a file-scope pointer; it is bound in begin(),
+ * before esp_now_init(), so it is never null when the stack calls it. */
+static GseLink *s_link = nullptr;
 
-/* Guards the receive ring buffer, which is written from the Bluetooth task and
- * read from loop().  A byte at a time in and out: the critical sections are a
- * few instructions long. */
+/* Guards the receive ring, written from the Wi-Fi task and read from loop().
+ * Critical sections are a few instructions long (a byte at a time). */
 static portMUX_TYPE s_rxMux = portMUX_INITIALIZER_UNLOCKED;
 
-/* ---------------------------------------------------------------- callbacks
- * One object implements every BLE callback interface the node needs, so the
- * stack holds one pointer and the hand-off back into GseLink is one line each.
- * The one-argument onConnect/onDisconnect/onWrite forms are the ones common to
- * 2.x and 3.x; the overloads that take an event struct are left alone. */
-class GseBleCallbacks : public BLEServerCallbacks,
-                        public BLECharacteristicCallbacks,
-                        public BLEAdvertisedDeviceCallbacks,
-                        public BLEClientCallbacks {
-public:
-    void onConnect(BLEServer *srv) override;
-    void onDisconnect(BLEServer *srv) override;
-    void onWrite(BLECharacteristic *chr) override;
-    void onResult(BLEAdvertisedDevice dev) override;
-    void onConnect(BLEClient *cli) override;
-    void onDisconnect(BLEClient *cli) override;
-
-    /* Scan-complete, in the two signatures the two cores use.  Both are
-     * routed to one hook, because the scan object does not survive a stop():
-     * until the application re-registers its callback on the (fresh) scan
-     * object, results are silently dropped -- which reads as "it scanned and
-     * found nothing" even with the pad powered and two metres away. */
-    void scanCompleted();
-
-    /* Called by GseLink once a connection is up: the TX node has no interest
-     * in further advertisements, and the pad must not be reconnected to by a
-     * second central. */
-    volatile bool active;
-    GseBleCallbacks() : active(false) {}
-};
+/* The received-packet shims.  Declared here, defined at the bottom of this
+ * block with the signature the current IDF expects. */
+#if ESP_IDF_VERSION_MAJOR >= 5
+static void gse_now_recv_shim(const esp_now_recv_info_t *info,
+                              const uint8_t *data, int len);
+#else
+static void gse_now_recv_shim(const uint8_t *src_mac, const uint8_t *data,
+                              int len);
+#endif
+static void gse_now_send_shim(const uint8_t *mac, esp_now_send_status_t status);
 
 class GseLink {
 public:
-    /* 256 bytes = ~6 of the largest (39 B) frames in flight, and the reason
-     * it is a power of two is that the head/tail indices are uint8_t: they
-     * wrap by themselves, so the ring needs no modulo and a byte write inside
-     * the critical section is atomic.  255 usable bytes. */
+    /* 256 bytes: about six of the largest (39 B) frames in flight, which is
+     * more than one 20 ms control tick can produce in either direction, so the
+     * overflow path below is a last resort rather than a design point.  Power
+     * of two because the head/tail indices are uint8_t: they wrap by
+     * themselves, need no modulo, and a single-byte write inside the critical
+     * section is atomic. */
     enum { RX_CAP = 256 };
+    enum { MAC_LEN = 6 };
 
     GseLink()
-        : rxHead(0), rxTail(0), dropped(0), connected(false), scanning(false),
-          started(false), targetSeen(false), scanStartMs(0), lastAttemptMs(0),
-          targetType(0)
-#if GSE_LINK_IS_PAD
-          , server(nullptr), rxChar(nullptr), txChar(nullptr)
-#else
-          , client(nullptr), rxRemote(nullptr)
-#endif
-    { targetMac[0] = 0; }
+        : rxHead(0), rxTail(0), dropped(0),
+          rxDatagrams(0), txDatagrams(0), txOk(0), txFailed(0), rxForeign(0),
+          lastRxMs(0), lastTxOkMs(0), lastRssi(0),
+          started(false), peerRegistered(false), ready(false),
+          peerConfigured(false)
+    {
+        memset(peerMac, 0, sizeof peerMac);
+        memset(localMac, 0, sizeof localMac);
+    }
 
     /* ------------------------------------------------------------ lifecycle */
     void begin();
-    void poll();
+    void poll() {}                    /* ESP-NOW pushes; nothing to poll    */
 
-    const char *transport() const { return "ble"; }
+    const char *transport() const { return "espnow"; }
 
-    String describe() const
-    {
-#if GSE_LINK_IS_PAD
-        return String("BLE peripheral \"") + GSE_BLE_NAME +
-               "\" (svc ff00, rx ff01, tx ff02), no module, no pairing";
-#else
-        return String("BLE central, scanning for service ff00 for \"") +
-               GSE_BLE_NAME + "\", no module, no pairing";
-#endif
-    }
+    String describe() const;
 
-    /* See the header comment: nothing to write, only "did the stack start".
-     * Also doubles as the "reconnect now" button behind RADIO CONFIG. */
-    String provision(uint8_t, uint8_t, uint16_t, uint16_t, uint16_t)
-    {
-        if (!started) return String("BLE stack not started");
-#if !GSE_LINK_IS_PAD
-        restartScan();
-#endif
-        return String();
-    }
+    /* See the header comment.  begin() has already done the work; this only
+     * reports whether it succeeded and why not. */
+    String provision(uint8_t, uint8_t, uint16_t, uint16_t, uint16_t);
 
     /* -------------------------------------------------------------- framing */
     /* frame = bare 7E frame; the LoRa addressing arguments are unused here. */
     size_t send(uint16_t, uint8_t, const uint8_t *frame, size_t len)
     {
-        return writeChunks(frame, len);
+        return transmit(frame, len);
     }
 
-    /* pkt = [addr_hi addr_lo chan] + 7E frame (the module's fixed-point form). */
+    /* pkt = [addr_hi addr_lo chan] + 7E frame, as the portable TX core builds
+     * it for the module's fixed-point mode.  Strip those three bytes. */
     size_t sendRaw(const uint8_t *pkt, size_t len)
     {
         if (len <= 3) return 0;
-        return writeChunks(pkt + 3, len - 3);
+        return transmit(pkt + 3, len - 3);
     }
 
     int available() const
@@ -244,153 +220,115 @@ public:
         return (int)b;
     }
 
-    bool linkUp() const { return connected; }
+    bool linkUp() const { return ready; }
 
     const char *linkState() const
     {
-        if (connected) return "connected";
-#if GSE_LINK_IS_PAD
-        return "advertising (no TX node connected)";
-#else
-        return scanning ? "scanning for the pad" : "not connected";
-#endif
+        if (!started)        return "radio failed";
+        if (!peerConfigured) return "peer MAC NOT CONFIGURED";
+        if (!peerRegistered) return "peer registration failed";
+        return "ready (connectionless)";
     }
 
-    /* ------------------------------------------------------- callback hooks */
-    void pushFromBle(const uint8_t *data, size_t len);
-    void setConnected(bool up) { connected = up; }
-    void noteTarget(const char *mac, uint8_t type);
-    /* The stack says the scan window expired without a match: stop waiting and
-     * start the back-off timer, so the next scan is issued from loop() (where
-     * it is safe to allocate) rather than from the scan callback. */
-    void scanFinished();
-    /* The scan stops on *finding* the pad as well, and the Arduino BLE layer
-     * does not re-register the results callback after a stop: re-arm it before
-     * every start, or the second scan finds nothing. */
-    void armScanCallbacks();
+    /* Real link-layer numbers for the nodes' 1 Hz line.  "acks" counts
+     * ESP_NOW_SEND_SUCCESS from the radio, which is the only honest answer to
+     * "is the other board hearing me" -- the protocol's own counters say what
+     * it did with what arrived. */
+    unsigned long ackCount() const { return txOk; }
+    unsigned long failCount() const { return txFailed; }
+    unsigned long foreignCount() const { return rxForeign; }
+    unsigned long rxCount() const { return rxDatagrams; }
+    int rssi() const { return (int)lastRssi; }
+    bool heardRecently(uint32_t now, uint32_t withinMs) const
+    {
+        return lastRxMs && (now - lastRxMs) < withinMs;
+    }
+
+    /* ------------------------------------------------------------ callbacks
+     * Called from the Wi-Fi task.  Copy bytes, record status, return. */
+    void onDatagram(const uint8_t *src, const uint8_t *data, int len, int rssi);
+    void onSendStatus(esp_now_send_status_t status);
 
     /* ---------------------------------------------------------------- state */
     uint8_t  rxBuf[RX_CAP];
     volatile uint8_t  rxHead, rxTail;
-    volatile uint32_t dropped;        /* bytes lost to ring-buffer overflow  */
-    volatile bool connected;
-    volatile bool scanning;
-    bool     started;
-    volatile bool targetSeen;
-    volatile uint32_t scanStartMs;
-    volatile uint32_t lastAttemptMs;
-    char     targetMac[18];
-    uint8_t  targetType;
-
-#if GSE_LINK_IS_PAD
-    BLEServer *server;
-    BLECharacteristic *rxChar;        /* central writes -> pad receives      */
-    BLECharacteristic *txChar;        /* pad notifies    -> central receives */
-#else
-    BLEClient *client;
-    BLERemoteCharacteristic *rxRemote;
-#endif
+    volatile uint32_t dropped;         /* bytes lost to ring-buffer overflow */
+    volatile uint32_t rxDatagrams, txDatagrams, txOk, txFailed, rxForeign;
+    volatile uint32_t lastRxMs, lastTxOkMs;
+    volatile int8_t   lastRssi;
+    bool     started, peerRegistered, ready, peerConfigured;
+    uint8_t  peerMac[MAC_LEN];
+    uint8_t  localMac[MAC_LEN];
 
 private:
-    /* rxHead/rxTail are uint8_t, because they are updated inside a critical
-     * section and a single-byte write is atomic on both ESP32 cores.  That
-     * only works while the capacity fits in a uint8_t -- assert it rather than
-     * discover it as a corrupted ring buffer. */
+    void     push(const uint8_t *data, size_t len);
+    size_t   transmit(const uint8_t *data, size_t len);
+    bool     addPeer();
+    static bool isPlaceholder(const uint8_t *mac);
+    static String macToStr(const uint8_t *m);
+
+    /* rxHead/rxTail are uint8_t and updated inside a critical section: single
+     * byte writes are atomic on both ESP32 cores, and that only holds while the
+     * capacity fits.  Assert it rather than corrupt a ring buffer. */
     static_assert(RX_CAP <= 256 && (RX_CAP & (RX_CAP - 1)) == 0,
                   "RX_CAP must be a power of two <= 256 for the uint8_t indices");
-
-    size_t writeChunks(const uint8_t *p, size_t len);
-    void startAdvertising();
-#if !GSE_LINK_IS_PAD
-    void restartScan();
-    bool connectAndSubscribe();
-#endif
 };
-
-/* One callbacks object for the whole node: the stack keeps a pointer to it for
- * the life of the process, so it must have static storage duration. */
-static GseBleCallbacks gse_ble_cb;
-
-/* BLEScan::start() takes a plain function pointer for its completion callback.
- * arduino-esp32 2.0.x and 3.0.x both declare it as void(*)(BLEScanResults)
- * (3.1 changed it again); this trampoline matches that, so `nullptr` is not
- * needed and the overload is unambiguous in every supported core.  The results
- * are not inspected -- the pad's advertisement already arrived through
- * onResult() -- only the "the window closed, nothing matched" edge matters. */
-static void gse_ble_scan_done(BLEScanResults) { gse_ble_cb.scanCompleted(); }
-
-/* The receive trampoline for the TX node: the BLE client hands us packets,
- * we copy them into the same ring buffer the pad fills from GATT writes. */
-inline void gse_ble_notify(BLERemoteCharacteristic *, uint8_t *data, size_t len,
-                           bool)
-{
-    if (gse_ble_link) gse_ble_link->pushFromBle(data, len);
-}
 
 /* -------------------------------------------------------------------- code */
 
-inline void GseBleCallbacks::onConnect(BLEServer *) { if (gse_ble_link) gse_ble_link->setConnected(true); }
-inline void GseBleCallbacks::onDisconnect(BLEServer *) { if (gse_ble_link) gse_ble_link->setConnected(false); }
-inline void GseBleCallbacks::onConnect(BLEClient *) { if (gse_ble_link) gse_ble_link->setConnected(true); }
-inline void GseBleCallbacks::onDisconnect(BLEClient *) { if (gse_ble_link) gse_ble_link->setConnected(false); }
-
-inline void GseBleCallbacks::onWrite(BLECharacteristic *chr)
+inline String GseLink::macToStr(const uint8_t *m)
 {
-    if (!gse_ble_link || !chr) return;
-    gse_ble_link->pushFromBle(chr->getData(), chr->getLength());
+    char b[18];
+    snprintf(b, sizeof b, "%02X:%02X:%02X:%02X:%02X:%02X",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+    return String(b);
 }
 
-inline void GseBleCallbacks::scanCompleted()
+inline String GseLink::describe() const
 {
-    if (gse_ble_link && !gse_ble_link->targetSeen) gse_ble_link->scanFinished();
+    if (!peerConfigured) {
+        /* The most likely state on a first flash, so say the two things the
+         * builder needs: this board's own MAC, and what is missing. */
+        String s = String("ESP-NOW ch ") + String((int)GSE_NOW_CHANNEL) +
+                   ", local MAC " + macToStr(localMac) +
+                   ", peer MAC NOT CONFIGURED (set GSE_NOW_" +
+                   (GSE_LINK_IS_PAD ? "TX" : "PAD") + "_MAC and rebuild)";
+        return s;
+    }
+    return String("ESP-NOW ch ") + String((int)GSE_NOW_CHANNEL) +
+           ", local " + macToStr(localMac) + " -> peer " + macToStr(peerMac) +
+           ", CCMP on, no Wi-Fi association";
 }
 
-inline void GseBleCallbacks::onResult(BLEAdvertisedDevice dev)
+inline String GseLink::provision(uint8_t, uint8_t, uint16_t, uint16_t, uint16_t)
 {
-    if (!gse_ble_link) return;
-    /* Match on the service UUID we advertise -- reliable in both cores, and
-     * a stronger filter than a name that anyone could copy.  The name check
-     * is a fallback for a central whose scan response was truncated. */
-    bool match = dev.isAdvertisingService(BLEUUID((uint16_t)GSE_BLE_SVC_UUID));
-    if (!match && dev.haveName())
-        match = strcmp(dev.getName().c_str(), GSE_BLE_NAME) == 0;
-    if (!match) return;
-
-    BLEAddress a = dev.getAddress();
-    gse_ble_link->noteTarget(a.toString().c_str(), dev.getAddressType());
+    if (!started)
+        return String("esp_now_init failed (is the Wi-Fi radio available?)");
+    if (!peerConfigured)
+        return String("peer MAC not configured: flash once, read this node's "
+                      "local MAC from the banner above, put both MACs in "
+                      "config.h (GSE_NOW_PAD_MAC / GSE_NOW_TX_MAC), rebuild");
+    if (!peerRegistered) return String("esp_now_add_peer failed");
+    return String();
 }
 
-inline void GseLink::scanFinished()
+inline bool GseLink::isPlaceholder(const uint8_t *mac)
 {
-    scanning = false;
-    lastAttemptMs = millis();
+    /* The documented placeholders are 02:00:00:00:00:01 (TX) and
+     * 02:00:00:00:00:02 (pad) -- locally administered, obviously fake.  A real
+     * station MAC carries the Espressif OUI and never looks like this. */
+    return mac[0] == 0x02 && mac[1] == 0x00 && mac[2] == 0x00 &&
+           mac[3] == 0x00 && mac[4] == 0x00 &&
+           (mac[5] == 0x01 || mac[5] == 0x02);
 }
 
-inline void GseLink::armScanCallbacks()
+inline void GseLink::push(const uint8_t *data, size_t len)
 {
-    BLEScan *scan = BLEDevice::getScan();
-    scan->setActiveScan(true);
-    scan->setAdvertisedDeviceCallbacks(&gse_ble_cb, false, true);
-}
-
-inline void GseLink::noteTarget(const char *mac, uint8_t type)
-{
-    if (targetSeen || !mac) return;
-    size_t i = 0;
-    for (; mac[i] && i + 1 < sizeof(targetMac); ++i) targetMac[i] = mac[i];
-    targetMac[i] = 0;
-    targetType = type;
-    targetSeen = true;
-}
-
-inline void GseLink::pushFromBle(const uint8_t *data, size_t len)
-{
-    if (!data) return;
     uint8_t tail = rxTail;
     portENTER_CRITICAL(&s_rxMux);
     for (size_t i = 0; i < len; ++i) {
         uint8_t next = (uint8_t)((tail + 1) % RX_CAP);
-        if (next == rxHead) {                 /* full: drop the oldest byte */
+        if (next == rxHead) {                    /* full: drop the oldest byte */
             rxHead = (uint8_t)((rxHead + 1) % RX_CAP);
             dropped++;
         }
@@ -401,161 +339,159 @@ inline void GseLink::pushFromBle(const uint8_t *data, size_t len)
     portEXIT_CRITICAL(&s_rxMux);
 }
 
-inline void GseLink::begin()
+inline void GseLink::onDatagram(const uint8_t *src, const uint8_t *data,
+                                int len, int rssi)
 {
-    gse_ble_link = this;
-    /* ~1 s on the first boot (controller + host task).  Called before the
-     * pad's watchdog is armed and while the outputs are still held safe. */
-    BLEDevice::init(GSE_LINK_IS_PAD ? GSE_BLE_NAME : GSE_BLE_TX_NAME);
-    started = true;
-#if GSE_LINK_IS_PAD
-    startAdvertising();
-#else
-    restartScan();
-#endif
-}
+    if (!data || len <= 0 || !peerRegistered) return;
 
-#if GSE_LINK_IS_PAD
-
-inline void GseLink::startAdvertising()
-{
-    server = BLEDevice::createServer();
-    server->setCallbacks(&gse_ble_cb);
-
-    BLEService *svc = server->createService(BLEUUID((uint16_t)GSE_BLE_SVC_UUID));
-
-    /* The pad's receive characteristic: the TX node writes command frames
-     * here.  WRITE_NR (write without response) as well as WRITE, so either
-     * core's client can use the cheap path. */
-    rxChar = svc->createCharacteristic(
-        BLEUUID((uint16_t)GSE_BLE_RX_UUID),
-        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-    rxChar->setCallbacks(&gse_ble_cb);
-
-    /* The pad's transmit characteristic: notifications carry state/events. */
-    txChar = svc->createCharacteristic(
-        BLEUUID((uint16_t)GSE_BLE_TX_UUID),
-        BLECharacteristic::PROPERTY_NOTIFY);
-    /* The 0x2902 (client characteristic configuration) descriptor is what a
-     * central writes to subscribe.  Without it the TX node can connect and
-     * then never receive a single byte -- which looks exactly like a dead
-     * link, so it is added explicitly rather than assumed. */
-    txChar->addDescriptor(new BLE2902());
-
-    svc->start();
-
-    BLEAdvertising *adv = server->getAdvertising();
-    adv->addServiceUUID(BLEUUID((uint16_t)GSE_BLE_SVC_UUID));
-    adv->setScanResponse(true);
-    adv->start();
-}
-
-inline void GseLink::poll()
-{
-    /* Peripheral: the stack maintains the connection; report it, nothing else.
-     * No blocking call here, so this can never hold up the 20 ms safe tick. */
-    if (server) connected = server->getConnectedCount() > 0;
-}
-
-#else  /* ------------------------------------------------------------ central */
-
-inline void GseLink::restartScan()
-{
-    if (!started) return;
-    targetSeen = false;
-    targetMac[0] = 0;
-    lastAttemptMs = millis();
-    scanStartMs = lastAttemptMs;
-    armScanCallbacks();                 /* active scan: need the scan response */
-    /* duration 0 = scan until stop(); the completion trampoline above is what
-     * ends a fruitless scan, so this call does not block. */
-    BLEDevice::getScan()->start(0, gse_ble_scan_done, false);
-    scanning = true;
-}
-
-inline bool GseLink::connectAndSubscribe()
-{
-    if (!client) {
-        client = BLEDevice::createClient();
-        client->setClientCallbacks(&gse_ble_cb);
-    }
-    /* Address *type* is passed through from the advertisement: an ESP32 that
-     * has never paired advertises a public address, but a board configured
-     * otherwise must still work, and getting this wrong fails the connection
-     * with no useful error. */
-    if (!client->connect(BLEAddress(targetMac), (esp_ble_addr_type_t)targetType)) {
-        client->disconnect();
-        return false;
-    }
-
-    BLERemoteService *svc =
-        client->getService(BLEUUID((uint16_t)GSE_BLE_SVC_UUID));
-    if (!svc) { client->disconnect(); return false; }
-
-    rxRemote = svc->getCharacteristic(BLEUUID((uint16_t)GSE_BLE_RX_UUID));
-    BLERemoteCharacteristic *txr =
-        svc->getCharacteristic(BLEUUID((uint16_t)GSE_BLE_TX_UUID));
-    if (!rxRemote || !txr) { client->disconnect(); return false; }
-
-    /* Writes the pad's CCCD: from here on its notifications land in
-     * gse_ble_notify() and therefore in the ring buffer. */
-    txr->registerForNotify(gse_ble_notify);
-    return true;
-}
-
-inline void GseLink::poll()
-{
-    uint32_t now = millis();
-
-    if (client && client->isConnected()) { connected = true; return; }
-    if (connected) {                       /* a live connection went away  */
-        connected = false;
-        rxRemote = nullptr;
-        lastAttemptMs = 0;                 /* reconnect on the next poll   */
-    }
-
-    if (scanning) {
-        if (targetSeen) {                  /* found it: stop, connect      */
-            BLEDevice::getScan()->stop();
-            scanning = false;
-            if (connectAndSubscribe()) connected = true;
-            else lastAttemptMs = now;      /* back off, then scan again    */
-            return;
-        }
-        /* Belt and braces: the completion callback usually ends the window
-         * (see scanFinished()), but a stack that never fires it must not leave
-         * the TX node scanning for ever while the laptop waits. */
-        if (now - scanStartMs >= GSE_BLE_SCAN_MS + 1000u) {
-            BLEDevice::getScan()->stop();
-            scanFinished();
-        }
+    /* Only the configured peer.  With CCMP on *and* the peer MAC pinned in
+     * config.h this is belt-and-braces, but it is also what turns "some other
+     * ESP-NOW device in the area" from a protocol-level puzzle into a counter
+     * the log can show. */
+    if (peerConfigured && src && memcmp(src, peerMac, MAC_LEN) != 0) {
+        rxForeign++;
         return;
     }
 
-    if (lastAttemptMs == 0 || (now - lastAttemptMs) >= GSE_BLE_RETRY_MS)
-        restartScan();
+    lastRxMs = millis();
+    lastRssi = (int8_t)rssi;
+    rxDatagrams++;
+    push(data, (size_t)len);
 }
 
-#endif /* central */
-
-inline size_t GseLink::writeChunks(const uint8_t *p, size_t len)
+inline void GseLink::onSendStatus(esp_now_send_status_t status)
 {
-    if (!connected) return 0;
-    size_t sent = 0;
-    for (size_t off = 0; off < len; off += GSE_BLE_MTU_PAYLOAD) {
-        size_t n = len - off;
-        if (n > GSE_BLE_MTU_PAYLOAD) n = GSE_BLE_MTU_PAYLOAD;
-#if GSE_LINK_IS_PAD
-        if (!txChar) return sent;
-        txChar->setValue(const_cast<uint8_t *>(p + off), n);
-        txChar->notify();
-#else
-        if (!rxRemote) return sent;
-        rxRemote->writeValue(const_cast<uint8_t *>(p + off), n, false);
-#endif
-        sent += n;
+    if (status == ESP_NOW_SEND_SUCCESS) {
+        txOk++;
+        lastTxOkMs = millis();
+    } else {
+        txFailed++;
     }
-    return sent;
+}
+
+inline bool GseLink::addPeer()
+{
+    esp_now_peer_info_t peer;
+    memset(&peer, 0, sizeof peer);
+    memcpy(peer.peer_addr, peerMac, MAC_LEN);
+    peer.channel = (uint8_t)GSE_NOW_CHANNEL;
+    peer.ifidx   = WIFI_IF_STA;
+    peer.encrypt = true;                       /* CCMP, key below */
+    /* ESP-IDF takes the peer's LMK (local master key) per peer; the PMK is set
+     * once, globally, in begin().  Both ends must use the same pair or CCMP
+     * decryption fails -- and ESP-NOW reports a decrypt failure as a *failed
+     * send*, not as a decrypt error, so a key mismatch looks like "the TX node
+     * says 'send failed' and the pad hears nothing".  That symptom is called
+     * out in docs/LINK_OPTIONS.md §6. */
+    memcpy(peer.lmk, GSE_NOW_KEY_TEXT, 16);
+
+    esp_err_t err = esp_now_add_peer(&peer);
+    if (err == ESP_ERR_ESPNOW_EXIST) return true;   /* already registered */
+    return err == ESP_OK;
+}
+
+inline void GseLink::begin()
+{
+    s_link = this;                     /* before init: the stack may fire   */
+
+    /* 1. Wi-Fi radio up, in station mode, associated with NOTHING.  There is
+     *    deliberately no esp_wifi_connect() anywhere in this file: these nodes
+     *    never join a network, they only borrow the radio for ESP-NOW.  That
+     *    also means no SSID scan, no DHCP, and nothing to time out at
+     *    power-up. */
+    esp_netif_init();                  /* ESP_ERR_INVALID_STATE if already   */
+    esp_event_loop_create_default();   /* ditto                              */
+    wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&wcfg);
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);      /* never write NVS at boot  */
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    /* 2. ESP-NOW. */
+    if (esp_now_init() != ESP_OK) {
+        started = false;
+        ready = false;
+        return;
+    }
+    started = true;
+    esp_wifi_get_mac(WIFI_IF_STA, localMac);
+
+    /* 3. Keys and channel, then the callbacks.  The PMK is global; the LMK is
+     *    per peer and is applied in addPeer() below. */
+    esp_now_set_pmk((const uint8_t *)GSE_NOW_PMK_TEXT);
+    esp_wifi_set_channel((uint8_t)GSE_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+    esp_now_register_recv_cb(gse_now_recv_shim);
+    esp_now_register_send_cb(gse_now_send_shim);
+
+    /* 4. The peer, from config.h. */
+    const uint8_t padMac[MAC_LEN] = GSE_NOW_PAD_MAC;
+    const uint8_t txMac[MAC_LEN]  = GSE_NOW_TX_MAC;
+    const uint8_t *want = GSE_LINK_IS_PAD ? txMac : padMac;
+    memcpy(peerMac, want, MAC_LEN);
+    peerConfigured = !isPlaceholder(peerMac);
+
+    if (!peerConfigured) {
+        /* Not ready, and said so: this node must NOT report LINK OK while it
+         * cannot possibly receive.  describe() prints the local MAC to type
+         * into the other board's config.h. */
+        peerRegistered = false;
+        ready = false;
+        return;
+    }
+
+    peerRegistered = addPeer();
+    ready = peerRegistered;
+}
+
+inline size_t GseLink::transmit(const uint8_t *data, size_t len)
+{
+    if (!ready || !data) return 0;
+
+    /* ESP-NOW carries 250 bytes in one datagram and the largest frame this
+     * protocol can produce is 39, so -- unlike the Bluetooth transport this
+     * replaces -- there is no chunking, no reassembly, and no partial frame to
+     * reason about.  Assert the relationship at compile time instead of
+     * discovering it as a truncated command. */
+    static_assert(GSE_MAX_FRAME + 3 <= ESP_NOW_MAX_DATA_LEN,
+                  "a GSE frame must fit one ESP-NOW datagram");
+    if (len > ESP_NOW_MAX_DATA_LEN) return 0;
+
+    if (esp_now_send(peerMac, data, len) != ESP_OK) {
+        txFailed++;
+        return 0;
+    }
+    txDatagrams++;
+    return len;
+}
+
+/* ------------------------------------------------------------------- shims
+ * The only version-specific part of this transport.  Note the RSSI source:
+ * IDF 5 hands it over in the packet info, IDF 4 does not pass it at all (it
+ * lives in the rx control block of the promiscuous/RX path), so the 4.x shim
+ * reports 0 -- meaning "unknown", not "zero dBm", and the log says so. */
+#if ESP_IDF_VERSION_MAJOR >= 5
+static void gse_now_recv_shim(const esp_now_recv_info_t *info,
+                              const uint8_t *data, int len)
+{
+    if (!s_link) return;
+    const uint8_t *src = info ? info->src_addr : nullptr;
+    int rssi = (info && info->rx_ctrl) ? (int)info->rx_ctrl->rssi : 0;
+    s_link->onDatagram(src, data, len, rssi);
+}
+#else
+static void gse_now_recv_shim(const uint8_t *src_mac, const uint8_t *data,
+                              int len)
+{
+    if (!s_link) return;
+    s_link->onDatagram(src_mac, data, len, 0);
+}
+#endif
+
+static void gse_now_send_shim(const uint8_t *mac, esp_now_send_status_t status)
+{
+    (void)mac;
+    if (s_link) s_link->onSendStatus(status);
 }
 
 #else  /* ------------------------------------------------------- GSE_LINK_LORA
@@ -621,6 +557,6 @@ private:
                   PIN_LORA_AUX_PULLUP != 0};
 };
 
-#endif /* GSE_LINK_BLE */
+#endif /* GSE_LINK_ESPNOW */
 
 #endif /* GSE_LINK_H */

@@ -15,9 +15,9 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 | G3 — safety | T-04, T-06 | connecting a real e-match |
 | G4 — flight worthiness | T-08, T-09, T-10 | the first live oxidizer fill |
 
-**Bluetooth builds (`-DGSE_LINK_BLE`):** substitute **T-11** for T-00, T-01, T-01a, T-02, T-03 and T-07.
-G1 becomes "the BLE stack started on both nodes" (T-11 steps 1–2), G2 becomes T-11 steps 3–5, and G3/G4
-are unchanged. The default LoRa build is unaffected by any of this.
+**ESP-NOW builds (`-DGSE_LINK_ESPNOW`):** substitute **T-11** for T-00, T-01, T-01a, T-02, T-03 and
+T-07. G1 becomes "the Wi-Fi radio started and both peer MACs are provisioned" (T-11 steps 1–3), G2
+becomes T-11 steps 4–7, and G3/G4 are unchanged. The default LoRa build is unaffected by any of this.
 
 ---
 
@@ -177,41 +177,49 @@ Before every launch day, record the configuration actually in force (read from t
 
 ---
 
-## T-11 · Bluetooth transport (B, then R) — only for `-DGSE_LINK_BLE` builds
+## T-11 · ESP-NOW transport (B, then R) — only for `-DGSE_LINK_ESPNOW` builds
 
 The default link is still the DX-LR42/LR41 module, and for that build T-00…T-10 apply unchanged. The
-optional Bluetooth transport replaces the *radio layer* and nothing else, so it needs its own gate:
+optional ESP-NOW transport replaces the *radio layer* and nothing else, so it needs its own gate:
 
 **This test replaces T-00, T-01, T-01a, T-02, T-03 and T-07** (there is no module to provision, no
-M0/M1, no channel/KEY pair, no UART to cross). **T-04, T-06, T-08, T-09 and T-10 still apply in full** —
-they are transport-independent and are the ones that decide whether the vehicle is safe.
+M0/M1, no channel/KEY word pair, no UART to cross, no baud rate). **T-04, T-06, T-08, T-09 and T-10
+still apply in full** — they are transport-independent and are the ones that decide whether the vehicle
+is safe.
 
 0. **Host tests.** `python software/tests/test_gui_config.py` passes — it drives the
    GUI's own callbacks headlessly and covers the configuration panel, the
    connect-failure messages and the banner wording (this is the test that would
    have caught `AttributeError: 'Checkbutton' object has no attribute 'get'`).
-1. **Builds.** `sh tests/esp32_syntax_check.sh` passes, and `pio run -e pad-node-ble` /
-   `pio run -e tx-node-ble` complete with no warnings from `src/`.
-2. **Boot banners.** Pad: `PAD link: ble -- BLE peripheral "GSE-PAD" …` then `PAD LINK OK`. TX:
-   `link: ble -- BLE central …` then `TX … ready`. No `LINK FAULT` / `RADIO FAULT` on either.
-3. **Connect.** Both powered: within 5 s the pad's heartbeat reads `LINK OK` with `bytes`, `sof` and
+1. **Builds.** `sh tests/esp32_syntax_check.sh` passes, and `pio run -e pad-node-now` /
+   `pio run -e tx-node-now` complete with no warnings from `src/`.
+2. **Provisioning (B).** First flash prints `local MAC …` on each board. Both MACs go into
+   `firmware/src/config.h`, both boards are rebuilt and reflashed. **Before** the rebuild each node must
+   say `peer MAC NOT CONFIGURED` and must **not** report `LINK OK` — a pad that cannot hear its TX node
+   must not look healthy. **Record both MACs here.**
+3. **Boot banners.** Pad: `PAD link: espnow -- ESP-NOW ch 1, local … -> peer …` then `PAD LINK OK`. TX:
+   `link: espnow …` then `espnow: ch 1 -> peer registered` then `TX … ready`. No `LINK FAULT` /
+   `RADIO FAULT` on either.
+4. **Link.** Both powered: within 2 s the pad's heartbeat reads `LINK OK` with `bytes`, `sof` and
    `valid` all climbing, the TX node's `state=` counter climbing, and the GUI banner **LINK OK — NOT
-   ARMED**.
-4. **Reconnect.** Power-cycle the TX node. Pad goes `NO-LINK (safe)` within 1 s, holds outputs safe, and
-   returns to `LINK OK` on its own within ~10 s without being reset.
-5. **Range (R).** Walk the TX node away until the pad drops to NO-LINK; record distance and what was in
+   ARMED**. `rx foreign` reads 0 with nothing else on that channel.
+5. **Kill and recover.** Power-cycle the TX node. Pad goes `NO-LINK (safe)` within 1 s, holds outputs
+   safe, and returns to `LINK OK` on its own within ~1 s of the TX node returning — no reset of the pad.
+6. **Key mismatch (B).** Rebuild **one** end with a different `GSE_NOW_KEY_TEXT`. Neither node may
+   report LINK OK, no servo may move. Rebuild both from the same `config.h` afterwards.
+7. **Range (R).** Walk the TX node away until the pad drops to NO-LINK; record distance and what was in
    between. Repeat ×3. **Pass: measured range ≥ 2× the planned operating separation.**
-6. **Watchdog (H).** With FILL commanded open, power off the TX node: FILL closes and VEHICLE opens
+8. **Watchdog (H).** With FILL commanded open, power off the TX node: FILL closes and VEHICLE opens
    within `wdg_ds`. Same acceptance as T-04.
-7. **Igniter (H).** IGN outlet **unloaded**, scope/LED on the relay contacts: arm, fire, one pulse
+9. **Igniter (H).** IGN outlet **unloaded**, scope/LED on the relay contacts: arm, fire, one pulse
    ≤ `ign_max_ds`, no repeat while held. Same acceptance as T-06.
-8. **Wrong-pair check.** One node LoRa, one node BLE: neither may report LINK OK and no servo may move.
-9. **Sign-off.** Record board serials, firmware commit, the measured range from step 5, and who ran
-   steps 5–7.
+10. **Wrong-pair check.** One node LoRa, one node ESP-NOW: neither may report LINK OK and no servo may
+    move.
+11. **Sign-off.** Record board serials, **both MACs**, firmware commit, the measured range from step 7,
+    and who ran steps 7–9.
 
 **Pass:** all of the above, with the range figure written down. See [LINK_OPTIONS.md](LINK_OPTIONS.md)
 for the full comparison and the security note.
-
 ---
 
 ## Sign-off

@@ -14,7 +14,7 @@
 #   pad  · ESP32-S3   (-D GSE_ROLE_PAD)
 #   pad  · ESP-32S    (-D GSE_ROLE_PAD   -D GSE_BOARD_ESP32S)
 #   pad  · no flag    (the default that "pio run -e pad-node" uses)
-#   pad/tx · ESP32-S3 and ESP-32S with the Bluetooth transport (-D GSE_LINK_BLE)
+#   pad/tx · ESP32-S3 and ESP-32S with the ESP-NOW transport (-D GSE_LINK_ESPNOW)
 #   tx   · ESP32-S3   (-D GSE_ROLE_TX)
 #   tx   · ESP-32S    (-D GSE_ROLE_TX    -D GSE_BOARD_ESP32S)
 #   tx   · no flag
@@ -25,8 +25,8 @@
 # ones:
 #
 #   - building the pad for an ESP-32S with GPIO6 must fail (SPI flash pin)
-#   - building with GSE_LINK_BLE and GSE_LINK_LORA at once must fail
-#   - building BLE for the STM32 (no Bluetooth on that board) must fail
+#   - building with GSE_LINK_ESPNOW and GSE_LINK_LORA at once must fail
+#   - building ESP-NOW for the STM32 (no Wi-Fi on that board) must fail
 #   - building both variants at once must fail
 #
 # Exits non-zero on the first error or on any warning.
@@ -96,22 +96,29 @@ check "pad  ESP-32S, AUX not wired" ok "$PAD" -D GSE_ROLE_PAD -D GSE_BOARD_ESP32
 check "tx   no flag, AUX not wired" ok "$TX" -D GSE_ROLE_TX -D GSE_LORA_AUX_NONE \
       -D ARDUINO_USB_CDC_ON_BOOT=1
 
-# ------------------------------------------- the Bluetooth transport (BLE)
-# The second link option: no module, no UART, no AUX.  Both roles, both boards,
-# both Arduino cores -- the BLE API differs between cores 2.x and 3.x (see
-# tests/esp32_stub/BLEDevice.h), so a BLE build has to pass on either.
+# --------------------------------------------- the ESP-NOW transport (optional)
+# The second link option: no module, no UART, no AUX, no router, no pairing.
+# Both roles, both boards, both Arduino cores -- ESP-IDF's receive-callback
+# signature differs between IDF 4.4 (core 2.x) and IDF 5.x (core 3.x), and the
+# stub's esp_idf_version.h selects the same one the real core would, so each run
+# checks a different callback shape.
 for core in 3 2; do
     if [ "$core" = 2 ]; then CORE="-D ARDUINO_ESP32_CORE2"; else CORE=""; fi
     v="core $core.x"
-    check "pad  ESP32-S3 BLE $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_BLE \
+    check "pad  ESP32-S3 NOW $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
           -D ARDUINO_USB_CDC_ON_BOOT=1 -D ARDUINO_USB_MODE=1
-    check "pad  ESP-32S  BLE $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_BLE \
+    check "pad  ESP-32S  NOW $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
           -D GSE_BOARD_ESP32S
-    check "tx   ESP32-S3 BLE $v" ok "$TX"  $CORE -D GSE_ROLE_TX -D GSE_LINK_BLE \
+    check "tx   ESP32-S3 NOW $v" ok "$TX"  $CORE -D GSE_ROLE_TX -D GSE_LINK_ESPNOW \
           -D GSE_BOARD_ESP32_S3 -D ARDUINO_USB_CDC_ON_BOOT=1 -D ARDUINO_USB_MODE=1
-    check "tx   ESP-32S  BLE $v" ok "$TX"  $CORE -D GSE_ROLE_TX -D GSE_LINK_BLE \
+    check "tx   ESP-32S  NOW $v" ok "$TX"  $CORE -D GSE_ROLE_TX -D GSE_LINK_ESPNOW \
           -D GSE_BOARD_ESP32S
 done
+# ... and with the MACs supplied on the command line, the way an operator would
+# override them for a second pair of boards.
+check "pad  NOW with real MACs" ok "$PAD" -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
+      -D 'GSE_NOW_TX_MAC={0x24,0x6f,0x28,0xaa,0xbb,0x01}' \
+      -D 'GSE_NOW_PAD_MAC={0x24,0x6f,0x28,0xaa,0xbb,0x02}'
 
 echo "negative cases (these must NOT build)"
 # The host stub must keep exposing the POSIX names the real core drags in
@@ -124,10 +131,12 @@ check "pad  ESP-32S with IGN on strapping GPIO12" fail "$PAD" \
       -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S -D GSE_PIN_RELAY_IGN=12
 check "both board flags at once" fail "$PAD" \
       -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S -D GSE_BOARD_ESP32_S3
-check "pad  both links at once (BLE+LoRa)" fail "$PAD" \
-      -D GSE_ROLE_PAD -D GSE_LINK_BLE -D GSE_LINK_LORA
-check "tx   BLE on the STM32 build" fail "$TX" -D GSE_ROLE_TX -D GSE_LINK_BLE \
+check "pad  both links at once (NOW+LoRa)" fail "$PAD" \
+      -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW -D GSE_LINK_LORA
+check "tx   ESP-NOW on the STM32 build" fail "$TX" -D GSE_ROLE_TX -D GSE_LINK_ESPNOW \
       -D GSE_PLATFORM_STM32 -D ARDUINO_USB_CDC_ON_BOOT=1
+check "pad  NOW with a 15-character key" fail "$PAD" -D GSE_ROLE_PAD \
+      -D GSE_LINK_ESPNOW -D 'GSE_NOW_KEY_TEXT="too-short"'
 check "pad firmware built as TX" fail "$PAD" -D GSE_ROLE_TX
 check "tx  firmware built as PAD" fail "$TX"  -D GSE_ROLE_PAD \
       -D ARDUINO_USB_CDC_ON_BOOT=1

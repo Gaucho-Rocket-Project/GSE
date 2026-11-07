@@ -101,60 +101,70 @@
  * same frames, same safety logic -- only the pipe changes.
  *
  *   GSE_LINK_LORA (default)  DX-LR42/LR41 on UART1.  Long range (hundreds of
- *                            metres), own radio, no pairing, works with Wi-Fi
- *                            and Bluetooth switched off.  This is what the ECR
- *                            specifies and what the test plan signs off.
+ *                            metres), its own radio, no Wi-Fi, no pairing.
+ *                            This is what the ECR specifies and what the test
+ *                            plan signs off.
  *
- *   GSE_LINK_BLE             Bluetooth Low Energy, radio built into the ESP32.
- *                            No module, no wiring, no AT commands.  Good for
- *                            the bench, for a spare/backup link, and for a
- *                            short-range pad.  NOT a substitute for T-05: BLE
- *                            at the default power is a ~10-50 m line-of-sight
- *                            link, so it is not a range replacement for the
- *                            LoRa pair.
+ *   GSE_LINK_ESPNOW          ESP-NOW: the ESP32's own Wi-Fi radio, in
+ *                            connectionless station mode.  No module, no
+ *                            wiring, no AT commands, no SSID, no router, no
+ *                            association, no pairing.  Each node sends to the
+ *                            other's MAC address; there is no "connection" to
+ *                            establish or lose.  Good for the bench, a spare
+ *                            pad, and a short/medium-range link.
  *
- * Build with -DGSE_LINK_BLE (envs tx-node-ble / pad-node-ble), or set it here.
- * Both ends must agree; a BLE pad and a LoRa TX cannot hear each other.
+ * Build with -DGSE_LINK_ESPNOW (envs tx-node-now / pad-node-now, plus the
+ * -esp32s twins), or set it here.  Both ends must agree: an ESP-NOW pad and a
+ * LoRa TX cannot hear each other, and each node says which one it is on its
+ * first log line.
  *
- * What does NOT change in BLE mode:
+ * What does NOT change in ESP-NOW mode:
  *   - the frame format, CRC, sequence numbers and arm code;
  *   - the pad's 1.0 s watchdog and every failsafe rule;
  *   - the 20 Hz command pacing and the TX node's stale-frame rejection;
  *   - the igniter interlock, on-time limit and hardware keep-alive.
- * The BLE link is a transport, exactly like the LoRa module: if it goes away,
- * the pad does what it always does -- goes safe within the watchdog period.
+ * ESP-NOW is a transport, exactly like the LoRa module: if it goes away, the
+ * pad does what it always does -- goes safe within the watchdog period.
+ *
+ * Why ESP-NOW and not Bluetooth: ESP-NOW is connectionless (nothing to pair,
+ * nothing to reconnect, no GATT layer), it accepts a whole 250-byte frame in
+ * one packet so the protocol never has to be split, it reports its own
+ * link-layer delivery status per packet, and its encryption is a compiled-in
+ * key rather than a pairing step.  It also keeps Wi-Fi association off
+ * entirely, which matters on a launch site full of phones.
  *
  * Security note (read this before flying it): the GSE protocol has no
- * authentication.  Anyone in radio range who can speak the protocol can talk
- * to a listening pad node.  That is why LoRa mode uses a private channel + KEY
- * and why the pad only accepts frames that carry the arm code.  BLE adds its
- * own concerns:
- *   - the pad does not advertise, so it is not discoverable, and it only
- *     accepts a CENTRAL (the TX node) -- a phone cannot connect to it;
- *   - the TX node scans for the pad's name prefix, so nobody else's device is
- *     picked up by accident;
- *   - bonding/pairing is NOT used: it needs a key store and an operator step,
- *     and it protects a link whose payload already has a CRC and a dead-man.
- *     Treat the BLE link as a bench/short-range link, not as an encrypted one.
- * The operator-facing consequence is in docs/LINK_OPTIONS.md and the test plan
- * (T-11): the arm code and the physical SW2 key remain the real interlocks,
- * not the radio technology.
+ * authentication.  Anyone in radio range who can speak it can talk to a
+ * listening pad node.  That is why LoRa mode uses a private channel + KEY and
+ * why the pad only accepts frames that carry the arm code.  ESP-NOW adds two
+ * concrete controls, both compiled in rather than configured at runtime:
+ *   - the pad only accepts datagrams whose source MAC is the TX node's, and
+ *     vice versa (GSE_NOW_TX_MAC / GSE_NOW_PAD_MAC below) -- a stranger's
+ *     ESP-NOW packet is dropped in the receive callback, before the protocol
+ *     parser ever sees it;
+ *   - CCMP encryption is turned on with a 16-byte local master key that both
+ *     nodes share (GSE_NOW_KEY_TEXT).  It is a compiled-in secret, so treat it
+ *     as obfuscation-plus rather than as a key-management scheme: change the
+ *     text in both nodes before a launch you care about.
+ * Neither is authentication.  The arm code and the physical SW2 key remain the
+ * real interlocks, not the radio technology.  See docs/LINK_OPTIONS.md and
+ * test T-11.
  */
 //#define GSE_LINK_LORA
-//#define GSE_LINK_BLE
+//#define GSE_LINK_ESPNOW
 
-#if defined(GSE_LINK_BLE) && defined(GSE_LINK_LORA)
-#error "Pick one link: GSE_LINK_BLE or GSE_LINK_LORA, not both"
+#if defined(GSE_LINK_ESPNOW) && defined(GSE_LINK_LORA)
+#error "Pick one link: GSE_LINK_ESPNOW or GSE_LINK_LORA, not both"
 #endif
-#if defined(GSE_PLATFORM_STM32) && defined(GSE_LINK_BLE)
-#error "GSE_LINK_BLE is ESP32-only (the Nucleo TX node has no Bluetooth)"
+#if defined(GSE_PLATFORM_STM32) && defined(GSE_LINK_ESPNOW)
+#error "GSE_LINK_ESPNOW is ESP32-only (the Nucleo TX node has no Wi-Fi)"
 #endif
-#if !defined(GSE_LINK_BLE) && !defined(GSE_LINK_LORA)
+#if !defined(GSE_LINK_ESPNOW) && !defined(GSE_LINK_LORA)
 #  define GSE_LINK_LORA               /* neither given -> the ECR default    */
 #endif
 
-#if defined(GSE_LINK_BLE)
-#  define GSE_LINK_NAME        "ble"
+#if defined(GSE_LINK_ESPNOW)
+#  define GSE_LINK_NAME        "espnow"
 #else
 #  define GSE_LINK_NAME        "lora"
 #endif
@@ -197,22 +207,75 @@
 #define GSE_LEVEL_FAST        8u        /* FLRC 1.04 Mbit/s, >=6 B payloads   */
 #define GSE_KEY_WORD          51042u    /* AT+KEY (0..65535); not security    */
 
-/* --------------------------------------------------------------- BLE link
- * Names and UUIDs are shared by both nodes; keep them identical in both
- * builds.  The pad advertises GSE_BLE_NAME (and its service UUID); the TX
- * node scans for that service and double-checks the name.
- * 128-bit UUIDs would cost flash for no benefit on a two-node private link,
- * so a project-specific 16-bit UUID pair is used (0xFFE0/0xFFE1 are common
- * "generic UART" values, so a distinct range was picked instead).          */
-#define GSE_BLE_NAME           "GSE-PAD"     /* advertised by the PAD node  */
-#define GSE_BLE_TX_NAME        "GSE-TX"      /* the TX node's local name    */
-#define GSE_BLE_SVC_UUID       0xFF00        /* primary service             */
-#define GSE_BLE_RX_UUID        0xFF01        /* central writes -> pad rx    */
-#define GSE_BLE_TX_UUID        0xFF02        /* pad notifies -> central     */
-#define GSE_BLE_MTU_PAYLOAD    20u           /* 23-byte default ATT MTU     */
-#define GSE_BLE_SCAN_MS        2000u         /* TX node scan window         */
-#define GSE_BLE_RETRY_MS       5000u         /* TX node re-scan interval    */
-#define GSE_BLE_SEND_TIMEOUT   100u          /* ms, per write when saturated*/
+/* ------------------------------------------------------------- ESP-NOW link
+ *
+ * Two nodes, one pair of MAC addresses, compiled in at both ends.  Read them
+ * off the boot banner (each node prints its own station MAC) and put them
+ * here, or override per build with -D:
+ *
+ *   pio run -e tx-node-now  -t upload   ; prints "espnow local MAC 24:6f:...".
+ *   board_flags = -D 'GSE_NOW_PAD_MAC={0xAA,0xBB,...}'
+ *
+ * Why compiled in: a pad that accepted "whoever called first" would be a pad a
+ * stranger's ESP-NOW sender could command.  Fixing the peer MAC means every
+ * other sender is dropped in the receive callback, before the protocol parser
+ * runs.
+ *
+ * The placeholders below are for the FIRST flash only: the node comes up,
+ * prints its own MAC on the boot banner and reports "peer MAC NOT CONFIGURED"
+ * instead of pretending the link is ready.  Read the two MACs off the two
+ * boards, type them in, rebuild.  (ESP-NOW does not need to know its own MAC,
+ * only the peer's -- so one build cannot fill in the other's.)
+ *
+ * Channel: both nodes hop to GSE_NOW_CHANNEL at boot and stay there.  1 is a
+ * good default (well below the common 2.4 GHz clutter band edges, and away
+ * from the Wi-Fi channels an operator's phone hotspot will pick).  It must
+ * match at both ends or nothing is ever received.
+ *
+ * Encryption: ESP-NOW CCMP with a local master key.  The key material below is
+ * only a default -- change the text once, in both nodes, and rebuild both.
+ * Note that ESP-IDF derives the effective key from the *peer's* LMK and the
+ * PMK, so both ends must use the same values; that is handled here.
+ */
+#define GSE_NOW_CHANNEL        1
+
+/* The pad's station MAC.  Placeholder = "not configured yet". */
+#ifndef GSE_NOW_PAD_MAC
+#  define GSE_NOW_PAD_MAC      { 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 }
+#endif
+/* The TX node's station MAC.  Placeholder = "not configured yet". */
+#ifndef GSE_NOW_TX_MAC
+#  define GSE_NOW_TX_MAC       { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 }
+#endif
+/* A real ESP32 station MAC carries the Espressif OUI, it is not the 02:00:...
+ * locally-administered form above.  Booting with a placeholder is not a fault
+ * -- it is how you learn the real one -- but it is not a working link either,
+ * and link.h says exactly that in the boot banner instead of letting the pad
+ * sit in NO-LINK looking healthy. */
+
+/* CCMP local master key (16 bytes) and primary master key (16 bytes), shared
+ * by both nodes.  Change the text and BOTH ends rebuild, or they cannot talk:
+ * that is the intended behaviour, not a bug to work around. */
+#ifndef GSE_NOW_KEY_TEXT
+#  define GSE_NOW_KEY_TEXT     "HCR5100-GSE-LMK0"  /* exactly 16 characters */
+#endif
+#ifndef GSE_NOW_PMK_TEXT
+#  define GSE_NOW_PMK_TEXT     "HCR5100-GSE-PMK0"  /* exactly 16 characters */
+#endif
+/* Both strings are strlen-checked at compile time in link.h: 16 characters, no
+ * more and no fewer, because ESP-IDF's key types are fixed 16-byte arrays and a
+ * silently-truncated key would fail at run time with "send failed" instead of
+ * at build time with a message.  They are #ifndef-guarded so an operator who
+ * does want a different key can pass -DGSE_NOW_KEY_TEXT='"..."' (build_flags)
+ * instead of editing this file -- and if that string is not 16 characters the
+ * build stops with the assert, which is the whole point of the guard. */
+
+/* Delivery bookkeeping: ESP-NOW gives a per-packet send status, which is far
+ * more useful than "it looked fine".  A pad that has not acked for this long
+ * is reported as "no radio contact" in the TX node's 1 Hz line -- it does not
+ * change any safety behaviour (the pad's own watchdog does that). */
+#define GSE_NOW_QUIET_MS       1000u
+#define GSE_NOW_TX_QUEUE       16
 
 /* ------------------------------------------------------- pad PWM / relay pins */
 /*

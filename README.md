@@ -9,9 +9,10 @@ laptop (Python GUI) --USB--> ESP32 TX node --UART--> DX-LR41 ))) 2.4 GHz LoRa ((
 ```
 
 The LoRa pair above is the default and is what ECR-01 specifies. The same two nodes can instead talk over the
-ESP32's own **Bluetooth Low Energy** radio -- no modules, no wiring, no provisioning -- by building both ends with
-`-DGSE_LINK_BLE` (envs `pad-node-ble` / `tx-node-ble`). Same frames, same watchdog, same failsafes; much shorter
-range. See [`docs/LINK_OPTIONS.md`](docs/LINK_OPTIONS.md) before choosing it for anything but bench work.
+ESP32's own **ESP-NOW** radio -- no modules, no wiring, nothing to pair, and CCMP-encrypted -- by building both
+ends with `-DGSE_LINK_ESPNOW` (envs `pad-node-now` / `tx-node-now`). Same frames, same watchdog, same failsafes;
+much shorter range, and the two boards must be introduced to each other's MAC address once. See
+[`docs/LINK_OPTIONS.md`](docs/LINK_OPTIONS.md) before choosing it for anything but bench work.
 
 The nodes are ESP32 devkits. **ESP32-S3-DevKitC-1 (or N16R8 "SuperMini") is the default**, and the classic
 **"ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth"** (ESP32-WROOM-32, 30/38-pin, CP2102/CH340
@@ -25,7 +26,7 @@ USB) is supported as an *optional* board variant for either node — see
 | `ECR-01_GSE_radio_replacement.pdf` | The engineering change report: rationale, architecture, safety analysis, BOM delta, risks, and the exact handbook text to replace. **Start here.** |
 | `docs/INSERT_SECTION_VI.pdf` | Insert-ready replacement pages 236–255, laid out to match HCR-5100. |
 | `docs/TEST_PLAN.md` | Bench and range test gates. Nothing flies until G1–G4 are signed. |
-| `docs/LINK_OPTIONS.md` | LoRa module vs the optional Bluetooth transport: what changes, what does not, range, security. |
+| `docs/LINK_OPTIONS.md` | LoRa module vs the optional ESP-NOW transport: what changes, what does not, range, security, MAC provisioning. |
 | `docs/OPERATOR_CARD.md` | One page for the toolbox lid. |
 | `hardware/wiring.md` | Pinouts, keep-alive circuit, bench bring-up checklist. |
 
@@ -47,9 +48,11 @@ cd firmware
 pio run -e tx-node  -t upload      # first ESP32-S3   (or -e tx-nucleo, or -e tx-node-esp32s)
 pio run -e pad-node -t upload      # second ESP32-S3  (or -e pad-node-esp32s for an ESP-32S)
 
-# no radio modules?  same two nodes over Bluetooth instead (docs/LINK_OPTIONS.md)
-pio run -e tx-node-ble  -t upload
-pio run -e pad-node-ble -t upload
+# no radio modules?  same two nodes over ESP-NOW instead (docs/LINK_OPTIONS.md)
+#   flash once, read each board's own MAC from the banner, put both MACs in
+#   firmware/src/config.h, then rebuild and reflash BOTH boards
+pio run -e tx-node-now  -t upload
+pio run -e pad-node-now -t upload
 
 # laptop app (tkinter + pyserial)
 python software/run_gui.py --sim               # no hardware: simulated pad
@@ -119,27 +122,27 @@ diagnosis takes one glance at the board.
 ## Tests
 
 ```bash
-make -C tests run                 # wire-protocol tests (incl. BLE chunking) + the portable TX core
+make -C tests run                 # wire-protocol tests (incl. one-frame-one-datagram) + the TX core
 sh tests/esp32_syntax_check.sh    # every ESP32 board variant compiles (host g++, no toolchain),
-                                  # LoRa and Bluetooth, against Arduino-ESP32 2.x and 3.x
+                                  # LoRa and ESP-NOW, against Arduino-ESP32 2.x and 3.x
 python software/tests/test_protocol.py    # 9 host tests, incl. byte-identical golden frames
 python software/tests/test_sim_loop.py    # 5 closed-loop tests against the pad simulator
 python software/tests/test_gui_config.py  # 8 GUI tests (config panel, connect errors, banners)
 ```
 
 All of them currently pass, and every firmware target compile-checks: `tx-node`, `pad-node`, `tx-nucleo`,
-the two optional ESP-32S variants (`tx-node-esp32s`, `pad-node-esp32s`), and the four Bluetooth variants
-(`tx-node-ble`, `pad-node-ble`, `tx-node-ble-esp32s`, `pad-node-ble-esp32s`). The Espressif toolchain is not
+the two optional ESP-32S variants (`tx-node-esp32s`, `pad-node-esp32s`), and the four ESP-NOW variants
+(`tx-node-now`, `pad-node-now`, `tx-node-now-esp32s`, `pad-node-now-esp32s`). The Espressif toolchain is not
 available in the development sandbox, so `pio run` itself is a one-time check on a machine that has it.
 
 ## Repo map
 
 ```
-firmware/                  PlatformIO project, nine environments (4 of them Bluetooth)
+firmware/                  PlatformIO project, nine environments (4 of them ESP-NOW)
   src/common/gse_protocol.h   wire protocol + failsafe rules (single source of truth)
   src/config.h                all builder-editable constants (board variant, pins, channels, limits)
   src/dxlr41.h                AT-command driver with verification
-  src/link.h                  transport seam: LoRa module (default) or Bluetooth Low Energy
+  src/link.h                  transport seam: LoRa module (default) or ESP-NOW
   src/pad/pad_node.cpp        pad node firmware
   src/common/gse_hal.h        seven platform services a TX node supplies
   src/common/gse_tx_core.c    portable laptop-side bridge (pacing, stale reject, SAFE stream)

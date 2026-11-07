@@ -7,16 +7,17 @@ Pin numbers refer to `firmware/src/config.h`; change them there, not here.
 
 ## 0. Do you need to wire a module at all?
 
-Only for the default **LoRa** transport. If both nodes are built with `-DGSE_LINK_BLE`
-(`pio run -e pad-node-ble` / `-e tx-node-ble`), the ESP32's own Bluetooth radio carries the link and this
+Only for the default **LoRa** transport. If both nodes are built with `-DGSE_LINK_ESPNOW`
+(`pio run -e pad-node-now` / `-e tx-node-now`), the ESP32's own Wi-Fi radio carries the link and this
 whole section — module, five wires, decoupling, M0/M1, AUX, antennas — is **not needed**. Keep the two
 boards' USB ports, the servo/relay wiring of §2 and the pad's safety chain; delete the rest.
 
-| | LoRa build (default) | Bluetooth build |
+| | LoRa build (default) | ESP-NOW build |
 |---|---|---|
 | Module on pins 3/4/5 + M0/M1 | required | none |
-| Antennas | required on both modules | n/a (chip antenna / none) |
-| `LOG … link:` line | `lora -- LoRa UART1 RX<-D16 …` | `ble -- BLE peripheral "GSE-PAD" …` |
+| Antennas | required on both modules | n/a (on-board antenna) |
+| `LOG … link:` line | `lora -- LoRa UART1 RX<-D16 …` | `espnow -- ESP-NOW ch 1, local … -> peer …` |
+| Before first use | provision the module with AT commands | put both boards' MACs in `src/config.h`, reflash both |
 | Boot verdict | `RADIO OK` / `RADIO FAULT` | `LINK OK` / `LINK FAULT` |
 | Range test | T-05 | T-11 (§7 of [docs/LINK_OPTIONS.md](../docs/LINK_OPTIONS.md)) |
 
@@ -301,8 +302,10 @@ The checklist that catches this class of fault in a minute, on both modules:
    `LOG PAD boot fw 1.0 board=esp32s3 pins FILL=4 VEH=5 PRG=6 IGN=7 HB=8`
    (`board=esp32s … PRG=15 IGN=13 HB=33` on an ESP-32S), then
    `LOG PAD link: lora -- LoRa UART1 RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module`,
-   then `RADIO OK` / `RADIO FAULT`, then the module's own `LOG RADIO` banner. (A Bluetooth build prints
-   `LOG PAD link: ble -- …` there instead and has no module banner — see §0.) Check that the printed pins are
+   then `RADIO OK` / `RADIO FAULT`, then the module's own `LOG RADIO` banner. (An ESP-NOW build prints
+   `LOG PAD link: espnow -- … local MAC …` there instead and has no module banner — see §0. On the very
+   first flash that line says `peer MAC NOT CONFIGURED`, which is how you read the MACs; see
+   [docs/LINK_OPTIONS.md](../docs/LINK_OPTIONS.md) §3.3.) Check that the printed pins are
    where your harness actually is before you connect a servo, and that `AUX=` matches reality.
 3. **Start the GUI** → `python software/run_gui.py` → select the TX port → Connect → banner should turn amber
    (`LINK OK — NOT ARMED`) within a second.

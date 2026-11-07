@@ -68,10 +68,10 @@ The GUI banner shows the same string instead of the generic `NO PAD TELEMETRY`.
 
 ## 0. Which transport is this build? (read this first)
 
-There are two links now — the LoRa module (default) and Bluetooth Low Energy
-(`-DGSE_LINK_BLE`). **Everything below §1 assumes LoRa.** If either node is a BLE build, §1 (modules),
-§2 (UART), §2-0 (crossed wires), §2a (M0/M1) and §3 (AT mode) do not apply to it at all: there is no
-module and no UART.
+There are two links now — the LoRa module (default) and ESP-NOW (`-DGSE_LINK_ESPNOW`).
+**Everything below §1 assumes LoRa.** If either node is an ESP-NOW build, §1 (modules), §2 (UART),
+§2-0 (crossed wires), §2a (M0/M1) and §3 (AT mode) do not apply to it at all: there is no module, no
+UART and no AT firmware.
 
 The very first line each node prints says which link it has:
 
@@ -81,23 +81,26 @@ LOG link: lora -- LoRa UART1 RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the m
 ```
 
 ```
-LOG PAD link: ble -- BLE peripheral "GSE-PAD" (svc ff00, rx ff01, tx ff02), no module, no pairing
-LOG link: ble -- BLE central, scanning for service ff00 for "GSE-PAD", no module, no pairing
+LOG PAD link: espnow -- ESP-NOW ch 1, local 24:6F:28:AA:BB:02 -> peer 24:6F:28:AA:BB:01, CCMP on, no Wi-Fi association
+LOG link: espnow -- ESP-NOW ch 1, local 24:6F:28:AA:BB:01 -> peer 24:6F:28:AA:BB:02, CCMP on, no Wi-Fi association
 ```
 
 **If the two lines disagree, nothing below will help — reflash both boards from the same configuration.**
-A LoRa pad and a BLE TX node cannot hear each other, by construction, and they will both look perfectly
-healthy while the pad sits in `NO-LINK` for ever.
+A LoRa pad and an ESP-NOW TX node cannot hear each other, by construction, and they will both look
+perfectly healthy while the pad sits in `NO-LINK` for ever.
 
-For BLE-specific fault-finding see [LINK_OPTIONS.md](LINK_OPTIONS.md) §6; the short form:
+For ESP-NOW-specific fault-finding see [LINK_OPTIONS.md](LINK_OPTIONS.md) §6; the short form:
 
-| Symptom on a BLE build | Verdict |
+| Symptom on an ESP-NOW build | Verdict |
 |---|---|
-| TX node logs `scanning for the pad` for ever | pad not powered, not a BLE build, or out of range |
-| Pad logs `advertising (no TX node connected)` for ever | mirror of the above; check the TX node's scan line |
-| Pad cycled from `LINK OK` back to `NO-LINK` about every reconnect | TX node rebooted (USB re-enumeration or power glitch); it re-scans on its own within ~5 s |
-| `LINK FAULT: BLE stack not started` at boot | Bluetooth did not initialise on that board — wrong chip, or the `-ble` env built for a board without BT |
-| `ble: re-scanning for "GSE-PAD"` after `RADIO CONFIG` | expected — that is what `RADIO CONFIG` means on this transport |
+| Banner says `peer MAC NOT CONFIGURED` | the placeholder MACs are still in `config.h`. First flash: read each board's `local MAC`, set both, rebuild both — LINK_OPTIONS §3.3 |
+| `LINK FAULT: esp_now_init failed` at boot | the Wi-Fi driver did not start: wrong chip, or a core built without Wi-Fi. On a NUCLEO that is expected — no ESP-NOW for STM32 |
+| Both banners right, pad's `bytes=` stays 0 | channel mismatch (one board not reflashed) or out of range — `describe()` prints the channel on both |
+| Pad's `sof=` climbs but `valid=` does not | corruption on the air: interference on that channel, or a key mismatch with a third device present |
+| `rx foreign` climbing | another ESP-NOW device on the same channel. Frames from it are dropped by design |
+| TX node logs failed sends while the pad is fine-tuned | key/PMK text differs between the two builds, or the pad was swapped for a board with a different MAC |
+| Link comes up, then drops whenever someone's phone hotspot appears | channel collision. Move `GSE_NOW_CHANNEL` and rebuild both |
+| `RADIO CONFIG` prints `peer registered` and nothing changes | expected: on this transport there is nothing to re-negotiate |
 
 ---
 
@@ -252,8 +255,8 @@ laptop but not parsing. In order of likelihood:
 
 ## Order of operations, condensed
 
-0. Read the first `LOG … link:` line on **both** nodes. If one says `ble` and the other `lora`, stop and
-   reflash — §0. Everything below this point is for the LoRa transport.
+0. Read the first `LOG … link:` line on **both** nodes. If one says `espnow` and the other `lora`, stop
+   and reflash — §0. Everything below this point is for the LoRa transport.
 1. Re-flash **both** boards from this package (the `AT+RESET` fix).
 2. Power-cycle both, then look at the two nodes' `LOG` lines.
 3. Read the `LOG RADIO` block on both: `SWITCH:0`? `MODE:1`? `LEVEL` equal? `Frequency` `0c` on the pad, `0e` on

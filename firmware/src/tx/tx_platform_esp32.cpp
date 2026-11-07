@@ -16,8 +16,8 @@
  *   laptop on native USB-CDC        laptop on the CP2102/CH340 bridge, UART0
  *
  * Transport: the LoRa module on UART1 by default, or the ESP32's own Bluetooth
- * (BLE) radio with -DGSE_LINK_BLE (envs tx-node-ble / tx-node-ble-esp32s).  In
- * the BLE build the UART1 pins, the module and its AT provisioning are simply
+ * ESP-NOW radio with -DGSE_LINK_ESPNOW (envs tx-node-now / tx-node-now-esp32s).
+ * In that build the UART1 pins, the module and its AT provisioning are simply
  * absent -- everything above gse_hal.h is identical, which is what the seam in
  * src/link.h buys.  See docs/LINK_OPTIONS.md.
  *
@@ -131,7 +131,7 @@ bool gse_radio_provision(uint8_t level, uint8_t channel_hex, uint16_t key,
 #if defined(GSE_LINK_LORA)
     else          gse_log("radio: OK level=%u ch=%02x", level, channel_hex);
 #else
-    else          gse_log("ble: re-scanning for \"%s\"", GSE_BLE_NAME);
+    else          gse_log("espnow: ch %d -> peer registered", (int)GSE_NOW_CHANNEL);
 #endif
     return radioOk;
 }

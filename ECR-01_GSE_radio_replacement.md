@@ -74,9 +74,8 @@ In scope (rewrite of the following handbook content):
 * §7.2.2, §7.3.2, §7.5.2 — the operator-facing steps that change
 
 Also in scope, as an **optional build-time alternative to the LoRa module** (not a replacement for it): the
-ESP32's own Bluetooth Low Energy radio as the transport between the two nodes, selected with
-`-DGSE_LINK_BLE` / the `-ble` environments. It carries the identical protocol and leaves every safety rule
-untouched; see §4.8.
+ESP32's own ESP-NOW radio as the transport between the two nodes, selected with `-DGSE_LINK_ESPNOW` / the
+`-now` environments. It carries the identical protocol and leaves every safety rule untouched; see §4.8.
 
 Out of scope: fill system (OP 2–5), servo-actuated ball valve build (OP 1), cables and fill line (OP 7), the vehicle, and Sections I–V.
 
@@ -314,20 +313,23 @@ Sent from the GUI as a `CFG` frame and echoed back in every `STATE` frame:
 
 ---
 
-### 4.8 Optional second transport: Bluetooth Low Energy
+### 4.8 Optional second transport: ESP-NOW
 
-The two nodes can be linked either by the DX-LR42/LR41 modules (§4.3) or by the ESP32's own Bluetooth Low
-Energy radio. **LoRa remains the specified and default configuration**; the Bluetooth build exists so the same
+The two nodes can be linked either by the DX-LR42/LR41 modules (§4.3) or by the ESP32's own Wi-Fi radio using
+ESP-NOW. **LoRa remains the specified and default configuration**; the ESP-NOW build exists so the same
 firmware can be used with no radio modules at all — for bench work, for a spare pad, and as a fallback if the
-modules are unavailable.
+modules are unavailable. (An earlier revision of this ECR proposed Bluetooth Low Energy for this role. It was
+replaced before release: BLE is connection-oriented, so it adds advertising, scanning, a supervision timeout
+and a reconnect path under a dead-man switch, in exchange for nothing ESP-NOW does not do better. ESP-NOW is
+connectionless, needs no association, and encrypts every frame.)
 
-| | LoRa (default) | Bluetooth |
+| | LoRa (default) | ESP-NOW |
 |---|---|---|
 | BOM | 2 modules + antennas + decoupling | none |
 | Wiring | 5 wires per node (§4.4) | none |
-| Provisioning | AT commands, verified each boot | none |
-| Range, LOS | hundreds of m to ~2 km at `LEVEL 3` | ~10–50 m |
-| Security model | channel + KEY + arm code | arm code only (no pairing) |
+| Provisioning | AT commands, verified each boot | both station MACs in `config.h`, once per pair of boards |
+| Range, LOS | hundreds of m to ~2 km at `LEVEL 3` | a few hundred m at best, line of sight |
+| Security model | channel + KEY + arm code | CCMP (AES-128) + peer-MAC pinning + arm code |
 | Gate | G1–G4 | T-11 in place of T-00…T-03, T-07 |
 
 **What does not change.** The wire protocol (§4.5), the failsafe set and watchdog (§4.6), the igniter interlock
@@ -336,20 +338,29 @@ The implementation is a single seam (`firmware/src/link.h`) with two adapters; n
 transport is underneath. This is deliberate: the safety argument in §6 is about frames and clocks, and must not
 depend on the radio.
 
-**Topology.** The pad is the BLE peripheral (advertises `GSE-PAD`, service `0xFF00`, rx `0xFF01`, tx `0xFF02` with
-a `0x2902` subscription descriptor); the TX node is the central, scanning for that service. The pad never
-initiates a connection, so nothing on the TX side can stall its control loop. Frames are up to 39 bytes and the
-default ATT MTU carries 20 per notification/write, so each frame is sent as two chunks and reassembled by the
-existing byte-stream parser; a lost chunk costs exactly one frame (20 ms) against a 1.0 s watchdog, and the
-parser's resync means a torn frame cannot be misread as a command (covered by `tests/test_protocol.c`).
+**Topology.** Both nodes are symmetric ESP-NOW peers: each has the other's Wi-Fi *station* MAC compiled in
+(`GSE_NOW_PAD_MAC` / `GSE_NOW_TX_MAC`) and nothing else is accepted, so an unconfigured board cannot be
+spoken to. Nothing is associated — the station interface is started and never connects to an access point, so
+there is no SSID, no DHCP and no network to reach through the pad. Frames are up to 39 bytes and one ESP-NOW
+datagram carries 250, so a frame is one datagram: no chunking, no reassembly, nothing to tear. A lost datagram
+costs exactly one frame (20 ms) against a 1.0 s watchdog, and because ESP-NOW reports per-packet send status the
+TX node can tell a failed send from a pad that has gone quiet (covered by `tests/test_protocol.c`).
 
-**Security.** No pairing or bonding is used, because that would add a key store and an operator step to protect
-a payload that already carries a CRC, a dead-man and an arm code. The consequence is stated plainly rather than
-buried: on this transport, a party within a few tens of metres who deliberately speaks the protocol can command
-the pad. That is not materially different from the LoRa case (private channel + a 5-digit KEY word), and the same
-controls apply — arm key out, someone on the pad, IGN unloaded until the last moment. Bluetooth is therefore
-**not approved for a live fill** until T-11 (including the measured range with 2× margin) is signed off for that
-vehicle. See `docs/LINK_OPTIONS.md`.
+The one added operator step is provisioning: a board's own MAC cannot be known at build time, so the first flash
+of each board reports it, both MACs are compiled into `config.h`, and both boards are reflashed. Until that is
+done the firmware prints `peer MAC NOT CONFIGURED`, holds the pad's outputs safe and refuses to report LINK OK —
+a pad that cannot hear its TX node must not look healthy.
+
+**Security.** Every frame is CCMP-encrypted with a 16-byte local master key and a 16-byte primary master key
+compiled into both ends, so a third party with an ESP-NOW sniffer sees ciphertext, not GSE frames; and the peer
+address is pinned, so a nearby device with the same keys is still ignored. The keys live in the firmware image,
+so this is link privacy against a passive or opportunistic listener, not a secret from someone who has the
+binary. No pairing or bonding is used, because that would add a key store and an operator step to protect a
+payload that already carries a CRC, a dead-man and an arm code. The honest consequence: a party holding the
+firmware and within radio range can command the pad; without the keys they can jam it but not command it. The
+same controls apply as for LoRa — arm key out, someone on the pad, IGN unloaded until the last moment — and
+ESP-NOW is **not approved for a live fill** until T-11 (including the measured range with 2× margin) is signed
+off for that vehicle. See `docs/LINK_OPTIONS.md`.
 
 ---
 
@@ -507,8 +518,8 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
 | R6 | Operator unfamiliarity with a computerised control | procedural error under time pressure | rehearsals T-08/T-09, quick-reference card, keep the physical SW2 key | launch ops |
 | R7 | No independent telemetry of *actual* valve position | a stripped servo spline would be invisible | audible/visual check in the on-pad checkouts; optional micro-switch feedback in a future revision | future work |
 | R8a | A module left in `AT+SWITCH=1` with floating M0/M1 lands in AT/WOR/sleep mode | silent no-receive, indistinguishable from a dead radio | M0/M1 tied to GND on both nodes (§4.3); `SWITCH:` printed in the boot log; `docs/TROUBLESHOOTING_LINK.md` §2a | builder |
-| R8b | Bluetooth transport chosen for a range the link cannot cover | silent-ish link at the far end: dropped frames, then the pad goes safe and the shot is lost | T-11 step 5 measures the range with 2× margin before use; LoRa is the default and the only link approved without a range test; `docs/LINK_OPTIONS.md` §4 | launch ops |
-| R8c | Bluetooth link is not encrypted, and anyone in range can speak the protocol | loss of control of a pad's outputs | no pairing by design (§4.8); the arm code and the physical SW2 key remain the interlocks; T-11 restricts this transport to bench/short range pending sign-off | launch ops, GSE lead |
+| R8b | ESP-NOW transport chosen for a range the link cannot cover | lost datagrams at the far end, then the pad goes safe and the shot is lost | T-11 step 7 measures the range with 2× margin before use; LoRa is the default and the only link approved without a range test; `docs/LINK_OPTIONS.md` §4 | launch ops |
+| R8c | ESP-NOW key/PMK text differs between the two builds, or a board is swapped without the MACs being updated | the link never comes up and the pad reports `peer MAC NOT CONFIGURED` — safe, but unexplained unless documented | keys are 16-character compile-time asserts; the peer MACs are checked for placeholders at boot; T-11 steps 2 and 6; `docs/TROUBLESHOOTING_LINK.md` §0 | builder |
 | R8d | A pad and a TX node built with different transports | the link never comes up, and both nodes look healthy | both nodes print their transport in the first `LOG … link:` line; `docs/TROUBLESHOOTING_LINK.md` §0 makes that the first check; T-11 step 8 | builder |
 | R8 | The DX-LR41 is not a certified module in every jurisdiction | legal | jurisdiction check (§6.3); the vendor offers a CE/FCC variant of the SX1281 family | launch ops |
 
@@ -643,19 +654,19 @@ docs/INSERT_SECTION_VI.pdf           insert-ready replacement pages 236-255, for
                                      mirror the HCR-5100 layout (source: .html)
 docs/TEST_PLAN.md                    bench + range test plan with acceptance gates
 docs/OPERATOR_CARD.md                one-page range quick-reference
-docs/LINK_OPTIONS.md                 LoRa vs Bluetooth transport: comparison, range,
-                                     security note, BLE fault table, test T-11
+docs/LINK_OPTIONS.md                 LoRa vs ESP-NOW transport: comparison, range,
+                                     security note, ESP-NOW fault table, test T-11
 docs/TROUBLESHOOTING_LINK.md         no-telemetry fault tree (§0: which transport?)
 docs/fig_*.png                       figures 1–5 + GUI screenshot
 firmware/                            PlatformIO project, nine environments
                                      (tx-node, pad-node, tx-node-esp32s,
                                       pad-node-esp32s, tx-nucleo, plus the four
-                                      Bluetooth ones: *-ble / *-ble-esp32s)
+                                      ESP-NOW ones: *-now / *-now-esp32s)
   src/common/gse_protocol.h          wire protocol + failsafe rules (single source of truth)
   src/config.h                       builder-editable constants + board variant
                                      (ESP32-S3 default / ESP-32S optional)
   src/dxlr41.h                       AT-command driver with verification
-  src/link.h                         transport seam: LoRa (default) or BLE, one
+  src/link.h                         transport seam: LoRa (default) or ESP-NOW, one
                                      method set, both carrying the same frames
   src/pad/pad_node.cpp               pad node: safety logic, PWM, igniter, telemetry
   src/common/gse_hal.h               the seven platform services a TX node must supply
@@ -675,7 +686,7 @@ software/
   tests/                             9 protocol tests + 4 closed-loop tests
 tests/                               C unit tests for the protocol + host HAL stub for the core
   esp32_syntax_check.sh              compiles every ESP32 board variant on the host
-  esp32_stub/                        minimal Arduino-ESP32 / BLE headers for that check
+  esp32_stub/                        minimal Arduino-ESP32 / ESP-NOW headers for that check
 tools/make_figures.py                regenerates every figure
 hardware/wiring.md                   bench wiring sheet and connector pinouts
 ```

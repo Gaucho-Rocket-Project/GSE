@@ -212,11 +212,11 @@ class Controller:
         return self.link.age_ms() if self.link else float("inf")
 
     def _tx_transport(self) -> str:
-        """The transport the TX node says it is using: 'lora', 'ble' or ''.
+        """The transport the TX node says it is using: 'lora', 'espnow' or ''.
 
         The TX node prints one line at boot:
 
-            LOG link: ble -- BLE central, scanning for service ff00 ...
+            LOG link: espnow -- ESP-NOW peer 24:6f:28:aa:bb:01, channel 1 ...
 
         Only the TX node's own lines can appear here: the GUI's serial port is
         the TX node, and the pad's text log goes out the *pad's* USB port (over
@@ -229,7 +229,7 @@ class Controller:
         for line in reversed(getattr(self.link, "node_log", []) or []):
             low = line.lower()
             if low.startswith("link:") or " radio wiring:" in low:
-                return "ble" if "ble" in low else "lora"
+                return "espnow" if "espnow" in low else "lora"
         return ""
 
     def verdict(self) -> tuple[str, str]:
