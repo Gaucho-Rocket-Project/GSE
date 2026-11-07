@@ -187,7 +187,8 @@ second of connecting, the Nucleo is doing its job.
 
 ## Spares / rollback
 
-The ESP32-S3 TX firmware is unchanged and still builds (`pio run -e tx-node`). Keep the flashed ESP32-S3 in the
+The ESP32 TX firmware is unchanged and still builds (`pio run -e tx-node`, or `-e tx-node-esp32s` if the
+spare board is an ESP-32S ESP32-WROOM-32 devkit). Keep the flashed ESP32-S3 in the
 box: if the Nucleo is lost, re-flash the ESP32-S3, plug the same DX-LR41 into it (same four wires), and the
 laptop side only needs a different `--port`.
 

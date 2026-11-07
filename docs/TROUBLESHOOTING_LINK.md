@@ -11,9 +11,18 @@ come back.** That narrows it fast: the laptop↔TX half is proven, so the fault 
 Before anything else, check the TX node's own log. It prints these lines even when the GUI is connected:
 
 ```
-LOG TX esp32 fw 1.0 ready                         <- radio_provision() succeeded
+LOG TX esp32s3 fw 1.0 ready                       <- radio_provision() succeeded
+                                                  (TX esp32s on an ESP-32S board,
+                                                   TX stm32 on a Nucleo)
+LOG RADIO AT+HELP dump: MODE:1 LEVEL:3 ...         <- what the module says it is
+LOG | Frequency:2424MHz >> 0e
+LOG | MAC:00,01  SWITCH:0  SLEEP:2
 LOG tx fwd=812 state=0 safe=0 dropped=0 radio=ok  <- once a second
 ```
+
+The `LOG RADIO` block is new and is the first thing to read: it is the module's own configuration as it reported it
+during provisioning, printed on **both** nodes whether or not the verification passed. `SWITCH:` is part of it, and
+`SWITCH:1` is a fault (see §2a).
 
 * `radio=FAULT` on the TX node → **stop here**, it is the TX module's wiring or baud (see §1).
 
@@ -88,14 +97,67 @@ Leave AT mode with `+++` (the module reboots):
 +++                ->  Exit AT / Power On
 ```
 
+## 2-0. Is the UART crossed the right way? (check this first)
+
+The vendor's own reference circuit (LR42 technical manual, Figure 6) is unambiguous, and it is the most common wiring
+error on this link:
+
+```
+module pin 3 "RX  — serial port data INPUT"   <── ESP32 D17 (TX)
+module pin 4 "TX  — serial port data OUTPUT"  ──> ESP32 D16 (RX)
+```
+
+So **module RX goes to the ESP32's TX**, and **module TX goes to the ESP32's RX**. "RX to RX, TX to TX" is the mistake
+that looks most natural and is wrong.
+
+What it costs you: the module's transmitter still fires (it does not care what is on its RX pin), so the link *looks*
+alive, but the module never receives a byte of configuration or data. Provisioning then fails at the first AT command
+(`AT entry failed`) because the module never heard `+++`.
+
+Quick test that does not need the firmware: unplug the two signal wires, and with the module powered, jumper **module
+RX to the ESP32's D17** only (leave TX off), then start a terminal at 9600 on the module's UART and type `AT`. If it
+answers `OK`, the direction you have is right. If it answers nothing, swap to the other pin.
+
+## 2a. M0 / M1 floating (a module that provisions but never receives)
+
+Check this *before* the wiring table below, because it produces the exact symptom and touches no wire you have
+already checked. Full background in `hardware/wiring.md` §1.2.
+
+The failure: with the vendor's factory default `AT+SWITCH=0`, M0/M1 are **outputs** from the module, so leaving them
+unconnected looks fine and everything passes. If the module is (or ever was) in `AT+SWITCH=1`, they are **inputs with
+a weak pull-up**, and they pick the operating mode:
+
+| M0 | M1 | Mode | Receives? |
+|---|---|---|---|
+| low | low | high-timeliness | **yes** |
+| low | high | air-wakeup (WOR) | only WOR frames — i.e. no |
+| high | low | AT command mode | **no** |
+| high | high | sleep | **no** |
+
+Floating inputs sit at the weak pull-up (M0=1, M1=1 → **sleep**) or wander with harness noise, and the mode is
+re-sampled on every power-up and every `AT+RESET` — which provisioning performs several times. The module then answers
+`AT+HELP`, provisioning reports `RADIO OK`, the TX node keeps transmitting, and the pad's `bytes=` stays at 0 forever.
+
+**Fix, in order:**
+
+1. `grep` the boot log for `SWITCH:`. If it says `1`, send `AT+SWITCH0` (the module reboots) from a terminal on that
+   module's UART at 9600, and re-check.
+2. Tie **M0 → GND** and **M1 → GND** at the module on *both* modules. This is the actual fix; step 1 only proves the
+   diagnosis.
+3. Re-power both nodes and watch the pad's 1 Hz line. `bytes>` 0 means the module is receiving again.
+
+> Tie them to GND, do not "leave them for the MCU to drive" while `SWITCH=0`: in that state they are the module's
+> outputs. GND (or a GPIO held low, which is the same electrical state) is safe; a GPIO that toggles is not.
+
 ## 2. Check the three wires again, in this order
 
 Fixed-point silence is almost always wiring, and always in the same three places.
 
 | Suspect | Why it bites | How to check |
 |---|---|---|
-| **TX/RX not crossed** | Module `TXD` must go to the MCU's **RX**. Both ends are labelled from the module's point of view. | The pad's 1 Hz line reports `bytes=0` if it never receives, and `bytes>0` if it does. Crossed-wrong gives 0. |
-| **Module fed 5 V** | The DX-LR41 is 3.3 V. 5 V on VCC does not always kill it — it makes it answer AT commands and then behave erratically. | Measure VCC at the module: 3.2–3.4 V, not 5. |
+| **TX/RX crossed the wrong way** | The module's pins are labelled from *its* point of view: `RX` is an input and must come from the MCU's TX. | See §2-0. The pad's 1 Hz line reports `bytes=0` if it never receives; `bytes>0` if it does. |
+| **AUX not wired but firmware polls it** | If AUX is left off, GPIO18 reads whatever the floating pin picks up, and a spurious "busy" stalls every write. | Boot log says `AUX=wired` or `NOT WIRED`; if not wired, build with `-DGSE_LORA_AUX_NONE`. |
+| **Module fed the wrong voltage** | **DX-LR42** is specified 3.3–5.5 V (5 V typical) and needs ≥5 V for full power; **DX-LR41** is 3.3 V only, and 5 V makes it answer AT commands then behave erratically. Both take 3.3 V UART levels. | Measure VCC at the module. LR41: 3.2–3.4 V. LR42: 3.3–5.5 V, and note that 3.3 V costs you output power. Check which module the silkscreen says you have. |
 | **No common ground** | Two separately-powered boards with no GND reference read each other's UART as noise. | Continuity from pad GND to module GND to the 12 V return. |
 
 The pad node now prints, once a second for the first 10 s, the numbers that separate these:
@@ -146,6 +208,8 @@ laptop but not parsing. In order of likelihood:
 | `AT+HELP` is silent but the module powers up | wrong baud. Try 115200 (`AT+BAUD` index 6) — some modules ship reconfigured |
 | `AT+HELP` is silent at every baud | module dead, or TXD not connected. Swap in the spare. |
 | Everything checks out but `bytes=0` | antennas missing. The SX1281 will not receive without a load on the RF port; fit both antennas before concluding anything |
+| Everything checks out, `SWITCH:1` in the banner | **M0/M1 are mode inputs and at least one is floating** → §2a. Tie both to GND |
+| Both nodes `RADIO OK`, `bytes=0`, `SWITCH:0`, wiring correct | the two ends disagree on something the code does not verify: compare the two `LOG RADIO` banners field by field — `LEVEL`, `Frequency`, `KEY`/`Openkey` must match, `MAC` must differ (`00,01` TX / `00,02` pad) |
 
 ---
 
@@ -153,9 +217,11 @@ laptop but not parsing. In order of likelihood:
 
 1. Re-flash **both** boards from this package (the `AT+RESET` fix).
 2. Power-cycle both, then look at the two nodes' `LOG` lines.
-3. Read the pad's banner: `RADIO OK` or a named `RADIO FAULT`.
-4. If `RADIO OK`, read the 1 Hz line: `bytes=` / `sof=` / `valid=`.
-5. If `valid>0` and the GUI is still blank, close every other program holding the port.
+3. Read the `LOG RADIO` block on both: `SWITCH:0`? `MODE:1`? `LEVEL` equal? `Frequency` `0c` on the pad, `0e` on
+   the TX? If `SWITCH:1` → tie M0/M1 to GND (§2a).
+4. Read the pad's banner: `RADIO OK` or a named `RADIO FAULT`.
+5. If `RADIO OK`, read the 1 Hz line: `bytes=` / `sof=` / `valid=`.
+6. If `valid>0` and the GUI is still blank, close every other program holding the port.
 
 If steps 1–4 all look right and the GUI is still silent, the problem is on the laptop side, and the CSV will show
 it: `dir=rx` rows appear as soon as any frame parses at all.

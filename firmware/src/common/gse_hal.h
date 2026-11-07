@@ -3,7 +3,7 @@
  * ---------------------------------------------------------------------------
  * Everything in this package that matters (frame encoding, CRC, parser, the
  * failsafe rules) is already portable C in gse_protocol.h.  This header names
- * the only four things that differ between an ESP32-S3 and an STM32H7:
+ * the only four things that differ between an ESP32 (S3 or ESP-32S) and an STM32H7:
  *
  *      gse_millis()              milliseconds since boot, 32-bit, wrapping
  *      gse_tx_write(b,n)         push n bytes to the DX-LR41 UART
@@ -16,7 +16,7 @@
  * Plus a begin() so each platform can set up its clocks and pins.
  *
  * Provided implementations:
- *      firmware/src/tx/tx_platform_esp32.cpp   (Arduino / ESP32-S3)
+ *      firmware/src/tx/tx_platform_esp32.cpp   (Arduino / ESP32-S3 or ESP-32S)
  *      firmware/stm32/tx_platform_stm32.c      (STM32Cube HAL / Nucleo-H753ZI)
  */
 #ifndef GSE_HAL_H

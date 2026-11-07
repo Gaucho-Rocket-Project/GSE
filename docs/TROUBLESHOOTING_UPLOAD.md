@@ -8,6 +8,13 @@ This message is **not** a firmware error. It comes from `esptool`, before any of
 chip to enter its ROM bootloader and got silence back. The build is fine (it compiled — you got to `[upload]`), so
 nothing in `pad_node.cpp` needs changing.
 
+**Board variant?** This whole page is about the ESP32-S3, whose *native USB* socket has to be talked into
+the ROM bootloader. It does not apply to the optional **ESP-32S** ("ESP-32S Development Board 2.4 GHz
+Dual-Mode WiFi+Bluetooth", ESP32-WROOM-32): that board has a single micro-USB socket behind a CP2102/CH340
+bridge, so the bridge chip owns BOOT/RST and the upload just works. If you are on an ESP-32S, check only
+that you flashed the matching environment (`-e pad-node-esp32s` / `-e tx-node-esp32s`) and that the port is
+`/dev/ttyUSB*` or a `COM` port — not the native-USB advice below, which is about the S3's second socket.
+
 Work through the list in order. Step 1 fixes this for most people.
 
 ---

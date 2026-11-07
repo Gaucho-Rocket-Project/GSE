@@ -120,7 +120,7 @@ Option B was selected by the design owner. This ECR documents its consequences h
 
 | Parameter | Value | Source |
 |---|---|---|
-| Supply | 3.3 V (module); break-out boards usually accept 5 V and regulate | vendor |
+| Supply | **LR42-24T12D: 3.3–5.5 V (5 V typical, ≥5 V for full power). LR41-24T12S: 3.3 V only.** UART levels are 3.3 V on both; 5 V TTL on the UART risks damage | vendor datasheets |
 | UART | default 9600 8N1; 2400…115200 selectable (`AT+BAUD 0..6`) | 串口应用指导 v2.0 |
 | Air rate presets | `AT+LEVEL 0..7` LoRa (0.5 → 150 kbit/s), `AT+LEVEL 8` FLRC (1.04 Mbit/s) | ibid. |
 | Default preset | LEVEL 3 = SF8 / BW 406 kHz / 10 kbit/s, ≈2.2 km quoted LOS | ibid. |
@@ -130,6 +130,9 @@ Option B was selected by the design owner. This ECR documents its consequences h
 | Chunking | `AT+PACKET 0..3` = 32/64/128/230 bytes | ibid. |
 | Power | `AT+POWE 0..13` dBm, default 13 dBm (~20 mW) | ibid. |
 | Handshake pin | `AUX` high while busy, asserted 2–3 ms before received data | ibid. |
+| Mode-select pins | `M0`/`M1`: **outputs** (driven low) when `AT+SWITCH=0` (default); **inputs with weak pull-up** when `AT+SWITCH=1`, selecting high-timeliness / air-wakeup / AT / sleep. Vendor: with `SWITCH=1` they must never float, or mode switching malfunctions | LR42 tech. manual v2.0 §2.3.4 |
+| Pin functions | LR42 is a **7-pad stamp module, pins 1–7 = M0, M1, RX (data in), TX (data out), AUX, VCC, GND** — i.e. `RX` is an input and is fed from the MCU's TX. Reference circuit: LR42 tech. manual v2.0 Figure 6 | ibid. |
+| FLRC (LEVEL 8) | payload must be **6–127 bytes**; key encryption is disabled and cannot be enabled; CAD/WOR unavailable | LR42 UART application guide v2.0 §5.3.2, §5.3.8 |
 | FLRC caveat | `LEVEL 8`: payload ≥ 6 bytes, ≤ 127 bytes, key feature unavailable | ibid. |
 
 Provisioning used by the firmware (both nodes write these at boot and verify with `AT+HELP`):
@@ -145,6 +148,19 @@ AT+POWE13           13 dBm
 AT+SLEEP2           high-timeliness mode: always listening
 AT+RESET            commit
 ```
+
+The module's pin numbering used above is the LR42's (7-pad stamp, `1 = M0 … 7 = GND`); the LR41-24T12S carrier
+presents the same seven signals on a through-hole header. **`RX` (pin 3) is an input** and is driven by the node's
+`D17`; `TX` (pin 4) is an output and drives `D16`. A harness built "RX to RX, TX to TX" leaves the module unable to
+receive anything, which is why the wiring sheet now prints the direction next to every pin.
+
+`AT+SWITCH` is left at its factory default of `0` (mode selected by AT commands), so `M0`/`M1` are module *outputs* and
+are electrically irrelevant in that state. They are nevertheless **tied to GND on both nodes**: if a module is ever in
+`AT+SWITCH=1` — including a unit that arrived configured that way from a previous user — the pins become weakly
+pulled-up *inputs* that select the operating mode, and a floating pin then silently puts the module in AT mode, WOR or
+sleep. The mode is re-sampled on every power-up and every `AT+RESET`, and the symptom ("provisions fine, never
+receives") is indistinguishable from a broken radio. Both nodes now also print the module's `AT+HELP` dump at
+provisioning (`LOG RADIO ... SWITCH:0 ...`), so the state is visible rather than inferred.
 
 **Two-channel scheme.** The module is half-duplex. To keep the 20 Hz command stream and the 10 Hz telemetry from colliding, each module listens on one channel and transmits on the other using fixed-point addressing: pad listens 2424 MHz (`0C`) / transmits 2428 MHz (`0E`); TX node the reverse. This must be confirmed on the bench (test T-07); if a firmware revision ignores the destination channel the fallback is `-DGSE_SINGLE_CHANNEL` (both ends on `0C`) with telemetry at 5 Hz and the 20 Hz command stream reserved.
 
@@ -169,35 +185,55 @@ Range quoted by the vendor is line-of-sight with an unobstructed Fresnel zone. T
 
 *Figure 2 — Revised Figure 6.1. Panel A: power distribution and node I/O. Panel B: igniter enable chain.*
 
-Pad node pinout (ESP32-S3 DevKitC-1 / N16R8 class board):
+Pad node pinout (ESP32-S3 DevKitC-1 / N16R8 class board, the default build), with the optional
+ESP-32S board alongside:
 
-| Signal | GPIO | Notes |
-|---|---|---|
-| FILL servo PWM | D4 (GPIO 4) | 50 Hz, 1000–2000 µs, 12-bit LEDC |
-| VEHICLE servos PWM (Y-harness) | D5 (GPIO 5) | same, both servos share one signal as in the stock GSE |
-| PURGE servo PWM | D6 (GPIO 6) | same |
-| Igniter relay | D7 (GPIO 7) | drives the K1 coil-driver MOSFET gate |
-| Keep-alive heartbeat | D8 (GPIO 8) | 25 Hz square wave → Q1 |
-| DX-LR41 UART RX / TX | D16 / D17 (UART1) | 9600 8N1, crossed to the module's TXD/RXD |
-| DX-LR41 AUX | D18 | input, pull-up |
-| Status LED | D48 | optional WS2812 |
+| Signal | GPIO (ESP32-S3) | GPIO (ESP-32S) | Notes |
+|---|---|---|---|
+| FILL servo PWM | D4 (GPIO 4) | D4 (GPIO 4) | 50 Hz, 1000–2000 µs, 12-bit LEDC |
+| VEHICLE servos PWM (Y-harness) | D5 (GPIO 5) | D5 (GPIO 5) | same, both servos share one signal as in the stock GSE |
+| PURGE servo PWM | D6 (GPIO 6) | **D15 (GPIO 15)** | same |
+| Igniter relay | D7 (GPIO 7) | **D13 (GPIO 13)** | drives the K1 coil-driver MOSFET gate |
+| Keep-alive heartbeat | D8 (GPIO 8) | **D33 (GPIO 33)** | 25 Hz square wave → Q1 |
+| DX-LR41 UART RX / TX | D16 / D17 (UART1) | D16 / D17 = RX2 / TX2 | 9600 8N1, crossed to the module's TXD/RXD |
+| DX-LR41 AUX | D18 | D18 | input, pull-up |
+| Status LED | D48 | D2 (plain, on-board) | optional WS2812 / blink patterns |
+| Laptop port | native USB-CDC | CP2102/CH340 on micro-USB | no behaviour difference in the link |
 
-**TX node — two acceptable implementations.** The laptop-side node is deliberately the *dumb* end of the link: it paces, filters and forwards, and holds no safety state that matters. It can therefore be built from either board without touching the pad, the protocol, the GUI or any procedure beyond the cable that lands on the laptop.
+**Optional board: "ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth"** (ESP32-WROOM-32,
+30/38-pin). It is supported for either node as a build variant, not a code fork: the same sources, the same
+protocol, the same failsafes, the same GUI and the same procedures, selected with `-D GSE_BOARD_ESP32S`
+(environments `tx-node-esp32s` / `pad-node-esp32s`). Three pads move — PURGE, IGNITER and the keep-alive —
+because **GPIO6…GPIO11 are the SPI flash** on a WROOM-32 and cannot be driven; D15/D13/D33 carry the same
+function nearby on the header, so the harness is relabelled, not rewired. The igniter is on D13 rather than
+the adjacent D14 because D14 emits a short PWM burst at boot: a boot glitch on the relay gate is hazard H4,
+and D13 has no boot function, no strap and no reset artefact. (The relay still cannot fire without Q1
+conducting and SW2 closed; the pin choice is the third layer of H4's defence, not the first.) GPIO34–39 are input-only
+and are rejected; the igniter may not be placed on a strapping pin (GPIO0/2/12/15), and both rules are
+compile-time assertions in `firmware/src/config.h`, so a pin mistake cannot reach the bench. The ESP-32S's
+CP2102/CH340 gives it a single ordinary COM port for flashing *and* the GUI, which removes the two-socket
+upload problem described in `docs/TROUBLESHOOTING_UPLOAD.md`; in exchange it has no WS2812, so the status
+colours become blink patterns on the on-board blue LED (5 Hz = radio fault, 2 Hz = no link, 1 Hz = link OK
+not armed, 10 Hz = igniter energised). A mixed pair — ESP-32S pad with an ESP32-S3 TX, or the reverse — is a
+supported configuration. No change to the safety analysis: the pad node still owns every failsafe, and the
+watchdog, arm code, on-time limit and keep-alive are identical on both boards.
 
-| | ESP32-S3 (as specified) | NUCLEO-H753ZI (MB1364E) option |
-|---|---|---|
-| Laptop port | native USB-CDC | ST-LINK VCP, plain COM port, no driver install |
-| Radio port | UART1 D16/D17, AUX D18 | USART2 PD5 (CN11-41 Tx) / PD6 (CN11-43 Rx), AUX PD7 (CN11-45) |
-| Supply | USB-C 5 V | USB-C 5 V (ST-LINK) or E5V/VIN |
-| Debug | USB serial | SWD — breakpoints on a link you are range-testing |
-| Firmware | `env tx-node`, 335 KB flash | `env tx-nucleo`, 33.9 KB flash, or CubeIDE HAL port |
-| If it dies | link lost, pad goes safe | identical |
+**TX node — three acceptable implementations.** The laptop-side node is deliberately the *dumb* end of the link: it paces, filters and forwards, and holds no safety state that matters. It can therefore be built from either board without touching the pad, the protocol, the GUI or any procedure beyond the cable that lands on the laptop.
 
-Both builds execute the *same* portable core (`firmware/src/common/gse_tx_core.c`) and the same 20 Hz pacing, 200 ms stale-frame rejection and 300 ms laptop dead-man, so the pad cannot tell them apart. Details in `firmware/stm32/README.md`; the provisioning commands, the four wires and the `--port` argument are the only things that change.
+| | ESP32-S3 (as specified) | ESP-32S option | NUCLEO-H753ZI (MB1364E) option |
+|---|---|---|---|
+| Laptop port | native USB-CDC | CP2102/CH340 bridge, plain COM port | ST-LINK VCP, plain COM port, no driver install |
+| Radio port | UART1 D16/D17, AUX D18 | UART1 D16/D17 (RX2/TX2), AUX D18 | USART2 PD5 (CN11-41 Tx) / PD6 (CN11-43 Rx), AUX PD7 (CN11-45) |
+| Supply | USB-C 5 V | micro-USB 5 V | USB-C 5 V (ST-LINK) or E5V/VIN |
+| Debug | USB serial | USB serial | SWD — breakpoints on a link you are range-testing |
+| Firmware | `env tx-node` | `env tx-node-esp32s` | `env tx-nucleo`, 33.9 KB flash, or CubeIDE HAL port |
+| If it dies | link lost, pad goes safe | identical | identical |
+
+All three builds execute the *same* portable core (`firmware/src/common/gse_tx_core.c`) and the same 20 Hz pacing, 200 ms stale-frame rejection and 300 ms laptop dead-man, so the pad cannot tell them apart -- a pad node on either ESP32 board accepts any of them. Details in `firmware/stm32/README.md`; the provisioning commands, the four wires and the `--port` argument are the only things that change.
 
 Two traps worth printing on the sheet: the Nucleo's VCP is **USART3 (PD8/PD9)** through solder bridges SB5/SB6, *not* USART2, and its Arduino-header **D0/D1 are PG9/PG14 and are not a UART**. The radio lives on USART2 at PD5/PD6, which appears on the morpho header as CN11 pins 41/43.
 
-**Power.** 3.3 V logic. The DX-LR41 must be fed 3.3 V (do *not* feed it 5 V unless the carrier board has its own regulator — check the silkscreen). Servos keep their existing 5 V supply from the DROK regulator. Total added load: ≈ 90 mA (module TX peak ≈ 120 mA) + two ESP32-S3 at ≈ 60 mA. The existing 3 A buck is adequate; add 100 µF at each LR41 supply pin.
+**Power.** 3.3 V logic. **Check which module you have before powering it:** the DX-LR41-24T12S is 3.3 V only, while the DX-LR42-24T12D accepts 3.3–5.5 V and needs ≥5 V for full output power. Both take 3.3 V UART levels, so a 5 V supply (if the module is an LR42) must not be accompanied by 5 V signalling. Servos keep their existing 5 V supply from the DROK regulator. Total added load: ≈ 90 mA (module TX peak ≈ 120 mA) + two ESP32-S3 at ≈ 60 mA. The existing 3 A buck is adequate; add 100 µF at each LR41 supply pin.
 
 ### 4.5 Protocol
 
@@ -307,7 +343,12 @@ Indicative prices, USD, single quantity, Nov 2026. Vendors are examples, not end
 ¹ Either devkit may be a **NUCLEO-H753ZI** (MB1364E), which is already on the bench for avionics work. The price
 column is unaffected for budgeting; use $0 for the Nucleo if it is already owned. See §4.4 for the pinout.
 
-The TX node may be a NUCLEO-H753ZI in place of one ESP32-S3 (line A1) if the builder already owns one; the BOM delta then falls by $8.00. Nothing else in the BOM changes — the same DX-LR41, antenna, decoupling and cable are used.
+Either devkit may also be the **"ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth"**
+(ESP32-WROOM-32, 30/38-pin), which is widely available and typically cheaper than the S3 board; build it with
+`-e tx-node-esp32s` / `-e pad-node-esp32s`. No BOM line changes, and the price column is unaffected — use the
+purchase price of whichever board is on hand. See §4.4 for the pinout and the three pads that move.
+
+The TX node may be a NUCLEO-H753ZI in place of one ESP32-S3 (line A1) if the builder already owns one; the BOM delta then falls by $8.00. Nothing else in the BOM changes — the same DX-LR41, antenna, decoupling and cable are used. The same is true of an ESP-32S board as the TX node (build `tx-node-esp32s`): identical radio wiring (D16/D17/D18), identical laptop-side behaviour, an ordinary COM port instead of native USB-CDC.
 
 **Delta:** removed $71.98 (lines 1 and 5) and added $86.50 (lines 38–50) → **+$14.52 net per GSE**, $529.45 → $543.97, excluding the laptop (the handbook already assumes one for data reduction). These are the same figures as the §6.2 table in `docs/INSERT_SECTION_VI.pdf`, which is the number of record.
 
@@ -366,7 +407,7 @@ software/tests/test_sim_loop.py 4 tests  (live link, watchdog safe-out, igniter
                                            interlock + time limit, purge gating)
 ```
 
-Firmware builds clean for all three targets (`pio run -e tx-node`, `-e pad-node`, `-e tx-nucleo`; ESP32 RAM ≈ 7 %, flash ≈ 10 %; Nucleo 2.5 KB RAM, 33.9 KB flash). The STM32Cube HAL port is additionally compiled header-only with `sh firmware/stm32/syntax_check.sh`, so it is checked even when no CubeMX project exists on the machine.
+Firmware builds clean for all three required targets (`pio run -e tx-node`, `-e pad-node`, `-e tx-nucleo`; ESP32 RAM ≈ 7 %, flash ≈ 10 %; Nucleo 2.5 KB RAM, 33.9 KB flash), and the two optional ESP-32S environments (`-e tx-node-esp32s`, `-e pad-node-esp32s`) build from the same sources with only the board definition and pin map changed. Because the Espressif toolchain is a large download, every ESP32 board variant is also compiled on any workstation by `sh tests/esp32_syntax_check.sh`, which uses minimal Arduino-ESP32 headers (`tests/esp32_stub/`) and both the 2.x and 3.x core APIs — including the negative cases (a pad node with a servo on GPIO6, the relay on a strapping pin, or both board flags at once must fail to build). The STM32Cube HAL port is likewise compiled header-only with `sh firmware/stm32/syntax_check.sh`, so it is checked even when no CubeMX project exists on the machine.
 
 The bench and range test plan — including the acceptance criteria that must be met before the first live nitrous fill — is in **`docs/TEST_PLAN.md`**. The minimum gate to fly is T-01…T-06 (bench) plus T-08/T-09 (range) signed off.
 
@@ -415,9 +456,12 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
 | R2 | LoRa airtime at LEVEL 3 leaves 54 % channel occupancy | latency growth if telemetry is enabled at 10 Hz | measure; drop to LEVEL 5 on short sites | GSE lead |
 | R3 | ESP32-S3 is a 3.3 V devkit on a breadboard-adjacent carrier | vibration, connector creep | solder the carrier, strain-relieve the servo headers, hot-glue the USB-C extension | build team |
 | R4 | Arduino-ESP32 core 3.x LEDC API differs from 2.x | build fragility | firmware supports both APIs (`ESP_ARDUINO_VERSION_MAJOR`) | firmware |
+| R4a | An optional ESP-32S board is built with the ESP32-S3 environment (or vice versa) | wrong pin map: PURGE/IGNITER/heartbeat on the wrong pads, status LED dark | the boot banner prints `board=` and the pin numbers, and the bench checklist (§4, `hardware/wiring.md`) checks them against the harness; the two pin maps are compile-time assertions, and the version banner differs (`TX esp32s3` vs `TX esp32s`) | builder, firmware |
+| R4b | ESP-32S clone with inverted status LED or a non-4 MB flash | confusing indication / upload size | `-D GSE_STATUS_LED_ACTIVE_LOW=1` for the LED; `board = ...` / `board_upload.flash_size` in `platformio.ini` for a non-standard flash size; no code change | builder |
 | R5 | Igniter relay module needs a real flyback and a snubber | contact welding, EMI resetting the MCU | A5/A7; add a 100 nF across the contacts; test with a lamp before an e-match | build team |
 | R6 | Operator unfamiliarity with a computerised control | procedural error under time pressure | rehearsals T-08/T-09, quick-reference card, keep the physical SW2 key | launch ops |
 | R7 | No independent telemetry of *actual* valve position | a stripped servo spline would be invisible | audible/visual check in the on-pad checkouts; optional micro-switch feedback in a future revision | future work |
+| R8a | A module left in `AT+SWITCH=1` with floating M0/M1 lands in AT/WOR/sleep mode | silent no-receive, indistinguishable from a dead radio | M0/M1 tied to GND on both nodes (§4.3); `SWITCH:` printed in the boot log; `docs/TROUBLESHOOTING_LINK.md` §2a | builder |
 | R8 | The DX-LR41 is not a certified module in every jurisdiction | legal | jurisdiction check (§6.3); the vendor offers a CE/FCC variant of the SX1281 family | launch ops |
 
 ---
@@ -476,7 +520,9 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
    pio run -e pad-node -t upload      # second board, one at a time
    ```
    Label the boards **TX** and **PAD** as soon as they are flashed. Label before the radio modules are fitted.
-2. Fit each DX-LR41 to its board: 3V3 → module VCC, GND → GND, D16 → module TXD, D17 → module RXD, D18 → module AUX. **Do not** connect the module to 5 V.
+2. Fit each DX-LR41 to its board: 3V3 → module VCC, GND → GND, D16 → module TXD, D17 → module RXD, D18 → module AUX,
+and **M0 and M1 both to GND**. **Do not** connect the module to 5 V (an LR42 tolerates it and wants it for full power;
+an LR41 does not — check the silkscreen before deciding).
 3. Fit the antenna to each module. Never power a module without an antenna.
 4. On the pad-node carrier board, wire, in this order:
    a. servo headers SIGNAL → D4/D5/D6, +5 V → existing servo rail, GND → common;
@@ -536,6 +582,7 @@ A one-page quick-reference card is included as `docs/OPERATOR_CARD.md`.
 4. FlySky, *FS-i6X / FS-iA10B user manual* — AFHDS 2A, RX failsafe configuration, PPM output.
 5. FCC 47 CFR Part 15.247; ETSI EN 300 328 — 2.4 GHz wideband transmission limits and duty-cycle/LBT requirements.
 6. Espressif, *ESP32-S3 technical reference* — LEDC PWM, task watchdog, native USB-CDC.
+7. Espressif, *ESP32 series datasheet & ESP32-WROOM-32 module datasheet* — GPIO6…GPIO11 are the SPI flash lines; GPIO34…GPIO39 are input-only; strapping pins GPIO0/2/12/15. Basis for the ESP-32S pin map in §4.4.
 
 ---
 
@@ -549,14 +596,17 @@ docs/INSERT_SECTION_VI.pdf           insert-ready replacement pages 236-255, for
 docs/TEST_PLAN.md                    bench + range test plan with acceptance gates
 docs/OPERATOR_CARD.md                one-page range quick-reference
 docs/fig_*.png                       figures 1–5 + GUI screenshot
-firmware/                            PlatformIO project, three environments
+firmware/                            PlatformIO project, five environments
+                                     (tx-node, pad-node, tx-node-esp32s,
+                                      pad-node-esp32s, tx-nucleo)
   src/common/gse_protocol.h          wire protocol + failsafe rules (single source of truth)
-  src/config.h                       all builder-editable constants
+  src/config.h                       builder-editable constants + board variant
+                                     (ESP32-S3 default / ESP-32S optional)
   src/dxlr41.h                       AT-command driver with verification
   src/pad/pad_node.cpp               pad node: safety logic, PWM, igniter, telemetry
   src/common/gse_hal.h               the seven platform services a TX node must supply
   src/common/gse_tx_core.c/.h        portable TX bridge: pacing, stale reject, safe stream, console
-  src/tx/tx_platform_esp32.cpp       TX node platform layer (Arduino / ESP32-S3)
+  src/tx/tx_platform_esp32.cpp       TX node platform layer (Arduino / ESP32-S3 or ESP-32S)
   src/stm32/tx_platform_nucleo.cpp   TX node platform layer for env tx-nucleo (Arduino / STM32H7)
   stm32/tx_platform_stm32.c          STM32Cube HAL port for CubeIDE projects
   stm32/README.md                    Nucleo pin map, build options, bench checks, rollback
@@ -570,6 +620,8 @@ software/
   gse_control/app.py                 tkinter GUI
   tests/                             9 protocol tests + 4 closed-loop tests
 tests/                               C unit tests for the protocol + host HAL stub for the core
+  esp32_syntax_check.sh              compiles every ESP32 board variant on the host
+  esp32_stub/                        minimal Arduino-ESP32 headers for that check
 tools/make_figures.py                regenerates every figure
 hardware/wiring.md                   bench wiring sheet and connector pinouts
 ```

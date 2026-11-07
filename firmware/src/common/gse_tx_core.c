@@ -4,7 +4,7 @@
  * This is the behaviour that used to live inside tx_node.cpp, rewritten as
  * plain C with no Arduino dependencies so that the *same* file drives
  *
- *      ESP32-S3  (firmware/src/tx/tx_platform_esp32.cpp)
+ *      ESP32     (firmware/src/tx/tx_platform_esp32.cpp; ESP32-S3 or ESP-32S)
  *      STM32H753 (firmware/stm32/tx_platform_stm32.c)
  *
  * Behaviour (unchanged from the ESP32 implementation, verified by the same

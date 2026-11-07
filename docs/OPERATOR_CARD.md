@@ -7,6 +7,9 @@
 - [ ] Pad powered: SW1 on, **SW2 (arm key) OFF and in your pocket**
 - [ ] IGN outlet **unloaded**, leads insulated from each other
 - [ ] Antennas fitted to both modules
+- [ ] **M0 and M1 tied to GND on both modules** (not left floating — see wiring sheet §1.2)
+- [ ] UART **crossed**: module RX (pin 3) ← D17, module TX (pin 4) → D16
+- [ ] AUX wired to D18, or firmware built with `-DGSE_LORA_AUX_NONE` (boot log says which)
 
 ## Start-up (at the pad, before anyone goes downrange)
 1. Start the application → select the TX-node port → **Connect**
@@ -25,6 +28,21 @@
 ## Firing
 - **Hold** the fire control. It is hold-to-fire with a hard limit (0.5 s default) and one pulse per press.
 - If nothing happens: release, check `rejected frames`, `armed`, `age`, then try again. Do **not** hold the button down.
+
+## Status light (no terminal needed)
+| ESP32-S3 (WS2812) | ESP-32S (blue LED) | Meaning |
+|---|---|---|
+| blue solid | solid on | booting |
+| red solid | 5 Hz fast blink | **RADIO FAULT** — module did not answer, do not fly |
+| amber blink | 2 Hz blink | radio fine, **no link** from the TX node |
+| green blink | 1 Hz blink | link OK, **not armed** |
+| purple | 10 Hz fast blink | igniter energised |
+
+## If the pad hears nothing
+Banner `NO PAD TELEMETRY` and the pad's line says `bytes=0`: the modules are not talking at all.
+1. Boot log must say `SWITCH:0`. If it says `1`, tie M0/M1 to GND and power-cycle.
+2. Then check, in order: antennas fitted, TXD/RXD crossed, 3V3 on both, common ground.
+3. `bytes>0` but `valid=0` is a different fault (LEVEL / KEY / channel) — see TROUBLESHOOTING_LINK.md.
 
 ## If the link drops
 - Banner turns red, pad side goes to **FILL closed / PURGE closed / VEHICLE open / IGN off** on its own.

@@ -7,7 +7,7 @@
  * all millisecond based).
  *
  * Two complete platform implementations ship with this package:
- *      ESP32-S3 : firmware/src/tx/tx_platform_esp32.cpp  (Arduino)
+ *      ESP32    : firmware/src/tx/tx_platform_esp32.cpp  (Arduino; S3 or ESP-32S)
  *      STM32H753: firmware/stm32/tx_platform_stm32.c     (STM32Cube HAL)
  *
  * Host-side unit testing is possible by linking this file against a stub HAL
