@@ -95,6 +95,70 @@
 #  define GSE_HAS_RGB_LED       1
 #endif
 
+/* ------------------------------------------------------------ link transport
+ *
+ * TWO ways to get the frames from the TX node to the pad node.  Same protocol,
+ * same frames, same safety logic -- only the pipe changes.
+ *
+ *   GSE_LINK_LORA (default)  DX-LR42/LR41 on UART1.  Long range (hundreds of
+ *                            metres), own radio, no pairing, works with Wi-Fi
+ *                            and Bluetooth switched off.  This is what the ECR
+ *                            specifies and what the test plan signs off.
+ *
+ *   GSE_LINK_BLE             Bluetooth Low Energy, radio built into the ESP32.
+ *                            No module, no wiring, no AT commands.  Good for
+ *                            the bench, for a spare/backup link, and for a
+ *                            short-range pad.  NOT a substitute for T-05: BLE
+ *                            at the default power is a ~10-50 m line-of-sight
+ *                            link, so it is not a range replacement for the
+ *                            LoRa pair.
+ *
+ * Build with -DGSE_LINK_BLE (envs tx-node-ble / pad-node-ble), or set it here.
+ * Both ends must agree; a BLE pad and a LoRa TX cannot hear each other.
+ *
+ * What does NOT change in BLE mode:
+ *   - the frame format, CRC, sequence numbers and arm code;
+ *   - the pad's 1.0 s watchdog and every failsafe rule;
+ *   - the 20 Hz command pacing and the TX node's stale-frame rejection;
+ *   - the igniter interlock, on-time limit and hardware keep-alive.
+ * The BLE link is a transport, exactly like the LoRa module: if it goes away,
+ * the pad does what it always does -- goes safe within the watchdog period.
+ *
+ * Security note (read this before flying it): the GSE protocol has no
+ * authentication.  Anyone in radio range who can speak the protocol can talk
+ * to a listening pad node.  That is why LoRa mode uses a private channel + KEY
+ * and why the pad only accepts frames that carry the arm code.  BLE adds its
+ * own concerns:
+ *   - the pad does not advertise, so it is not discoverable, and it only
+ *     accepts a CENTRAL (the TX node) -- a phone cannot connect to it;
+ *   - the TX node scans for the pad's name prefix, so nobody else's device is
+ *     picked up by accident;
+ *   - bonding/pairing is NOT used: it needs a key store and an operator step,
+ *     and it protects a link whose payload already has a CRC and a dead-man.
+ *     Treat the BLE link as a bench/short-range link, not as an encrypted one.
+ * The operator-facing consequence is in docs/LINK_OPTIONS.md and the test plan
+ * (T-11): the arm code and the physical SW2 key remain the real interlocks,
+ * not the radio technology.
+ */
+//#define GSE_LINK_LORA
+//#define GSE_LINK_BLE
+
+#if defined(GSE_LINK_BLE) && defined(GSE_LINK_LORA)
+#error "Pick one link: GSE_LINK_BLE or GSE_LINK_LORA, not both"
+#endif
+#if defined(GSE_PLATFORM_STM32) && defined(GSE_LINK_BLE)
+#error "GSE_LINK_BLE is ESP32-only (the Nucleo TX node has no Bluetooth)"
+#endif
+#if !defined(GSE_LINK_BLE) && !defined(GSE_LINK_LORA)
+#  define GSE_LINK_LORA               /* neither given -> the ECR default    */
+#endif
+
+#if defined(GSE_LINK_BLE)
+#  define GSE_LINK_NAME        "ble"
+#else
+#  define GSE_LINK_NAME        "lora"
+#endif
+
 /* ------------------------------------------------------------------- timings */
 #define GSE_TICK_MS           10u     /* main loop period                  */
 #ifdef GSE_ROLE_TX
@@ -132,6 +196,23 @@
 #define GSE_LEVEL_DEFAULT     3u        /* 10 kbit/s LoRa, ~2.2 km LOS        */
 #define GSE_LEVEL_FAST        8u        /* FLRC 1.04 Mbit/s, >=6 B payloads   */
 #define GSE_KEY_WORD          51042u    /* AT+KEY (0..65535); not security    */
+
+/* --------------------------------------------------------------- BLE link
+ * Names and UUIDs are shared by both nodes; keep them identical in both
+ * builds.  The pad advertises GSE_BLE_NAME (and its service UUID); the TX
+ * node scans for that service and double-checks the name.
+ * 128-bit UUIDs would cost flash for no benefit on a two-node private link,
+ * so a project-specific 16-bit UUID pair is used (0xFFE0/0xFFE1 are common
+ * "generic UART" values, so a distinct range was picked instead).          */
+#define GSE_BLE_NAME           "GSE-PAD"     /* advertised by the PAD node  */
+#define GSE_BLE_TX_NAME        "GSE-TX"      /* the TX node's local name    */
+#define GSE_BLE_SVC_UUID       0xFF00        /* primary service             */
+#define GSE_BLE_RX_UUID        0xFF01        /* central writes -> pad rx    */
+#define GSE_BLE_TX_UUID        0xFF02        /* pad notifies -> central     */
+#define GSE_BLE_MTU_PAYLOAD    20u           /* 23-byte default ATT MTU     */
+#define GSE_BLE_SCAN_MS        2000u         /* TX node scan window         */
+#define GSE_BLE_RETRY_MS       5000u         /* TX node re-scan interval    */
+#define GSE_BLE_SEND_TIMEOUT   100u          /* ms, per write when saturated*/
 
 /* ------------------------------------------------------- pad PWM / relay pins */
 /*

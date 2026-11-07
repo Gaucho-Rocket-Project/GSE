@@ -29,6 +29,15 @@
  *     "M0/M1" note in hardware/wiring.md.  A module whose M0/M1 float can
  *     random-walk between high-timeliness / AT / WOR / sleep at every reset,
  *     which looks exactly like "the radio provisions but never receives".
+ *   - AT+SWITCH is NOT part of the AT+HELP banner in v2.0 (the banner is
+ *     +VERSION / MODE / LEVEL / SLEEP / Frequency / MAC / CRC / Openkey /
+ *     Power).  It has to be asked for with a bare "AT+SWITCH" query, which
+ *     answers "+SWITCH=n".  configure() therefore asks explicitly and appends
+ *     the answer to the banner it prints, so the console line the docs tell
+ *     operators to read ("SWITCH:0") really is there.  Before that fix the
+ *     docs pointed at a field the module never sent, which reads as "the
+ *     firmware cannot see the switch state" -- exactly the wrong conclusion
+ *     when the switch state is the thing being diagnosed.
  *   - "+++" toggles AT mode; it resets the module and is NOT saved.
  *
  * The driver deliberately uses the module's *defaults* for transport and only
@@ -165,7 +174,7 @@ public:
          * everything above.  Verify, and say exactly what is wrong.          */
         char help[600];
         bool gotHelp = help_(help, sizeof help);
-        copyBanner(gotHelp ? help : "");
+        captureBanner(gotHelp ? help : "");
         /* Print what the module says it is, *before* the first mismatch can
          * return early: the banner is the whole diagnosis, and leaving AT mode
          * wipes the reader's chance to ask again without another handshake. */
@@ -204,7 +213,7 @@ public:
 
         if (!enterAt()) return F("AT re-entry failed (module lost config)");
         if (!help_(help, sizeof help)) return F("AT+HELP silent after reset");
-        copyBanner(help);
+        captureBanner(help);
         DXLR41_TRACE("%s", help);   /* post-reboot read-back, same reason */
         if (!strstr(help, "MODE:1")) return F("reset wiped MODE (config not saved)");
         at("+++", "Power On", 900);           /* back to transparent mode */
@@ -218,6 +227,10 @@ public:
         buf[0] = 0;
         return help(buf, bufLen);
     }
+
+    /* AT+SWITCH read-back: 0 = modes by AT command, 1 = modes by M0/M1 pins,
+     * -1 = the module did not answer the query.  See the class comment. */
+    int switchMode() const { return _switch; }
 
     /* The module's own AT+HELP dump from the last configure(), NUL-terminated
      * and line-ended with '\n' (see copyBanner()).  Both nodes print it to
@@ -237,6 +250,72 @@ public:
     }
 
 private:
+    /* Copy the banner, ask the module the one question the banner does not
+     * answer (AT+SWITCH), and append the answer as its own line.  The result
+     * is what the nodes print, so "SWITCH:0" in the console is the module's
+     * actual answer rather than an assumption about its defaults.           */
+    void captureBanner(const char *help)
+    {
+        copyBanner(help);
+        char reply[48];
+        _switch = -1;
+        if (!query("AT+SWITCH", reply, sizeof reply)) {
+            copyAppend("SWITCH:? (AT+SWITCH did not answer -- read the pins)\n");
+            return;
+        }
+        const char *p = strstr(reply, "+SWITCH=");
+        if (!p) {
+            copyAppend("SWITCH:? (unexpected AT+SWITCH reply)\n");
+            return;
+        }
+        _switch = (p[8] == '1') ? 1 : 0;
+        copyAppend(_switch ? "SWITCH:1 (M0/M1 are mode inputs -- tie them low!)\n"
+                           : "SWITCH:0 (modes set by AT command)\n");
+    }
+
+    /* Append one text line to _lastBanner (used only by captureBanner). */
+    void copyAppend(const char *text)
+    {
+        size_t j = strlen(_lastBanner);
+        for (size_t i = 0; text[i] && j + 2 < sizeof _lastBanner; ++i)
+            _lastBanner[j++] = text[i];
+        _lastBanner[j] = 0;
+    }
+
+    /* Send one command and collect its reply text for up to timeoutMs.  Used
+     * for queries whose *answer* matters (AT+SWITCH); at() only says whether
+     * an expected token showed up.                                          */
+    bool query(const char *cmd, char *out, size_t cap, uint32_t timeoutMs = 400)
+    {
+        flushInput();
+        _uart.print(cmd);
+        _uart.print("\r\n");
+        size_t i = 0;
+        uint32_t t0 = millis();
+        out[0] = 0;
+        while ((millis() - t0) < timeoutMs) {
+            while (_uart.available() && i + 1 < cap) {
+                char c = (char)_uart.read();
+                if (c != '\r' && c != '\n') { out[i++] = c; out[i] = 0; }
+                t0 = millis();                    /* character just arrived  */
+            }
+            if (strstr(out, "ERROR")) return false;
+            /* The answer is what we came for: wait out a trailing OK (10 ms
+             * is several characters at 9600) and stop, rather than sitting out
+             * the full timeout on every boot. */
+            if (strstr(out, "+SWITCH=")) {
+                delay(10);
+                while (_uart.available() && i + 1 < cap) {
+                    char c = (char)_uart.read();
+                    if (c != '\r' && c != '\n') { out[i++] = c; out[i] = 0; }
+                }
+                return true;
+            }
+            delay(2);
+        }
+        return i > 0;
+    }
+
     /* help() strips '\r' but keeps '\n'; normalise to '\n' line ends and cap
      * the size so diag::blob() can print it one "LOG | " line at a time.     */
     void copyBanner(const char *help)
@@ -266,6 +345,7 @@ private:
     HardwareSerial &_uart;
     int _aux, _m0, _m1;
     bool _auxPullup;
+    int  _switch = -1;                              /* AT+SWITCH read-back     */
     char _lastBanner[600] = {0};
 };
 

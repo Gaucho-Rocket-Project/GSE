@@ -5,6 +5,26 @@ Pin numbers refer to `firmware/src/config.h`; change them there, not here.
 
 ---
 
+## 0. Do you need to wire a module at all?
+
+Only for the default **LoRa** transport. If both nodes are built with `-DGSE_LINK_BLE`
+(`pio run -e pad-node-ble` / `-e tx-node-ble`), the ESP32's own Bluetooth radio carries the link and this
+whole section — module, five wires, decoupling, M0/M1, AUX, antennas — is **not needed**. Keep the two
+boards' USB ports, the servo/relay wiring of §2 and the pad's safety chain; delete the rest.
+
+| | LoRa build (default) | Bluetooth build |
+|---|---|---|
+| Module on pins 3/4/5 + M0/M1 | required | none |
+| Antennas | required on both modules | n/a (chip antenna / none) |
+| `LOG … link:` line | `lora -- LoRa UART1 RX<-D16 …` | `ble -- BLE peripheral "GSE-PAD" …` |
+| Boot verdict | `RADIO OK` / `RADIO FAULT` | `LINK OK` / `LINK FAULT` |
+| Range test | T-05 | T-11 (§7 of [docs/LINK_OPTIONS.md](../docs/LINK_OPTIONS.md)) |
+
+Everything in §2 onwards (servos, igniter relay, keep-alive) is identical in both builds. See
+[docs/LINK_OPTIONS.md](../docs/LINK_OPTIONS.md) for the trade-off; the default stays LoRa.
+
+---
+
 ## 1. Node ↔ radio module (DX-LR42-24T12D / DX-LR41-24T12S)
 
 Both nodes use the same five-wire connection, on every board we support. The TX node may be an ESP32-S3,
@@ -119,7 +139,8 @@ prints — and the pad's `bytes=` counter stays at 0 forever.
 3. Confirm the module's own view of it in the boot log. The firmware now prints the module's `AT+HELP` dump:
 
    ```
-   LOG RADIO ... SWITCH:0 ...
+   LOG RADIO ...
+   LOG | SWITCH:0 (modes set by AT command)      <- from a separate AT+SWITCH query
    LOG PAD RADIO OK  (waiting for the TX node)
    ```
 
@@ -269,7 +290,7 @@ The checklist that catches this class of fault in a minute, on both modules:
 | 4 | M0 (1) and M1 (2) | **tied to GND** on both modules |
 | 5 | AUX (5) | wired to D18, or left floating + `-DGSE_LORA_AUX_NONE` |
 | 6 | Antenna | fitted on **both** modules before power-up |
-| 7 | Boot log | `AUX=wired` (or "NOT WIRED"), `RADIO OK`, `SWITCH:0` |
+| 7 | Boot log | `link: lora …`, `AUX=wired` (or "NOT WIRED"), `RADIO OK`, `SWITCH=0` |
 
 1. **Power the TX node only** → open a terminal at 115200 → expect `LOG TX esp32s3 fw 1.0 ready`
    (`LOG TX esp32s fw 1.0 ready` on an ESP-32S, `LOG TX stm32 fw 1.0 ready` on a Nucleo), or
@@ -279,8 +300,9 @@ The checklist that catches this class of fault in a minute, on both modules:
 2. **Power the pad node** → expect `LOG` lines on its own USB port, starting with
    `LOG PAD boot fw 1.0 board=esp32s3 pins FILL=4 VEH=5 PRG=6 IGN=7 HB=8`
    (`board=esp32s … PRG=15 IGN=13 HB=33` on an ESP-32S), then
-   `LOG PAD radio wiring: RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module`,
-   then `RADIO OK` / `RADIO FAULT`, then the module's own `LOG RADIO` banner. Check that the printed pins are
+   `LOG PAD link: lora -- LoRa UART1 RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module`,
+   then `RADIO OK` / `RADIO FAULT`, then the module's own `LOG RADIO` banner. (A Bluetooth build prints
+   `LOG PAD link: ble -- …` there instead and has no module banner — see §0.) Check that the printed pins are
    where your harness actually is before you connect a servo, and that `AUX=` matches reality.
 3. **Start the GUI** → `python software/run_gui.py` → select the TX port → Connect → banner should turn amber
    (`LINK OK — NOT ARMED`) within a second.

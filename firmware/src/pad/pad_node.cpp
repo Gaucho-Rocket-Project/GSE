@@ -1,7 +1,12 @@
 /*
  * pad_node.cpp  --  Mojave Sphinx GSE, launch-pad node
  * -------------------------------------------------------------------------
- * Radio in : DX-LR41-24T12S (UART transparent pipe, 2.4 GHz LoRa/FLRC)
+ * Link in  : DX-LR42/LR41-24T12x (UART pipe, 2.4 GHz LoRa/FLRC) by default,
+ *            or Bluetooth Low Energy on the ESP32's own radio
+ *            (-DGSE_LINK_BLE).  Both carry the identical 7E protocol; see
+ *            src/link.h and docs/LINK_OPTIONS.md.  Everything below the
+ *            transport -- watchdog, failsafes, igniter interlock -- is
+ *            unchanged either way, which is the point of the seam.
  * Outputs  : 3x servo PWM (FILL / VEHICLE / PURGE) + 1x igniter relay
  *
  * Safety model (why this is not "just an ESP32 driving servos")
@@ -25,25 +30,35 @@
 #include <esp_task_wdt.h>
 #include "config.h"
 #include "gse_protocol.h"
-#include "dxlr41.h"
 #include "pad_diag.h"
-
-/* Every AT+HELP read-back the driver performs is echoed to the console.  This
- * is the "is the module actually what I think it is" line: MODE / LEVEL /
- * Frequency / MAC / SWITCH / SLEEP in the pad's own log, at the moment of
- * provisioning, whether or not the verification then passes. */
-#define GSE_RADIO_TRACE(fmt, ...) diag::blob("RADIO", (fmt))
+#include "link.h"
 
 #ifdef GSE_ROLE_TX
 #error "pad_node.cpp must be built with -DGSE_ROLE_PAD"
 #endif
 
-static_assert(GSE_MAX_FRAME + 3 <= 64, "frame fits the 64-byte module chunk");
+/* Every AT+HELP read-back the driver performs is echoed to the console.  This
+ * is the "is the module actually what I think it is" line: MODE / LEVEL /
+ * Frequency / MAC / SLEEP in the pad's own log, at the moment of provisioning,
+ * whether or not the verification then passes.  Only the LoRa transport has a
+ * module with a banner to echo, so it is compiled out of a BLE build, where it
+ * would be dead code and an unused-function warning.
+ *
+ * Note: this must stay above the link object, which includes dxlr41.h.  A
+ * clean-build (or restart) failure that only appears after a successful build
+ * is this define arriving too late, because the .cpp that last touched the
+ * header still has the old object file. */
+#if defined(GSE_LINK_LORA)
+#define GSE_RADIO_TRACE(fmt, ...) diag::blob("RADIO", (fmt))
+#endif
 
-/* ------------------------------------------------------------------ objects */
-HardwareSerial LoraSerial(1);
-DxLr41 lora(LoraSerial, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1,
-            PIN_LORA_AUX_PULLUP != 0);
+static_assert(GSE_MAX_FRAME + 3 <= 64, "frame fits the module chunk");
+
+/* ------------------------------------------------------------------ objects
+ * `link` is the transport seam (src/link.h): LoRa module or BLE, chosen at
+ * build time.  Everything else in this file is transport-agnostic -- it feeds
+ * bytes from link.read() to the parser and hands frames to link.send(). */
+static GseLink link;
 static gse_parser_t parser;
 
 /* -------------------------------------------------------------------- state */
@@ -126,16 +141,15 @@ static void driveOutputs(const gse_outputs_t &o)
     servoUs(2, allowPurge ? o.prg : 0, travel[2]);              /* never purge */
 }
 
-/* Outgoing frames carry the fixed-point prefix: dst address (2 B) + dst
- * channel (1 B).  The sending module strips it and the receiving module never
- * passes it on, so the two nodes exchange bare 7E-framed packets. */
+/* Outgoing frames are bare 7E packets.  On LoRa the link adds the fixed-point
+ * prefix -- dst address (2 B) + dst channel (1 B) -- which the sending module
+ * strips and the receiving module never passes on; over BLE there is no such
+ * prefix and the frame goes out as-is.  See link.h. */
 static void sendFrame(uint8_t type, const void *payload, uint8_t len)
 {
     uint8_t frame[GSE_MAX_FRAME];
-    uint8_t pkt[GSE_MAX_FRAME + 4];
     size_t n = gse_encode(type, seqOut++, payload, len, frame);
-    size_t m = lora.buildFixedPoint(pkt, GSE_ADDR_TX, GSE_CH_PEER(0), frame, n);
-    lora.write(pkt, m);
+    link.send(GSE_ADDR_TX, GSE_CH_PEER(0), frame, n);
 }
 
 static void sendEvent(uint8_t code, uint8_t arg)
@@ -275,31 +289,43 @@ void setup()
                PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
     led_show(LED_BOOT, false);                 /* blue / solid: booting    */
 
-    lora.begin(DXLR41_BAUD);
-    diag::line("PAD radio wiring: RX<-D%d TX->D%d AUX=%s M0/M1=%s",
-               PIN_LORA_RX, PIN_LORA_TX,
-               PIN_LORA_AUX >= 0 ? "wired" : "NOT WIRED (pacing only)",
-               PIN_LORA_M0 >= 0 ? "driven low" : "tie to GND at the module");
+    /* The transport, named in the log before anything can fail.  A pad and a
+     * TX node built with different GSE_LINK_* values cannot hear each other,
+     * and this is the line that makes that obvious instead of mysterious.  */
+    diag::line("PAD link: %s -- %s", link.transport(), link.describe().c_str());
+    link.begin();
+#if defined(GSE_LINK_LORA)
     diag::line("PAD radio provisioning: MODE1 LEVEL%u CH%02X KEY%u MAC%02X,%02X",
                GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
                GSE_ADDR_PAD >> 8, GSE_ADDR_PAD & 0xFF);
-    String fault = lora.configure(GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
-                                  true, GSE_ADDR_PAD, GSE_ADDR_TX);
+#endif
+    String fault = link.provision(GSE_LEVEL_DEFAULT, GSE_CH_SELF(0), GSE_KEY_WORD,
+                                  GSE_ADDR_PAD, GSE_ADDR_TX);
     if (fault.length()) {
         strncpy(cfgFault, fault.c_str(), sizeof(cfgFault) - 1);
         padState = GSE_PAD_LATCHED;
-        diag::line("PAD RADIO FAULT: %s", cfgFault);
-        diag::line("PAD outputs held SAFE; fix the module wiring/baud and reset.");
+        diag::line("PAD LINK FAULT: %s", cfgFault);
+        diag::line("PAD outputs held SAFE; fix the %s link and reset.",
+                   link.transport());
         led_show(LED_RADIO_FAULT, false);      /* red / fast: radio fault  */
     } else {
         padState = GSE_PAD_WAIT_HELLO;
-        diag::line("PAD RADIO OK  (waiting for the TX node)");
+        diag::line("PAD LINK OK  (waiting for the TX node)");
         led_show(LED_NO_LINK, false);          /* amber / 2 Hz: no link    */
+#if defined(GSE_LINK_LORA)
         /* M0/M1 are only a mode input when the module is in AT+SWITCH=1.
-         * Say which scheme is in force so a floating-pin module is visible in
-         * the log instead of looking like a silent radio.                    */
-        diag::line("PAD radio mode select: AT commands (AT+SWITCH=0 expected); "
-                   "M0/M1 must be tied low if the module ever runs SWITCH=1");
+         * Say which scheme is in force -- with the module's OWN answer, which
+         * the driver had to ask for separately (AT+HELP does not list SWITCH
+         * in v2.0) -- so a floating-pin module is visible in the log instead
+         * of looking like a silent radio. */
+        diag::line("PAD radio mode select: SWITCH=%s; M0/M1 must be tied low if "
+                   "the module ever runs SWITCH=1",
+                   link.switchMode() < 0 ? "? (no answer)" :
+                   link.switchMode() ? "1 (PINS - fault!)" : "0 (AT commands)");
+#else
+        diag::line("PAD BLE: advertising as \"%s\"; the TX node must also be "
+                   "built with -DGSE_LINK_BLE", GSE_BLE_NAME);
+#endif
     }
     /* Software watchdog: a wedged loop must not leave a valve commanded open
      * forever.  Reboot -> setup() re-asserts the safe outputs.                */
@@ -322,7 +348,13 @@ void loop()
 #endif
     uint32_t now = millis();
 
-    /* 1. drain the radio --------------------------------------------------
+    /* 0. transport housekeeping ------------------------------------------
+     *    BLE needs the stack serviced (scan, connect, drop detection); the
+     *    LoRa transport's poll() is empty.  It never blocks, so the 20 ms
+     *    safe tick below cannot be delayed by a radio that is thinking.  */
+    link.poll();
+
+    /* 1. drain the link ---------------------------------------------------
      *    Every byte goes to the parser.  In fixed-point mode the *sending*
      *    module strips the 3-byte address/channel prefix, so what arrives is
      *    a clean 7E|ver|type|... frame; if a module revision ever leaks the
@@ -331,8 +363,10 @@ void loop()
      *    data byte is ever dropped by us, which is the failure this used to
      *    have: a `skipPrefix` counter that nothing ever set, sitting in the
      *    receive path and reading as though it worked.                       */
-    while (lora.available()) {
-        uint8_t b = (uint8_t)lora.read();
+    while (link.available()) {
+        int r = link.read();
+        if (r < 0) break;
+        uint8_t b = (uint8_t)r;
         rxBytes++;
         lastByteMs = now;
         if (b == GSE_SOF) sfFrames++;
@@ -387,9 +421,16 @@ void loop()
                    cfgFault[0] ? cfgFault
                                : (o.comms_loss ? "NO-LINK (safe)"
                                                : "LINK OK"));
-        if (!cfgFault[0] && rxBytes == 0 && now > 3000u)
+        if (!cfgFault[0] && rxBytes == 0 && now > 3000u) {
+#if defined(GSE_LINK_LORA)
             diag::line("PAD nothing on the radio UART: check TXD/RXD cross, "
                        "3V3, and that both modules are Level%u Ch%02X",
                        GSE_LEVEL_DEFAULT, GSE_CH_SELF(0));
+#else
+            diag::line("PAD nothing over BLE (%s): is the TX node built with "
+                       "-DGSE_LINK_BLE, powered, and in range?",
+                       link.linkState());
+#endif
+        }
     }
 }

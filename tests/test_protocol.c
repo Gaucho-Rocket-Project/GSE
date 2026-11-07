@@ -151,6 +151,112 @@ static void test_stream_split(void)
            (unsigned long)p.frames_bad);
 }
 
+/* ------------------------------------------------------------------------
+ * BLE transport framing (firmware/src/link.h, -DGSE_LINK_BLE)
+ *
+ * Over LoRa the 7E frame goes out in one piece into a UART.  Over BLE it is cut
+ * into GSE_BLE_MTU_PAYLOAD-byte chunks (20 bytes with the default ATT MTU) and
+ * reassembled by the receiver's byte-stream parser.  Two properties have to
+ * hold for that to be safe, and both are checked here against the real encoder
+ * and the real parser -- the same code both firmwares run:
+ *
+ *   1. every frame the protocol can produce survives being chunked, including
+ *      the largest one (STATE, 33 bytes -> 2 chunks), and
+ *   2. a LOST chunk costs exactly one frame and cannot be misread: the parser
+ *      resyncs on the next 0x7E with a valid version byte, so a torn frame
+ *      never turns into a command.
+ *
+ * Property 2 is the one that matters for safety: BLE can drop a notification
+ * (no link-layer retransmit without a response), and the next frame is 20 ms
+ * later, far inside the pad's 1.0 s watchdog -- so the pad must simply not act
+ * on the torn frame.
+ */
+#define BLE_CHUNK 20u          /* GSE_BLE_MTU_PAYLOAD (config.h) */
+
+static void feed_chunked(gse_parser_t *p, const uint8_t *buf, size_t n,
+                         unsigned *chunks)
+{
+    for (size_t off = 0; off < n; off += BLE_CHUNK) {
+        size_t m = n - off;
+        if (m > BLE_CHUNK) m = BLE_CHUNK;
+        for (size_t i = 0; i < m; ++i) gse_parser_push(p, buf[off + i], on_frame, NULL);
+        (*chunks)++;
+    }
+}
+
+static void test_ble_chunking(void)
+{
+    uint8_t buf[GSE_MAX_FRAME];
+    unsigned chunks = 0;
+    gse_parser_t p; gse_parser_init(&p); g_frames = 0;
+
+    /* the largest frame the protocol can carry */
+    gse_state_t st; memset(&st, 0, sizeof st);
+    st.flags = GSE_ST_LINK_OK | GSE_ST_HELLO_OK | GSE_ST_ARMED;
+    st.age_ms = 65535; st.rx_count = 60000; st.uptime_s = 65535;
+    st.pad_state = GSE_PAD_RUN;
+    size_t ns = gse_encode_state(3, &st, buf);
+    assert(ns > BLE_CHUNK);                     /* genuinely needs 2 chunks */
+    feed_chunked(&p, buf, ns, &chunks);
+    assert(g_frames == 1 && g_last_type == GSE_T_STATE &&
+           g_last_len == sizeof(gse_state_t));
+    assert(memcmp(g_last_payload, &st, sizeof st) == 0);
+    printf("  ok  STATE (%zu B) survives %u BLE chunks\n", ns, chunks);
+
+    /* a command frame is small: it must fit inside one chunk, so a 20 Hz
+     * command stream costs one packet per frame in the common case */
+    gse_cmd_t c; memset(&c, 0, sizeof c);
+    c.arm_code = GSE_ARM_CODE; c.fill = 1; c.veh = 1; c.tx_ms = 0x1234;
+    chunks = 0; g_frames = 0;
+    size_t nc = gse_encode_cmd(4, &c, buf);
+    assert(nc <= BLE_CHUNK);
+    feed_chunked(&p, buf, nc, &chunks);
+    assert(chunks == 1 && g_frames == 1 && g_last_type == GSE_T_CMD);
+    printf("  ok  CMD (%zu B) fits in one BLE chunk\n", nc);
+
+    /* ... but the chunker must not assume that: drive the *smallest* chunk
+     * size (1 byte) through it and require the same result */
+    {
+        gse_parser_t q; gse_parser_init(&q); g_frames = 0;
+        for (size_t i = 0; i < nc; ++i) gse_parser_push(&q, buf[i], on_frame, NULL);
+        assert(g_frames == 1 && g_last_type == GSE_T_CMD);
+        printf("  ok  CMD reassembles byte by byte too\n");
+    }
+}
+
+static void test_ble_lost_chunk_cost(void)
+{
+    /* Simulate a dropped notification: send a STATE frame with its second
+     * chunk missing, then a complete CMD.  The pad must accept exactly one
+     * frame -- the CMD -- and never a partial STATE. */
+    uint8_t sbuf[GSE_MAX_FRAME], cbuf[GSE_MAX_FRAME];
+    gse_state_t st; memset(&st, 0, sizeof st);
+    st.flags = GSE_ST_LINK_OK; st.age_ms = 7;
+    size_t ns = gse_encode_state(1, &st, sbuf);
+
+    gse_cmd_t c; memset(&c, 0, sizeof c);
+    c.arm_code = GSE_ARM_CODE; c.veh = 1; c.tx_ms = 0xABCD;
+    size_t ncmd = gse_encode_cmd(2, &c, cbuf);
+
+    gse_parser_t p; gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i < BLE_CHUNK; ++i)              /* first half only */
+        gse_parser_push(&p, sbuf[i], on_frame, NULL);
+    for (size_t i = 0; i < ncmd; ++i)                   /* then a good one */
+        gse_parser_push(&p, cbuf[i], on_frame, NULL);
+
+    assert(g_frames == 1);
+    assert(g_last_type == GSE_T_CMD);
+    assert(g_last_len == sizeof(gse_cmd_t));
+    printf("  ok  a lost BLE chunk costs one frame, never a false command\n");
+
+    /* and a truncated frame must not be delivered as a shorter command */
+    gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i + 2 < ncmd; ++i)               /* cut before the CRC */
+        gse_parser_push(&p, cbuf[i], on_frame, NULL);
+    assert(g_frames == 0);
+    printf("  ok  a truncated frame is not delivered\n");
+}
+
 int main(void)
 {
     printf("gse_protocol tests\n");
@@ -160,6 +266,8 @@ int main(void)
     test_corruption_recovery();
     test_failsafe_matrix();
     test_stream_split();
+    test_ble_chunking();
+    test_ble_lost_chunk_cost();
     printf("ALL PASS\n");
     return 0;
 }

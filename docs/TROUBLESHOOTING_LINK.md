@@ -16,13 +16,15 @@ LOG TX esp32s3 fw 1.0 ready                       <- radio_provision() succeeded
                                                    TX stm32 on a Nucleo)
 LOG RADIO AT+HELP dump: MODE:1 LEVEL:3 ...         <- what the module says it is
 LOG | Frequency:2424MHz >> 0e
-LOG | MAC:00,01  SWITCH:0  SLEEP:2
+LOG | MAC:00,01  SLEEP:2
+LOG | SWITCH:0 (modes set by AT command)          <- the AT+SWITCH answer
 LOG tx fwd=812 state=0 safe=0 dropped=0 radio=ok  <- once a second
 ```
 
 The `LOG RADIO` block is new and is the first thing to read: it is the module's own configuration as it reported it
-during provisioning, printed on **both** nodes whether or not the verification passed. `SWITCH:` is part of it, and
-`SWITCH:1` is a fault (see §2a).
+during provisioning, printed on **both** nodes whether or not the verification passed. The `SWITCH:` line at the end
+of it is the module's answer to a separate `AT+SWITCH` query -- v2.0's `AT+HELP` banner does not list SWITCH at all, so
+the driver asks and appends it. `SWITCH:1` is a fault (see §2a).
 
 * `radio=FAULT` on the TX node → **stop here**, it is the TX module's wiring or baud (see §1).
 
@@ -61,6 +63,41 @@ LOG PAD RADIO FAULT: reset wiped MODE (config not saved)
 ```
 
 The GUI banner shows the same string instead of the generic `NO PAD TELEMETRY`.
+
+---
+
+## 0. Which transport is this build? (read this first)
+
+There are two links now — the LoRa module (default) and Bluetooth Low Energy
+(`-DGSE_LINK_BLE`). **Everything below §1 assumes LoRa.** If either node is a BLE build, §1 (modules),
+§2 (UART), §2-0 (crossed wires), §2a (M0/M1) and §3 (AT mode) do not apply to it at all: there is no
+module and no UART.
+
+The very first line each node prints says which link it has:
+
+```
+LOG PAD link: lora -- LoRa UART1 RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module
+LOG link: lora -- LoRa UART1 RX<-D16 TX->D17 AUX=wired M0/M1=tie to GND at the module
+```
+
+```
+LOG PAD link: ble -- BLE peripheral "GSE-PAD" (svc ff00, rx ff01, tx ff02), no module, no pairing
+LOG link: ble -- BLE central, scanning for service ff00 for "GSE-PAD", no module, no pairing
+```
+
+**If the two lines disagree, nothing below will help — reflash both boards from the same configuration.**
+A LoRa pad and a BLE TX node cannot hear each other, by construction, and they will both look perfectly
+healthy while the pad sits in `NO-LINK` for ever.
+
+For BLE-specific fault-finding see [LINK_OPTIONS.md](LINK_OPTIONS.md) §6; the short form:
+
+| Symptom on a BLE build | Verdict |
+|---|---|
+| TX node logs `scanning for the pad` for ever | pad not powered, not a BLE build, or out of range |
+| Pad logs `advertising (no TX node connected)` for ever | mirror of the above; check the TX node's scan line |
+| Pad cycled from `LINK OK` back to `NO-LINK` about every reconnect | TX node rebooted (USB re-enumeration or power glitch); it re-scans on its own within ~5 s |
+| `LINK FAULT: BLE stack not started` at boot | Bluetooth did not initialise on that board — wrong chip, or the `-ble` env built for a board without BT |
+| `ble: re-scanning for "GSE-PAD"` after `RADIO CONFIG` | expected — that is what `RADIO CONFIG` means on this transport |
 
 ---
 
@@ -215,6 +252,8 @@ laptop but not parsing. In order of likelihood:
 
 ## Order of operations, condensed
 
+0. Read the first `LOG … link:` line on **both** nodes. If one says `ble` and the other `lora`, stop and
+   reflash — §0. Everything below this point is for the LoRa transport.
 1. Re-flash **both** boards from this package (the `AT+RESET` fix).
 2. Power-cycle both, then look at the two nodes' `LOG` lines.
 3. Read the `LOG RADIO` block on both: `SWITCH:0`? `MODE:1`? `LEVEL` equal? `Frequency` `0c` on the pad, `0e` on

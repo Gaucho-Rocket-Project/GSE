@@ -56,16 +56,18 @@ class String {
 public:
     String() {}
     String(const char *) {}
-    String(int) {}
+    String(int, int = 10) {}          /* covers String(42) and String(42, HEX) */
     String(unsigned) {}
     String(unsigned long) {}
     String(const String &) {}
     String &operator=(const String &) { return *this; }
+    String &operator=(const char *) { return *this; }
     String &operator+=(const String &) { return *this; }
+    String &operator+=(const char *) { return *this; }
     String &operator+=(char) { return *this; }
-    bool operator==(const char *) const { return false; }
-    unsigned length() const { return 0; }
     const char *c_str() const { return ""; }
+    unsigned length() const { return 0; }
+    bool operator==(const char *) const { return false; }
     friend String operator+(const String &, const String &) { return String(); }
     friend String operator+(const String &, const char *) { return String(); }
 };
@@ -159,5 +161,13 @@ esp_err_t esp_task_wdt_reset(void);
  * build which accidentally uses one on the wrong board is caught by the
  * undefined-identifier rule rather than by an exception on the bench. */
 #define GPIO_NUM_NC (-1)
+
+/* ------------------------------- FreeRTOS critical section (crit_enter/exit)
+ * real Arduino.h reaches these through freertos/FreeRTOS.h.  The BLE transport
+ * guards its receive ring with one, so the stub needs the same names. */
+typedef int portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED 0
+void portENTER_CRITICAL(portMUX_TYPE *mux);
+void portEXIT_CRITICAL(portMUX_TYPE *mux);
 
 #endif /* ARDUINO_H_SYNTAX_STUB */

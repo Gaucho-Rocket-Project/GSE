@@ -2,14 +2,22 @@
 
 *Print, laminate, tape inside the toolbox lid.*
 
+## Know which link you are carrying
+- [ ] Both nodes are the **same transport**. The first `LOG ... link:` line on each says so:
+      `link: lora -- LoRa UART1 ...` or `link: ble -- BLE peripheral "GSE-PAD" ...`
+      (LoRa envs `pad-node` / `tx-node`, Bluetooth envs `pad-node-ble` / `tx-node-ble`.)
+      **A LoRa pad and a Bluetooth TX node will never link.**
+- [ ] If it is the Bluetooth build, there are **no modules and no antennas** to pack — but the range is
+      tens of metres, not kilometres, and T-11 (range test) has to be signed for that vehicle.
+
 ## Before you leave the prep area
 - [ ] Laptop charged, GSE application installed, TX-node cable in the box
 - [ ] Pad powered: SW1 on, **SW2 (arm key) OFF and in your pocket**
 - [ ] IGN outlet **unloaded**, leads insulated from each other
-- [ ] Antennas fitted to both modules
-- [ ] **M0 and M1 tied to GND on both modules** (not left floating — see wiring sheet §1.2)
-- [ ] UART **crossed**: module RX (pin 3) ← D17, module TX (pin 4) → D16
-- [ ] AUX wired to D18, or firmware built with `-DGSE_LORA_AUX_NONE` (boot log says which)
+- [ ] **LoRa build only:** antennas fitted to both modules
+- [ ] **LoRa build only:** **M0 and M1 tied to GND on both modules** (not left floating — see wiring sheet §1.2)
+- [ ] **LoRa build only:** UART **crossed**: module RX (pin 3) ← D17, module TX (pin 4) → D16
+- [ ] **LoRa build only:** AUX wired to D18, or firmware built with `-DGSE_LORA_AUX_NONE` (boot log says which)
 
 ## Start-up (at the pad, before anyone goes downrange)
 1. Start the application → select the TX-node port → **Connect**
@@ -33,14 +41,16 @@
 | ESP32-S3 (WS2812) | ESP-32S (blue LED) | Meaning |
 |---|---|---|
 | blue solid | solid on | booting |
-| red solid | 5 Hz fast blink | **RADIO FAULT** — module did not answer, do not fly |
-| amber blink | 2 Hz blink | radio fine, **no link** from the TX node |
+| red solid | 5 Hz fast blink | **LINK FAULT** — LoRa: module did not answer. BLE: stack did not start. Do not fly |
+| amber blink | 2 Hz blink | radio fine (or BLE advertising), **no link** from the TX node |
 | green blink | 1 Hz blink | link OK, **not armed** |
 | purple | 10 Hz fast blink | igniter energised |
 
 ## If the pad hears nothing
 Banner `NO PAD TELEMETRY` and the pad's line says `bytes=0`: the modules are not talking at all.
-1. Boot log must say `SWITCH:0`. If it says `1`, tie M0/M1 to GND and power-cycle.
+1. **LoRa build:** boot log must say `SWITCH=0` (pad line `PAD radio mode select: SWITCH=0 ...`). If it says
+   `1`, tie M0/M1 to GND and power-cycle. **Bluetooth build:** the boot log must say `PAD link: ble ...` and the
+   TX node must be powered and within range.
 2. Then check, in order: antennas fitted, TXD/RXD crossed, 3V3 on both, common ground.
 3. `bytes>0` but `valid=0` is a different fault (LEVEL / KEY / channel) — see TROUBLESHOOTING_LINK.md.
 

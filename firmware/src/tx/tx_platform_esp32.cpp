@@ -15,6 +15,12 @@
  *   D18 = module AUX                D18 = module AUX
  *   laptop on native USB-CDC        laptop on the CP2102/CH340 bridge, UART0
  *
+ * Transport: the LoRa module on UART1 by default, or the ESP32's own Bluetooth
+ * (BLE) radio with -DGSE_LINK_BLE (envs tx-node-ble / tx-node-ble-esp32s).  In
+ * the BLE build the UART1 pins, the module and its AT provisioning are simply
+ * absent -- everything above gse_hal.h is identical, which is what the seam in
+ * src/link.h buys.  See docs/LINK_OPTIONS.md.
+ *
  * The radio is on UART1 in both cases, so the ESP-32S's bridge on UART0 is
  * never shared with it.  GSE_HOST_IS_BRIDGE (config.h) says which one this
  * build has; the only consequence here is that a bridge board must keep
@@ -27,10 +33,13 @@
 #include "config.h"
 #include "gse_hal.h"
 #include "gse_tx_core.h"
-#include "dxlr41.h"
+#include "link.h"
 
 /* Same trick as the pad node: echo the driver's AT+HELP read-back to the
- * laptop console, prefixed like every other text line. */
+ * laptop console, prefixed like every other text line.  Only the LoRa build
+ * has a module with an AT+HELP banner to echo -- on BLE this would be dead
+ * code (and an unused-function warning), so it is compiled out. */
+#if defined(GSE_LINK_LORA)
 #define GSE_RADIO_TRACE(fmt, ...) radioTrace(fmt)
 
 static void radioTrace(const char *text)
@@ -42,6 +51,7 @@ static void radioTrace(const char *text)
     }
     Serial.print("\r\n");
 }
+#endif
 
 #ifdef GSE_ROLE_PAD
 #error "tx_platform_esp32.cpp must be built with -DGSE_ROLE_TX"
@@ -51,13 +61,12 @@ static void radioTrace(const char *text)
 #warning "ESP32-S3 TX build without ARDUINO_USB_CDC_ON_BOOT: the laptop may not see a port"
 #endif
 
-static HardwareSerial &kRadio = Serial1;
 static bool radioOk = false;
 
-/* The driver needs the trace hook at *its* compile time, i.e. before the
- * object exists -- GSE_RADIO_TRACE is defined above, the object here. */
-static DxLr41 radio(kRadio, PIN_LORA_AUX, PIN_LORA_M0, PIN_LORA_M1,
-                    PIN_LORA_AUX_PULLUP != 0);
+/* The transport seam (src/link.h): LoRa module on UART1, or BLE.  The driver
+ * needs the trace hook at *its* compile time, i.e. before the object exists --
+ * GSE_RADIO_TRACE is defined above, the object here. */
+static GseLink link;
 
 /* ------------------------------------------------------------------ HAL */
 extern "C" {
@@ -66,13 +75,19 @@ uint32_t gse_millis(void) { return millis(); }
 
 void gse_tx_write(const uint8_t *buf, size_t len)
 {
-    radio.write(buf, len);
+    /* The portable core prefixes each air packet with the LoRa fixed-point
+     * address + channel (see air_send() in gse_tx_core.c).  sendRaw() keeps
+     * that prefix for the module and strips it for BLE, where it is not
+     * addressing but noise. */
+    link.sendRaw(buf, len);
 }
 
 bool gse_tx_read_byte(uint8_t *out)
 {
-    if (!kRadio.available()) return false;
-    *out = (uint8_t)kRadio.read();
+    if (!link.available()) return false;
+    int r = link.read();
+    if (r < 0) return false;
+    *out = (uint8_t)r;
     return true;
 }
 
@@ -101,13 +116,19 @@ void gse_log(const char *fmt, ...)
 bool gse_radio_provision(uint8_t level, uint8_t channel_hex, uint16_t key,
                          uint16_t my_addr)
 {
-    /* One driver, one provisioning sequence, one place to fix it: the same
+    /* One implementation, one place to fix it: on LoRa this is the same
      * DxLr41::configure() the pad node runs, including its verify-after-reset
-     * step (see dxlr41.h -- AT+RESET does not save MODE/LEVEL/CHANNEL/MAC). */
-    String err = radio.configure(level, channel_hex, key, true, my_addr, GSE_ADDR_PAD);
+     * step (see dxlr41.h -- AT+RESET does not save MODE/LEVEL/CHANNEL/MAC).
+     * On BLE there is nothing to write: it re-starts the scan, which is what
+     * "RADIO CONFIG" means on that transport. */
+    String err = link.provision(level, channel_hex, key, my_addr, GSE_ADDR_PAD);
     radioOk = (err.length() == 0);
-    if (!radioOk) gse_log("radio: %s", err.c_str());
+    if (!radioOk) gse_log("link: %s", err.c_str());
+#if defined(GSE_LINK_LORA)
     else          gse_log("radio: OK level=%u ch=%02x", level, channel_hex);
+#else
+    else          gse_log("ble: re-scanning for \"%s\"", GSE_BLE_NAME);
+#endif
     return radioOk;
 }
 
@@ -120,18 +141,19 @@ void setup()
      * Serial the CDC device); on an ESP-32S it is UART0 behind the bridge
      * chip.  Same call, same 115200, same cable on the other end.           */
     Serial.begin(GSE_HOST_BAUD);
-    radio.begin(DXLR41_BAUD);
-    gse_log("radio wiring: D%u<-module TX, D%u->module RX, AUX=%s, M0/M1=%s",
-            PIN_LORA_RX, PIN_LORA_TX,
-            radio.auxEnabled() ? "wired" : "NOT WIRED (pacing only)",
-            PIN_LORA_M0 >= 0 ? "driven low" : "tie to GND at the module");
-    gse_tx_init();                           /* provisions the module       */
+    /* Named before anything can fail: a TX node and a pad built with different
+     * GSE_LINK_* values cannot hear each other, and this is the line that says
+     * which one this is. */
+    gse_log("link: %s -- %s", link.transport(), link.describe().c_str());
+    link.begin();
+    gse_tx_init();                           /* provisions the link         */
 }
 
 static uint32_t s_lastDiag;
 
 void loop()
 {
+    link.poll();                  /* BLE scan/connect state machine; no-op LoRa */
     gse_tx_tick();
 
     /* once a second, say whether the radio is producing anything at all --
