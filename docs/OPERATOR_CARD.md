@@ -24,6 +24,8 @@
 2. Banner must read **LINK OK — NOT ARMED**
 3. `last valid CMD` < 100 ms, `rejected frames` 0
 4. Checkouts: FILL open/close, VEHICLE open/close (listen for the servos), PURGE if fitted
+   *(purge valve fitted? tick the box in the left panel and press **Apply to pad** — the pad ignores
+   PURGE until it has been told `allow_purge`, and the GUI blocks it too. One tick, one Apply.)*
 5. Spark check: leads touching, ARM off → no spark; ARM on, hold IGN → spark within 0.1 s; release → no spark
 6. **ARM off. SW2 open. Both keys with the operator.**
 

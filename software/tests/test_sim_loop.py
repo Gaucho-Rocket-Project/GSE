@@ -115,13 +115,15 @@ def test_verdict_names_the_failure():
     ctl.link.node_log = []
     assert ctl.verdict() == ("red", "NO PAD TELEMETRY")
 
-    ctl.link.node_log = ["PAD RADIO OK  (waiting for the TX node)"]
+    # the wording is "PAD LINK OK / PAD LINK FAULT" now that the pad can be on
+    # either transport (the LoRa module or Bluetooth); the old text said RADIO
+    ctl.link.node_log = ["PAD LINK OK  (waiting for the TX node)"]
     colour, text = ctl.verdict()
     assert colour == "red" and "LINK DEAD" in text, text
 
-    ctl.link.node_log.append("PAD RADIO FAULT: CHANNEL did not stick")
+    ctl.link.node_log.append("PAD LINK FAULT: CHANNEL did not stick")
     colour, text = ctl.verdict()
-    assert "RADIO FAULT" in text and "did not stick" in text, text
+    assert "LINK FAULT" in text and "did not stick" in text, text
 
 
 if __name__ == "__main__":

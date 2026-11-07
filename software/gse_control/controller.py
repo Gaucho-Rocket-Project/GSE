@@ -56,6 +56,10 @@ class Controller:
         self.last_cmd_sent = 0.0
         self.events: list[str] = []
         self._ign_release_pending = False
+        # Index into link.node_log: the node's own "LOG ..." lines are the only
+        # place the pad's boot banner, its link/transport and its counters
+        # appear.  They used to be collected and never shown.
+        self._log_seen = 0
 
     # ------------------------------------------------------------- lifecycle
     def connect(self, port: str | None = None) -> None:
@@ -66,6 +70,7 @@ class Controller:
         self.link.open()
         self.ui.connected = True
         self.ui.link_name = self.link.name
+        self._log_seen = 0
         self.note(f"connected: {self.link.name} (log {self.log_path or 'off'})")
         self.link.send_hello()
         self.push_cmd(force=True)
@@ -164,11 +169,34 @@ class Controller:
             self.events.append(f"{time.strftime('%H:%M:%S')} {ev.name}"
                                + (f" arg={ev.arg}" if ev.arg else ""))
             msgs.append(self.events[-1])
+        # The nodes' own text lines: "TX ... ready", "link: ble -- ...",
+        # "PAD LINK OK", "RADIO FAULT: ...", the AT+HELP banner, the 1 Hz
+        # counters and the pad's "nothing is arriving" hint.  Show them, do not
+        # just keep them for the verdict string.
+        for line in self.drain_node_log():
+            self.note(f"NODE {line}")
         st = self.link.state
         if st:
             if st.flags & P.ST_COMMS_LOSS:
                 pass                        # pad already safe; banner shows it
         return msgs
+
+    def drain_node_log(self) -> list[str]:
+        """Return the node log lines that have arrived since the last call.
+
+        link.node_log is trimmed to the last 40 lines, so the cursor is
+        re-anchored when it would fall off the front rather than silently
+        skipping lines.
+        """
+        lines = getattr(self.link, "node_log", None) if self.link else None
+        if not lines:
+            self._log_seen = 0
+            return []
+        if self._log_seen > len(lines):
+            self._log_seen = 0
+        new = list(lines[self._log_seen:])
+        self._log_seen = len(lines)
+        return new
 
     def note(self, text: str) -> None:
         line = f"{time.strftime('%H:%M:%S')} {text}"
@@ -183,6 +211,27 @@ class Controller:
     def pad_age_ms(self) -> float:
         return self.link.age_ms() if self.link else float("inf")
 
+    def _tx_transport(self) -> str:
+        """The transport the TX node says it is using: 'lora', 'ble' or ''.
+
+        The TX node prints one line at boot:
+
+            LOG link: ble -- BLE central, scanning for service ff00 ...
+
+        Only the TX node's own lines can appear here: the GUI's serial port is
+        the TX node, and the pad's text log goes out the *pad's* USB port (over
+        the air the nodes exchange binary frames only -- by design, so that text
+        can never be mistaken for, or delay, a command).  So this can say what
+        the TX side has, never what the pad side has; spotting a mismatched
+        pair still needs the pad's boot banner, which is why
+        docs/TROUBLESHOOTING_LINK.md §0 is a one-line check on both boards.
+        """
+        for line in reversed(getattr(self.link, "node_log", []) or []):
+            low = line.lower()
+            if low.startswith("link:") or " radio wiring:" in low:
+                return "ble" if "ble" in low else "lora"
+        return ""
+
     def verdict(self) -> tuple[str, str]:
         """(colour, text) for the big status banner."""
         if not self.link:
@@ -193,10 +242,18 @@ class Controller:
             # a pad printing RADIO FAULT will never transmit, and that is a very
             # different problem from a pad that is transmitting into a dead link.
             for line in reversed(getattr(self.link, "node_log", [])):
-                if "RADIO FAULT" in line:
-                    return "red", f"PAD RADIO FAULT - {line.split(':', 1)[-1].strip()}"
-                if "RADIO OK" in line:
-                    return "red", "NO PAD TELEMETRY - PAD RADIO OK, LINK DEAD"
+                if "RADIO FAULT" in line or "LINK FAULT" in line:
+                    return "red", f"PAD LINK FAULT - {line.split(':', 1)[-1].strip()}"
+                if "RADIO OK" in line or "LINK OK" in line:
+                    return "red", "NO PAD TELEMETRY - PAD LINK OK, LINK DEAD"
+
+            # Name the transport: "the pad is on the other link type" is one
+            # of the two ways to get here with two healthy-looking nodes (the
+            # other is a dead radio), and the TX node's own banner is the only
+            # half of that comparison the laptop can see.
+            tx_t = self._tx_transport()
+            if tx_t:
+                return ("red", f"NO PAD TELEMETRY - TX on {tx_t}, pad never answered")
             return "red", "NO PAD TELEMETRY"
         if self.pad_age_ms() > STATE_STALE_MS:
             return "red", "PAD SILENT - WATCHDOG WILL SAFE THE SYSTEM"

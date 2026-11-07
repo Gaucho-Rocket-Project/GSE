@@ -186,6 +186,10 @@ optional Bluetooth transport replaces the *radio layer* and nothing else, so it 
 M0/M1, no channel/KEY pair, no UART to cross). **T-04, T-06, T-08, T-09 and T-10 still apply in full** —
 they are transport-independent and are the ones that decide whether the vehicle is safe.
 
+0. **Host tests.** `python software/tests/test_gui_config.py` passes — it drives the
+   GUI's own callbacks headlessly and covers the configuration panel, the
+   connect-failure messages and the banner wording (this is the test that would
+   have caught `AttributeError: 'Checkbutton' object has no attribute 'get'`).
 1. **Builds.** `sh tests/esp32_syntax_check.sh` passes, and `pio run -e pad-node-ble` /
    `pio run -e tx-node-ble` complete with no warnings from `src/`.
 2. **Boot banners.** Pad: `PAD link: ble -- BLE peripheral "GSE-PAD" …` then `PAD LINK OK`. TX:

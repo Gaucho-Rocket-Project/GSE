@@ -122,8 +122,9 @@ diagnosis takes one glance at the board.
 make -C tests run                 # wire-protocol tests (incl. BLE chunking) + the portable TX core
 sh tests/esp32_syntax_check.sh    # every ESP32 board variant compiles (host g++, no toolchain),
                                   # LoRa and Bluetooth, against Arduino-ESP32 2.x and 3.x
-python software/tests/test_protocol.py   # 9 host tests, incl. byte-identical golden frames
-python software/tests/test_sim_loop.py   # 4 closed-loop tests against the pad simulator
+python software/tests/test_protocol.py    # 9 host tests, incl. byte-identical golden frames
+python software/tests/test_sim_loop.py    # 5 closed-loop tests against the pad simulator
+python software/tests/test_gui_config.py  # 8 GUI tests (config panel, connect errors, banners)
 ```
 
 All of them currently pass, and every firmware target compile-checks: `tx-node`, `pad-node`, `tx-nucleo`,
