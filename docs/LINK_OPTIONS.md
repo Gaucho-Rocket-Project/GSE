@@ -92,8 +92,8 @@ environments' `lib_ldf_mode = off` is fine and no extra dependency is pulled in.
 of every ESP32 core build; nothing has to be enabled for it.
 
 **Verified in this repo:** all four `-now` environments pass the host syntax check against both
-arduino-esp32 2.x (ESP-IDF 4.4) and 3.x (ESP-IDF 5.x) — the receive-callback signature is the only
-thing that differs between them and `link.h` shims it — and the "one frame = one datagram" rule is
+ESP-IDF 4.4, 5.1, 5.4 and 5.5 stubs. `link.h` shims the receive-callback signature change in IDF 5.0
+and the send-callback change in IDF 5.5. The "one frame = one datagram" rule is
 covered by `make -C tests run`. The Espressif toolchain is not available in this workspace, so
 **`pio run -e …-now` has not actually been executed here** — that is the first thing to do on a machine
 with PlatformIO installed (§7, T-11 step 1).
@@ -307,7 +307,7 @@ the ones that matter.
 
 | File | What it says about the transport |
 |---|---|
-| `firmware/src/link.h` | the seam itself; both adapters. The ESP-NOW adapter owns the receive ring, the peer setup and the IDF-4.4/5.x receive-callback shim; the LoRa adapter is the DX-LR41 driver, unchanged. (`GseLink gseLink;` is named that way on purpose — the core's `Arduino.h` brings in POSIX `link()` via lwIP, and `tests/esp32_stub/Arduino.h` declares the same names so the host check catches it) |
+| `firmware/src/link.h` | the seam itself; both adapters. The ESP-NOW adapter owns the receive ring, the peer setup and the IDF-version-specific receive and send callback shims; the LoRa adapter is the DX-LR41 driver, unchanged. (`GseLink gseLink;` is named that way on purpose — the core's `Arduino.h` brings in POSIX `link()` via lwIP, and `tests/esp32_stub/Arduino.h` declares the same names so the host check catches it) |
 | `firmware/src/config.h` | `GSE_LINK_ESPNOW` / `GSE_LINK_LORA`, the "exactly one" rule, the STM32 guard, the peer MACs, channel, key/PMK text, the quiet and queue constants |
 | `firmware/platformio.ini` | the four `-now` environments |
 | `firmware/src/pad/pad_node.cpp`, `firmware/src/tx/tx_platform_esp32.cpp` | one code path; `gseLink.send()` / `.read()` / `.poll()` |

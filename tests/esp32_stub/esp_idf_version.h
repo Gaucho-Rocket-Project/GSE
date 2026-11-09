@@ -1,28 +1,29 @@
 // -*- mode: c++ -*-
-/*
- * esp_idf_version.h  --  stand-in for ESP-IDF's version header
- * ---------------------------------------------------------------------------
- * The real one is generated per IDF release.  The firmware's only use is
- * ESP_IDF_VERSION_MAJOR, to pick the ESP-NOW receive-callback signature and the
- * RSSI source, which genuinely differ between IDF 4.4 (arduino-esp32 2.x) and
- * IDF 5.x (3.x).
- *
- * tests/esp32_syntax_check.sh compiles every variant twice: once with
- * -D ARDUINO_ESP32_CORE2 and once without.  That flag selects 4 here, so the
- * 2.x run checks the 4.4 callback shape and the 3.x run checks the 5.x one.
- * Getting this wrong is exactly the class of bug the host check exists to catch.
- */
+/* Version stand-in: select IDF 4.4, 5.1, 5.4 or 5.5 in host checks.
+ * IDF 5.0 changed the receive callback; 5.5 changed the send callback. */
 #ifndef ESP_IDF_VERSION_H_SYNTAX_STUB
 #define ESP_IDF_VERSION_H_SYNTAX_STUB
+
+#define ESP_IDF_VERSION_VAL(major, minor, patch) (((major) << 16) | ((minor) << 8) | (patch))
 
 #if defined(ARDUINO_ESP32_CORE2)
 #  define ESP_IDF_VERSION_MAJOR 4
 #  define ESP_IDF_VERSION_MINOR 4
 #  define ESP_IDF_VERSION_PATCH 7
+#elif defined(GSE_TEST_IDF_5_5)
+#  define ESP_IDF_VERSION_MAJOR 5
+#  define ESP_IDF_VERSION_MINOR 5
+#  define ESP_IDF_VERSION_PATCH 0
+#elif defined(GSE_TEST_IDF_5_4)
+#  define ESP_IDF_VERSION_MAJOR 5
+#  define ESP_IDF_VERSION_MINOR 4
+#  define ESP_IDF_VERSION_PATCH 2
 #else
 #  define ESP_IDF_VERSION_MAJOR 5
 #  define ESP_IDF_VERSION_MINOR 1
 #  define ESP_IDF_VERSION_PATCH 4
 #endif
+
+#define ESP_IDF_VERSION ESP_IDF_VERSION_VAL(ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH)
 
 #endif /* ESP_IDF_VERSION_H_SYNTAX_STUB */

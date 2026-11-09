@@ -113,10 +113,10 @@
  * Everything else used here -- esp_now_init, esp_now_add_peer, esp_now_send,
  * esp_now_register_recv_cb, esp_now_register_send_cb, esp_now_set_pmk,
  * esp_now_peer_info_t, ESP_NOW_MAX_DATA_LEN, ESP_ERR_ESPNOW_EXIST,
- * ESP_NOW_SEND_SUCCESS -- is byte-identical in 4.4 and 5.x.  Only the receive
- * callback is version-specific, so it is the only thing shimmed: one function
- * with the signature this IDF actually declares, normalising to
- * (src_mac, data, len, rssi) before any project code sees it.
+ * ESP_NOW_SEND_SUCCESS -- is shared between 4.4 and 5.x. The receive callback
+ * changed in IDF 5.0; the send callback changed in 5.5 from a MAC pointer to
+ * an esp_now_send_info_t pointer. Both callbacks are shimmed to the signature
+ * declared by the installed IDF before passing data to the project code.
  */
 
 #include <esp_err.h>
@@ -156,7 +156,11 @@ static void gse_now_recv_shim(const esp_now_recv_info_t *info,
 static void gse_now_recv_shim(const uint8_t *src_mac, const uint8_t *data,
                               int len);
 #endif
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+static void gse_now_send_shim(const esp_now_send_info_t *info, esp_now_send_status_t status);
+#else
 static void gse_now_send_shim(const uint8_t *mac, esp_now_send_status_t status);
+#endif
 
 class GseLink {
 public:
@@ -330,7 +334,7 @@ inline void GseLink::push(const uint8_t *data, size_t len)
         uint8_t next = (uint8_t)((tail + 1) % RX_CAP);
         if (next == rxHead) {                    /* full: drop the oldest byte */
             rxHead = (uint8_t)((rxHead + 1) % RX_CAP);
-            dropped++;
+            dropped = dropped + 1;
         }
         rxBuf[tail] = data[i];
         tail = next;
@@ -349,23 +353,23 @@ inline void GseLink::onDatagram(const uint8_t *src, const uint8_t *data,
      * ESP-NOW device in the area" from a protocol-level puzzle into a counter
      * the log can show. */
     if (peerConfigured && src && memcmp(src, peerMac, MAC_LEN) != 0) {
-        rxForeign++;
+        rxForeign = rxForeign + 1;
         return;
     }
 
     lastRxMs = millis();
     lastRssi = (int8_t)rssi;
-    rxDatagrams++;
+    rxDatagrams = rxDatagrams + 1;
     push(data, (size_t)len);
 }
 
 inline void GseLink::onSendStatus(esp_now_send_status_t status)
 {
     if (status == ESP_NOW_SEND_SUCCESS) {
-        txOk++;
+        txOk = txOk + 1;
         lastTxOkMs = millis();
     } else {
-        txFailed++;
+        txFailed = txFailed + 1;
     }
 }
 
@@ -458,15 +462,15 @@ inline size_t GseLink::transmit(const uint8_t *data, size_t len)
     if (len > ESP_NOW_MAX_DATA_LEN) return 0;
 
     if (esp_now_send(peerMac, data, len) != ESP_OK) {
-        txFailed++;
+        txFailed = txFailed + 1;
         return 0;
     }
-    txDatagrams++;
+    txDatagrams = txDatagrams + 1;
     return len;
 }
 
 /* ------------------------------------------------------------------- shims
- * The only version-specific part of this transport.  Note the RSSI source:
+ * The version-specific callbacks for this transport. Note the RSSI source:
  * IDF 5 hands it over in the packet info, IDF 4 does not pass it at all (it
  * lives in the rx control block of the promiscuous/RX path), so the 4.x shim
  * reports 0 -- meaning "unknown", not "zero dBm", and the log says so. */
@@ -488,9 +492,15 @@ static void gse_now_recv_shim(const uint8_t *src_mac, const uint8_t *data,
 }
 #endif
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+static void gse_now_send_shim(const esp_now_send_info_t *info, esp_now_send_status_t status)
+{
+    (void)info;
+#else
 static void gse_now_send_shim(const uint8_t *mac, esp_now_send_status_t status)
 {
     (void)mac;
+#endif
     if (s_link) s_link->onSendStatus(status);
 }
 

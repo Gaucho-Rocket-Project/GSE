@@ -10,7 +10,10 @@
  *                   5.x: void (*)(const esp_now_recv_info_t *info,
  *                                 const uint8_t *data, int len)
  *
- * Which one the firmware must implement is decided by ESP_IDF_VERSION_MAJOR
+ *   send callback   through 5.4: const uint8_t *mac, status
+ *                   5.5+:        const esp_now_send_info_t *info, status
+ *
+ * Which one the firmware must implement is decided by the IDF version
  * (see esp_idf_version.h in this directory), and the stub declares BOTH names
  * for the same type with a version guard, exactly as the real header does:
  * esp_now_register_recv_cb() takes the version-appropriate one, so a firmware
@@ -61,8 +64,15 @@ typedef void (*esp_now_recv_cb_t)(const esp_now_recv_info_t *info,
 typedef void (*esp_now_recv_cb_t)(const uint8_t *mac_addr,
                                   const uint8_t *data, int data_len);
 #endif
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+typedef struct wifi_tx_info wifi_tx_info_t;
+typedef wifi_tx_info_t esp_now_send_info_t;
+typedef void (*esp_now_send_cb_t)(const esp_now_send_info_t *tx_info,
+                                  esp_now_send_status_t status);
+#else
 typedef void (*esp_now_send_cb_t)(const uint8_t *mac_addr,
                                   esp_now_send_status_t status);
+#endif
 
 esp_err_t esp_now_init(void);
 esp_err_t esp_now_deinit(void);

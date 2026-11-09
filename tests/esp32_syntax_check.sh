@@ -49,13 +49,14 @@ trap 'rm -rf "$TMP"' EXIT
 # -D INCLUDE_DIR: tests/esp32_stub first, so "Arduino.h" resolves to the stub
 # and never to a real core that happens to be installed.
 INC="-I $STUB -I $SRC -I $SRC/common"
+CXXSTD=gnu++17
 WARN="-Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -Wno-unused-but-set-variable"
 
 check() {                      # check <label> <expected: ok|fail> <file> <defines...>
     label=$1; want=$2; file=$3; shift 3
     out=$TMP/out.txt
     # shellcheck disable=SC2086  # $INC/$WARN must word-split into flags
-    if $CXX -std=gnu++17 -fsyntax-only "$@" $INC $WARN "$file" >"$out" 2>&1; then got=ok; else got=fail; fi
+    if $CXX -std="$CXXSTD" -fsyntax-only "$@" $INC $WARN "$file" >"$out" 2>&1; then got=ok; else got=fail; fi
     if [ "$got" != "$want" ]; then
         echo "FAIL  $label  (expected $want, got $got)"
         sed 's/^/      /' "$out"
@@ -98,13 +99,18 @@ check "tx   no flag, AUX not wired" ok "$TX" -D GSE_ROLE_TX -D GSE_LORA_AUX_NONE
 
 # --------------------------------------------- the ESP-NOW transport (optional)
 # The second link option: no module, no UART, no AUX, no router, no pairing.
-# Both roles, both boards, both Arduino cores -- ESP-IDF's receive-callback
-# signature differs between IDF 4.4 (core 2.x) and IDF 5.x (core 3.x), and the
-# stub's esp_idf_version.h selects the same one the real core would, so each run
-# checks a different callback shape.
-for core in 3 2; do
-    if [ "$core" = 2 ]; then CORE="-D ARDUINO_ESP32_CORE2"; else CORE=""; fi
-    v="core $core.x"
+# Both roles and boards, across the IDF 4.4/5.1/5.4/5.5 callback
+# signatures. Compile in both C++17 and C++20: the latter diagnoses deprecated
+# volatile increments like those reported by newer ESP32 toolchains.
+for CXXSTD in gnu++17 gnu++20; do
+  for idf in 4.4 5.1 5.4 5.5; do
+    case "$idf" in
+      4.4) CORE="-D ARDUINO_ESP32_CORE2" ;;
+      5.1) CORE="" ;;
+      5.4) CORE="-D GSE_TEST_IDF_5_4" ;;
+      5.5) CORE="-D GSE_TEST_IDF_5_5" ;;
+    esac
+    v="IDF $idf $CXXSTD"
     check "pad  ESP32-S3 NOW $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
           -D ARDUINO_USB_CDC_ON_BOOT=1 -D ARDUINO_USB_MODE=1
     check "pad  ESP-32S  NOW $v" ok "$PAD" $CORE -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
@@ -113,7 +119,9 @@ for core in 3 2; do
           -D GSE_BOARD_ESP32_S3 -D ARDUINO_USB_CDC_ON_BOOT=1 -D ARDUINO_USB_MODE=1
     check "tx   ESP-32S  NOW $v" ok "$TX"  $CORE -D GSE_ROLE_TX -D GSE_LINK_ESPNOW \
           -D GSE_BOARD_ESP32S
+  done
 done
+CXXSTD=gnu++17
 # ... and with the MACs supplied on the command line, the way an operator would
 # override them for a second pair of boards.
 check "pad  NOW with real MACs" ok "$PAD" -D GSE_ROLE_PAD -D GSE_LINK_ESPNOW \
@@ -125,6 +133,9 @@ echo "negative cases (these must NOT build)"
 # through Arduino.h, or a firmware object called `link` (which collides with
 # POSIX link()) compiles here and fails on the bench.  This probe is the guard.
 check "a global called 'link' (POSIX shadow)" fail "$HERE/tripwire/posix_shadow_probe.cpp"
+# The old send callback must be rejected by the IDF 5.5 stub.
+check "IDF 5.5 rejects old send callback" fail "$HERE/tripwire/espnow_send_callback_probe.cpp" \
+      -D GSE_TEST_IDF_5_5
 check "pad  ESP-32S with PURGE on GPIO6 (flash)" fail "$PAD" \
       -D GSE_ROLE_PAD -D GSE_BOARD_ESP32S -D GSE_PIN_SERVO_PRG=6
 check "pad  ESP-32S with IGN on strapping GPIO12" fail "$PAD" \
