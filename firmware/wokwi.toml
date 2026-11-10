@@ -1,0 +1,6 @@
+[wokwi]
+version = 1
+firmware = '.pio/build/pad-node/firmware.bin'
+elf = '.pio/build/pad-node/firmware.elf'
+rfc2217ServerPort = 4000
+vcdFile = 'wokwi.vcd'

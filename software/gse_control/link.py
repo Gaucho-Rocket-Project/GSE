@@ -176,7 +176,8 @@ class SerialLink(Link):
 
     def open(self):
         import serial  # pyserial
-        self._ser = serial.Serial(self.port, self.baud, timeout=0)
+        #        self._ser = serial.Serial(self.port, self.baud, timeout=0) ? ?
+        self._ser = serial.serial_for_url(self.port, baudrate=self.baud, timeout=0)
         time.sleep(0.2)
         self._ser.reset_input_buffer()
         # nudge the node: the hello also tells us the node is listening
@@ -194,7 +195,11 @@ class SerialLink(Link):
     def _read(self) -> bytes:
         if not self._ser:
             return b""
-        return self._ser.read(max(1, self._ser.in_waiting))
+        # return self._ser.read(max(1, self._ser.in_waiting))
+        data = bytearray()
+        while self._ser.in_waiting:              # rfc2217:// hands back 1 byte per read()
+            data += self._ser.read(self._ser.in_waiting)
+        return bytes(data)
 
     def poll(self) -> list[P.Event]:
         evs = super().poll()
