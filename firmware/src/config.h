@@ -93,8 +93,16 @@
 
 /* Servo pulse limits (DS3225-class servo). 1000/2000 us = +/-45 deg = the
  * mechanical 90 deg throw of the ball valve handle.                          */
-#define SERVO_MIN_US          1000
-#define SERVO_MAX_US          2000
+// #define SERVO_MIN_US          1000
+// #define SERVO_MAX_US          2000
+/* DS3225, 180-degree version: 500..2500 us = 0..180 deg, 1500 us = centre,
+ * i.e. 500 us per 45 deg.  The scale is fixed here, separately from the clamp,
+ * so that "travel" is real degrees each side of centre: 45 -> 1000/2000 us
+ * (unchanged), 90 -> 500/2500 us (full 180-degree range).  The clamp is only a
+ * safety limit at the servo's own pulse range.                               */
+#define SERVO_US_PER_45DEG    500
+#define SERVO_MIN_US          500
+#define SERVO_MAX_US          2500
 #define SERVO_NEUTRAL_US      1500
 #define SERVO_REFRESH_MS      20      /* 50 Hz                              */
 #define SERVO_DEFAULT_TRAVEL  45       /* deg, each side of neutral          */

@@ -62,10 +62,12 @@ from gse_control.link import Link                # noqa: E402
 
 # ---------------------------------------------------------------- servo model
 # The project's own definition of a degree (firmware/src/config.h):
-#   1000 / 2000 us = -45 / +45 deg, neutral 1500 us.
+#   500 us per 45 deg (DS3225 180-degree version), neutral 1500 us,
+#   pulses clamped to the servo's 500..2500 us range.
 NEUTRAL_US = 1500
-US_PER_DEG = 500 / 45
-MIN_US, MAX_US = 1000, 2000
+US_PER_45DEG = 500                       # SERVO_US_PER_45DEG
+US_PER_DEG = US_PER_45DEG / 45
+MIN_US, MAX_US = 500, 2500               # SERVO_MIN_US / SERVO_MAX_US
 MIN_TRAVEL, MAX_TRAVEL = 5, 90
 LEDC_BITS, PWM_HZ = 12, 50
 ANGLE_TOL_DEG = 0.75          # LEDC step is 4.88 us = 0.44 deg; allow a bit more
@@ -82,8 +84,7 @@ def fw_predicted_us(travel: int, open_: bool) -> float:
     Only used to tell 'firmware does what its code says' apart from 'the code
     does what the operator asked'."""
     deg = max(MIN_TRAVEL, min(MAX_TRAVEL, travel))
-    span = (MAX_US - MIN_US) // 2
-    off = (span * deg) // 45
+    off = (US_PER_45DEG * deg) // 45
     us = NEUTRAL_US + (off if open_ else -off)
     us = max(MIN_US, min(MAX_US, us))
     period = 1_000_000 // PWM_HZ

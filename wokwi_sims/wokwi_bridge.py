@@ -23,13 +23,18 @@ TX-node behaviour reproduced from firmware/src/common/gse_tx_core.c
       are acknowledged but not simulated)
 Radio behaviour
     * answers the pad's AT set-up dialog (dxlr41.h configure()); if the pad
-      aborts it (bug D2), the radio is forced to normal mode and this is logged
+      aborts it, the step it stopped at is logged and the radio is forced to
+      normal mode so the link still comes up
+    * by default the SAFE stream runs while the pad boots (ground box powered
+      first).  That traffic can break the pad's "+++" -> "Entry AT" check (D26).
+      --pad-first holds all uplink traffic until the pad's radio set-up is done
+      (pad powered first)
     * commands are paced to the SIMULATION's clock: 2 per STATE received
       (= 20 Hz simulated), latest command wins -- otherwise a slow simulation
       is flooded past what its 9600-baud UART can carry
 
 Usage (from the GSE folder; needs pyserial)
-    python wokwi_sims/wokwi_bridge.py                             # 1. leave running
+    python wokwi_sims/wokwi_bridge.py [--pad-first]               # 1. leave running
     (start the Wokwi simulation in VS Code, tab visible)          # 2.
     python software/run_gui.py --port rfc2217://localhost:5000    # 3. click Connect
     python wokwi_sims/wokwi_pad_test.py inspect                   # 4. after stopping the sim
@@ -59,6 +64,8 @@ CMD_PERIOD_S = 0.050
 
 TOKENS_PER_STATE = 2
 TOKEN_CAP = 4
+
+PAD_FIRST_TIMEOUT_S = 30.0      # --pad-first: stop holding if set-up never ends
 
 
 def stamp() -> str:
@@ -120,14 +127,17 @@ class WokwiPad:
 
     name = "Wokwi"
 
-    def __init__(self, url: str, verbose: bool = False):
+    def __init__(self, url: str, verbose: bool = False, pad_first: bool = False):
         self.url = url
         self.verbose = verbose
+        self.pad_first = pad_first
         self.ser = None
         self.radio = W.RadioEmu(verbose, force_pipe=True)
         self._next_try = 0.0
         self._reported = False
         self._waiting_note = False
+        self._connected_at = 0.0
+        self._released = not pad_first
 
     def _connect(self) -> None:
         import serial
@@ -135,7 +145,12 @@ class WokwiPad:
             self.ser = serial.serial_for_url(self.url, baudrate=9600, timeout=0)
             self.radio = W.RadioEmu(self.verbose, force_pipe=True)
             self._reported = False
+            self._connected_at = time.monotonic()
+            self._released = not self.pad_first
             print(f"{stamp()} [radio] connected to the simulated pad at {self.url}")
+            if self.pad_first:
+                print(f"{stamp()} [radio] --pad-first: holding uplink traffic until the pad's "
+                      "radio set-up finishes")
         except Exception:
             self.ser = None
             if not self._waiting_note:
@@ -153,8 +168,24 @@ class WokwiPad:
         self._waiting_note = False
         print(f"{stamp()} [radio] simulation connection dropped (stopped/restarted?)")
 
+    def held(self) -> bool:
+        """--pad-first: True until the pad's radio set-up has ended either way.
+        An aborted set-up still releases the hold: the pad's own STATE frames
+        then reach the radio in AT mode, which sets left_in_at."""
+        if self._released:
+            return False
+        r = self.radio
+        if r.configured or r.left_in_at:
+            self._released = True
+            print(f"{stamp()} [radio] --pad-first: pad radio set-up over, uplink released")
+        elif self.ser is not None and time.monotonic() - self._connected_at > PAD_FIRST_TIMEOUT_S:
+            self._released = True
+            print(f"{stamp()} [radio] --pad-first: no finished set-up after "
+                  f"{PAD_FIRST_TIMEOUT_S:.0f} s, uplink released anyway")
+        return not self._released
+
     def can_send(self) -> bool:
-        return self.ser is not None and self.radio.mode == "pipe"
+        return self.ser is not None and self.radio.mode == "pipe" and not self.held()
 
     def send(self, data: bytes) -> None:
         try:
@@ -188,9 +219,9 @@ class WokwiPad:
         if self._reported:
             return
         if r.left_in_at:
-            print(f"{stamp()} [radio] PAD RADIO FAULT: the pad aborted its radio set-up after "
-                  "the 2nd AT+HELP (dxlr41.h help() bug, D2). On hardware the radio would stay "
-                  "in AT mode; here it is forced to normal mode so the link works.")
+            print(f"{stamp()} [radio] PAD RADIO FAULT: the pad aborted its radio set-up "
+                  f"{self._setup_stage()}. On hardware the radio would stay in AT mode; "
+                  "here it is forced to normal mode so the link works.")
         elif r.configured:
             p = r.params
             print(f"{stamp()} [radio] pad radio set-up completed: MODE {p['MODE']} "
@@ -198,6 +229,28 @@ class WokwiPad:
         else:
             return
         self._reported = True
+
+    def _setup_stage(self) -> str:
+        """Where DxLr41::configure() stopped, from what the radio stand-in heard.
+        Its dialog: +++, 9 x AT+<setting>, AT+HELP, +++ (exit), +++, AT+HELP, +++."""
+        r = self.radio
+        oks = sum(1 for s in r.log if s.endswith("-> OK"))
+        if r.at_sessions == 0:
+            return "before it ever entered AT mode"
+        if r.at_sessions == 1 and oks == 0:
+            return ("right after its first '+++': the radio answered 'Entry AT' but the pad "
+                    "did not recognise it (likely bytes ahead of the reply -- e.g. a SAFE "
+                    "frame -- hiding it in DxLr41::_collect(), D26; try --pad-first)")
+        if r.at_sessions == 1 and r.helps == 0:
+            return f"during the AT+ settings, after {oks} of 9 were accepted"
+        if r.at_sessions == 1:
+            return ("after the 1st AT+HELP read-back, without its '+++' exit "
+                    "(read-back did not match what was set?)")
+        if r.helps < 2:
+            return ("right after re-entering AT mode for the 2nd AT+HELP (reply not "
+                    "recognised, same mechanism as D26)")
+        return ("after the 2nd AT+HELP, without the final '+++' (dxlr41.h help() "
+                "termination, D2 -- is the build older than the fix in 492960b?)")
 
 
 class SimPad:
@@ -211,6 +264,9 @@ class SimPad:
 
     def can_send(self) -> bool:
         return True
+
+    def held(self) -> bool:
+        return False
 
     def send(self, data: bytes) -> None:
         self.pad.feed(data)
@@ -459,7 +515,7 @@ class Bridge:
             self.was_alive = alive
             self.note("[tx] laptop frames arriving: forwarding GUI commands" if alive else
                       "[tx] laptop silent > 300 ms: sending SAFE (FILL closed, VEHICLE open)")
-        if not alive and (now - self.last_safe) >= CMD_PERIOD_S:
+        if not alive and not self.pad.held() and (now - self.last_safe) >= CMD_PERIOD_S:
             self.last_safe = now
             self.air_safe_command()
         # pacing keep-alive while no STATE comes back
@@ -493,8 +549,11 @@ def main() -> int:
     ap.add_argument("--listen", type=int, default=5000, help="port the GUI connects to")
     ap.add_argument("--wokwi", default="rfc2217://localhost:4000", help="Wokwi's serial port")
     ap.add_argument("-v", "--verbose", action="store_true", help="print the pad's AT dialog")
+    ap.add_argument("--pad-first", action="store_true",
+                    help="send nothing until the pad's radio set-up is done (pad powered "
+                         "before the ground box); default: SAFE stream from the start")
     args = ap.parse_args()
-    br = Bridge(WokwiPad(args.wokwi, args.verbose), args.listen)
+    br = Bridge(WokwiPad(args.wokwi, args.verbose, args.pad_first), args.listen)
     print(f"wokwi_bridge: GUI port  rfc2217://localhost:{args.listen}")
     print(f"              pad side  {args.wokwi}")
     print(f"start the Wokwi simulation, then (from the GSE folder):  python software/run_gui.py "
