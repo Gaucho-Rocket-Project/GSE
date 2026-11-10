@@ -79,6 +79,11 @@
 #define PIN_SERVO_FILL        4
 #define PIN_SERVO_VEH         5
 #define PIN_SERVO_PRG         6
+/* Purge servo switched off: GPIO6 gets no PWM, purge commands and CFG
+ * allow_purge are ignored, and STATE reports purge closed.  The protocol
+ * fields stay (always 0), so the GUI and TX node need no change.
+ * Set to 1 to bring the purge servo back.                                   */
+#define GSE_HAS_PURGE         0
 #define PIN_RELAY_IGN         7
 #define PIN_HB                8       /* 50 Hz heartbeat -> hw keep-alive timer */
 #define PIN_STATUS_RGB       48       /* WS2812 on most S3 devkits; -1 = none */

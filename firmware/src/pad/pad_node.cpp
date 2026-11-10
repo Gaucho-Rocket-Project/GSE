@@ -2,7 +2,8 @@
  * pad_node.cpp  --  Mojave Sphinx GSE, launch-pad node
  * -------------------------------------------------------------------------
  * Radio in : DX-LR41-24T12S (UART transparent pipe, 2.4 GHz LoRa/FLRC)
- * Outputs  : 3x servo PWM (FILL / VEHICLE / PURGE) + 1x igniter relay
+ * Outputs  : 2x servo PWM (FILL / VEHICLE; PURGE only if GSE_HAS_PURGE)
+ *            + 1x igniter relay
  *
  * Safety model (why this is not "just an ESP32 driving servos")
  *   1. Outputs are recomputed every 20 ms from (last accepted command, local
@@ -50,7 +51,7 @@ static uint8_t   padState  = GSE_PAD_WAIT_HELLO;
 static uint8_t   cfgSeqEcho = 0;
 static uint8_t   travel[3] = { SERVO_DEFAULT_TRAVEL, SERVO_DEFAULT_TRAVEL,
                                SERVO_DEFAULT_TRAVEL };
-static bool      allowPurge = (GSE_ALLOW_PURGE_DEFAULT != 0);
+static bool      allowPurge = GSE_HAS_PURGE && (GSE_ALLOW_PURGE_DEFAULT != 0);
 static uint32_t  ignOnSince = 0;
 static bool      ignOn      = false;
 static bool      ignSpent   = false;   /* set by the on-time limit, cleared
@@ -63,6 +64,8 @@ static bool      phase = false;
 static uint32_t  rxBytes = 0, sfFrames = 0;   /* anything at all off the module */
 
 /* ------------------------------------------------------------------ helpers */
+#define N_SERVOS (GSE_HAS_PURGE ? 3 : 2)      /* FILL, VEH [, PRG]          */
+
 /* 50 Hz, 12-bit LEDC: period 20 000 us == 4096 counts -> 0.2048 counts/us  */
 #define US_TO_DUTY(us) ((uint32_t)(((uint32_t)(us) * 4096u) / 20000u))
 
@@ -86,7 +89,9 @@ static void driveOutputs(const gse_outputs_t &o)
 {
     servoUs(0, o.fill, travel[0]);
     servoUs(1, o.veh,  travel[1]);
+#if GSE_HAS_PURGE
     servoUs(2, allowPurge ? o.prg : 0, travel[2]);              /* never purge */
+#endif
 }
 
 /* Outgoing frames carry the fixed-point prefix: dst address (2 B) + dst
@@ -135,7 +140,7 @@ static void onFrame(uint8_t type, uint8_t, const uint8_t *pl, uint8_t len, void 
                                GSE_WDG_DS_MIN, GSE_WDG_DS_MAX);
         cfg.ign_max_ds = constrain(c.ign_max_ds ? c.ign_max_ds : GSE_IGN_MAX_DS_DEFAULT,
                                    GSE_IGN_MAX_DS_MIN, GSE_IGN_MAX_DS_MAX);
-        allowPurge = c.allow_purge != 0;
+        allowPurge = GSE_HAS_PURGE && c.allow_purge != 0;
         cfgSeqEcho = c.cfg_seq;
         sendEvent(GSE_EV_CFG_CHANGED, cfgSeqEcho);
         break;
@@ -162,7 +167,8 @@ static void sendState(uint16_t age, const gse_outputs_t &o)
                              (o.ign ? GSE_ST_IGN_ON : 0) |
                              (o.comms_loss ? GSE_ST_COMMS_LOSS : 0) |
                              (padState == GSE_PAD_RUN ? GSE_ST_HELLO_OK : 0));
-    s.out_fill   = o.fill;  s.out_veh = o.veh; s.out_prg = o.prg; s.out_ign = o.ign;
+    s.out_fill   = o.fill;  s.out_veh = o.veh; s.out_ign = o.ign;
+    s.out_prg    = allowPurge ? o.prg : 0;         /* what driveOutputs() drove */
     s.ign_src    = o.ign_src;
     s.age_ms     = age;
     s.rx_count   = rxCount;
@@ -221,9 +227,9 @@ void setup()
 
     const int pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    for (int i = 0; i < 3; ++i) ledcAttach(pins[i], 50, 12);
+    for (int i = 0; i < N_SERVOS; ++i) ledcAttach(pins[i], 50, 12);
 #else
-    for (int ch = 0; ch < 3; ++ch) { ledcSetup(ch, 50, 12); ledcAttachPin(pins[ch], ch); }
+    for (int ch = 0; ch < N_SERVOS; ++ch) { ledcSetup(ch, 50, 12); ledcAttachPin(pins[ch], ch); }
 #endif
 
     gse_outputs_t safe;
@@ -234,7 +240,7 @@ void setup()
     diag::begin();
     diag::line("PAD boot fw %u.%u  pins FILL=%d VEH=%d PRG=%d IGN=%d HB=%d",
                GSE_FW_MAJOR, GSE_FW_MINOR, PIN_SERVO_FILL, PIN_SERVO_VEH,
-               PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
+               GSE_HAS_PURGE ? PIN_SERVO_PRG : -1, PIN_RELAY_IGN, PIN_HB);
     diag::led(0, 0, 40);                       /* blue: booting            */
 
     lora.begin(DXLR41_BAUD);

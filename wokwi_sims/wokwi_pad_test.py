@@ -372,8 +372,7 @@ class Pacer:
 
 def set_all(ctl: Controller, on: bool) -> None:
     ctl.set_fill(on)
-    ctl.set_veh(on)
-    ctl.set_prg(on)
+    ctl.set_veh(on)                   # purge servo is switched off (GSE_HAS_PURGE 0)
 
 
 # ---------------------------------------------------------------------- run
@@ -447,31 +446,29 @@ def cmd_run(args) -> int:
           f"pad_state {st.pad_state}, rx_count {st.rx_count}, crc_err {st.crc_err}")
 
     print(f"[4/6] travel sweep {travels} (hold {args.hold:.1f} s simulated per position)")
-    ctl.ui.purge_enabled = True
     set_all(ctl, False)
     pace.pump(args.hold)
     steps = []
     for t in travels:
         want = clamp_travel(t)
-        ctl.apply_cfg(travel_fill=t, travel_veh=t, travel_prg=t, allow_purge=1)
-        st, dt = pace.until(lambda s: (s.travel_fill, s.travel_veh, s.travel_prg)
-                            == (want, want, want), 2.0)
+        ctl.apply_cfg(travel_fill=t, travel_veh=t, allow_purge=0)
+        st, dt = pace.until(lambda s: (s.travel_fill, s.travel_veh) == (want, want), 2.0)
         st = st or ctl.pad
-        echo = {"FILL": st.travel_fill, "VEH": st.travel_veh, "PRG": st.travel_prg}
+        echo = {"FILL": st.travel_fill, "VEH": st.travel_veh}
         cfg_echo = {"wdg_ds": st.wdg_ds, "ign_max_ds": st.ign_max_ds, "allow_purge": st.allow_purge}
         pace.pump(args.hold)                                    # CLOSED at new travel
         set_all(ctl, True)
-        st_o, _ = pace.until(lambda s: s.out_fill and s.out_veh and s.out_prg, 1.5)
+        st_o, _ = pace.until(lambda s: s.out_fill and s.out_veh, 1.5)
         pace.pump(args.hold)                                    # OPEN
         set_all(ctl, False)
-        st_c, _ = pace.until(lambda s: not (s.out_fill or s.out_veh or s.out_prg), 1.5)
+        st_c, _ = pace.until(lambda s: not (s.out_fill or s.out_veh), 1.5)
         pace.pump(args.hold)                                    # CLOSED
         steps.append({"travel": t, "echo": echo, "cfg_echo": cfg_echo,
                       "opened": st_o is not None, "closed": st_c is not None,
                       "uptime_s": (st_c or ctl.pad).uptime_s})
         flag = "ok" if all(v == t for v in echo.values()) else "MISMATCH"
-        print(f"      travel {t:>3}: pad reports FILL/VEH/PRG = "
-              f"{echo['FILL']}/{echo['VEH']}/{echo['PRG']}  {flag}"
+        print(f"      travel {t:>3}: pad reports FILL/VEH = "
+              f"{echo['FILL']}/{echo['VEH']}  {flag}"
               f"{'' if st_o else '  (never reported OPEN)'}")
 
     print("[5/6] watchdog: stop sending, pad must go safe on its own")
@@ -507,7 +504,7 @@ def cmd_run(args) -> int:
                          + ", ".join(f"{k}={s['echo'][k]}" for k in bad))
         ce = s["cfg_echo"]
         if (ce["wdg_ds"], ce["ign_max_ds"], ce["allow_purge"]) != \
-           (ctl.cfg.wdg_ds, ctl.cfg.ign_max_ds, 1):
+           (ctl.cfg.wdg_ds, ctl.cfg.ign_max_ds, 0):
             fails.append(f"travel {s['travel']}: cfg echo {ce}")
     print(f"      CFG_CHANGED echoed cfg_seq values: {seqs} "
           f"({'every CFG carried the same cfg_seq' if len(seqs) <= 1 else 'distinct'})")
@@ -647,7 +644,7 @@ def analyze(vcd: str, steps: list[dict]) -> int:
     fails = 0
     hdr = (f"  {'chan':<5}{'set':>5}{'reported':>10}   {'OPEN us':>9} {'deg':>7}   "
            f"{'CLOSED us':>9} {'deg':>7}   {'= fw code?':<11} result")
-    for name in ("FILL", "VEH", "PRG"):
+    for name in ("FILL", "VEH"):
         chg = _find(ch, CHANNELS[name])
         if chg is None:
             print(f"  {name}: channel missing from the VCD (logic analyzer wiring?)")
@@ -698,6 +695,15 @@ def analyze(vcd: str, steps: list[dict]) -> int:
             if not ok:
                 fails += 1
 
+    prg = _find(ch, CHANNELS["PRG"])
+    if prg is not None:
+        n_prg = len(pulses_of(prg, scale))
+        print(f"\n  PRG (GPIO6): {n_prg} pulses "
+              + ("(ok: purge servo switched off)" if n_prg == 0 else
+                 "!! the pad drove the purge servo although GSE_HAS_PURGE is 0"))
+        if n_prg:
+            fails += 1
+
     ign = _find(ch, CHANNELS["IGN"])
     if ign is not None:
         ign = list(ign)
@@ -738,6 +744,9 @@ def inspect(vcd: str) -> int:
             print(f"\n{name}: not in the recording")
             continue
         pl = pulses_of(chg, scale)
+        if not pl:
+            print(f"\n{name}: no pulses" + ("  (purge servo switched off)" if name == "PRG" else ""))
+            continue
         short: list[dict] = []
         runs = runs_of(pl, short)
         print(f"\n{name}  ({len(pl)} pulses)")

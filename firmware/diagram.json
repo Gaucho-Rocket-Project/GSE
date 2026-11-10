@@ -8,7 +8,6 @@
       "attrs": { "channelNames": "FILL,VEH,PRG,IGN,HB,D5,D6,D7" } },
     { "type": "wokwi-servo",    "id": "sFill", "top": -170, "left": 230, "attrs": {} },
     { "type": "wokwi-servo",    "id": "sVeh",  "top": -170, "left": 420, "attrs": {} },
-    { "type": "wokwi-servo",    "id": "sPrg",  "top": -170, "left": 610, "attrs": {} },
     { "type": "wokwi-led",      "id": "ign",   "top": 200,  "left": 260, "attrs": { "color": "red" } },
     { "type": "wokwi-resistor", "id": "rPd",   "top": 260,  "left": 260, "attrs": { "value": "10000" } }
   ],
@@ -23,7 +22,6 @@
     [ "esp:8", "logic1:D4", "blue", [] ],
     [ "esp:GND.2", "logic1:GND", "black", [] ],
     [ "esp:4", "sFill:PWM", "orange", [] ], [ "esp:5", "sVeh:PWM", "orange", [] ],
-    [ "esp:6", "sPrg:PWM", "orange", [] ],
     [ "esp:7", "ign:A", "red", [] ],  [ "ign:C", "esp:GND.3", "black", [] ],
     [ "esp:7", "rPd:1", "", [] ],     [ "rPd:2", "esp:GND.3", "black", [] ]
   ]

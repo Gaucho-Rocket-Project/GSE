@@ -9,7 +9,9 @@ Runs the real GUI against the real pad-node firmware (ESP32-S3 only!) in Wokwi:
 ## Run (from the `GSE` folder)
 
 1. **Build the firmware** (only if `firmware/.pio/build/pad-node/firmware.bin` is missing or out of date): `cd firmware && pio run -e pad-node`
-2. **Start the bridge** and leave it running: `python wokwi_sims/wokwi_bridge.py`
+2. **Start the bridge** and leave it running: `python wokwi_sims/wokwi_bridge.py` 
+   - `-v` prints the pad's radio set-up (AT command) dialog.
+   - `--pad-first` sends nothing to the pad until its radio set-up finishes, as if the pad were powered before the ground box. Without it, the SAFE stream runs from the start, which can make the pad's radio set-up fail (D26).
 3. **Start the simulation:** in VS Code, run **Wokwi: Start Simulator** using `firmware/wokwi.toml`, and keep the simulator tab visible.
 4. **Start the GUI** in another terminal, then click **Connect**: `python software/run_gui.py --port rfc2217://localhost:5000`
 5. **Check the pins:** stop the simulation, then run `python wokwi_sims/wokwi_pad_test.py inspect` to see what each servo, igniter and heartbeat pin actually did.
