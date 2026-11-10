@@ -4,12 +4,12 @@ wokwi_bridge.py -- a separate process that stands in for the TX node ("bridge")
 and both DX-LR41 radios, so the unmodified GUI (software/run_gui.py) can drive
 the real pad firmware running in Wokwi.
 
-    run_gui.py ──rfc2217://localhost:5000──► wokwi_bridge.py ──rfc2217://localhost:4000──► Wokwi
+    run_gui.py ──rfc2217://localhost:4001──► wokwi_bridge.py ──rfc2217://localhost:4000──► Wokwi
     (laptop GUI,      "the TX node's USB port"    (TX node + radios)     (pad radio UART)    (pad firmware)
      unmodified)
 
-Port 4000 is Wokwi's serial port (wokwi.toml rfc2217ServerPort); port 5000 is
-served here.  The GUI reaches it because link.py opens ports with
+Port 4000 is Wokwi's serial port (wokwi.toml rfc2217ServerPort); port 4001 is
+served here (not 5000: macOS 12+ keeps that for AirPlay Receiver).  The GUI reaches it because link.py opens ports with
 serial.serial_for_url(), which accepts rfc2217:// addresses as well as COM7.
 
 TX-node behaviour reproduced from firmware/src/common/gse_tx_core.c
@@ -36,7 +36,7 @@ Radio behaviour
 Usage (from the GSE folder; needs pyserial)
     python wokwi_sims/wokwi_bridge.py [--pad-first]               # 1. leave running
     (start the Wokwi simulation in VS Code, tab visible)          # 2.
-    python software/run_gui.py --port rfc2217://localhost:5000    # 3. click Connect
+    python software/run_gui.py --port rfc2217://localhost:4001    # 3. click Connect
     python wokwi_sims/wokwi_pad_test.py inspect                   # 4. after stopping the sim
 
 Requires the two link.py changes (serial.serial_for_url() in SerialLink.open,
@@ -546,7 +546,7 @@ import serial.rfc2217 as W_rfc2217  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="TX-node + radio stand-in between run_gui.py and Wokwi")
-    ap.add_argument("--listen", type=int, default=5000, help="port the GUI connects to")
+    ap.add_argument("--listen", type=int, default=4001, help="port the GUI connects to")
     ap.add_argument("--wokwi", default="rfc2217://localhost:4000", help="Wokwi's serial port")
     ap.add_argument("-v", "--verbose", action="store_true", help="print the pad's AT dialog")
     ap.add_argument("--pad-first", action="store_true",
