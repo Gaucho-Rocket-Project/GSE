@@ -87,6 +87,7 @@ public:
             while (_uart.available() && i + 1 < bufLen) {
                 char c = (char)_uart.read();
                 if (c != '\r') buf[i++] = c;
+                buf[i] = 0; // terminates the string right after c ? ?
             }
             if (i > 0 && strstr(buf, "====") && strchr(buf, '\n')) break;
             delay(2);
