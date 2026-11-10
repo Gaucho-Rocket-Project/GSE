@@ -92,12 +92,12 @@ class App(tk.Tk):
                                    lambda v: self.ctl.set_fill(v))
         self.b_veh = self._toggle(sw, "VEHICLE VALVES   [SwD / Ch6]",
                                   lambda v: self.ctl.set_veh(v))
-        self.b_prg = self._toggle(sw, "PURGE VALVE   [SwA / Ch8]",
-                                  lambda v: self.ctl.set_prg(v))
+        #self.b_prg = self._toggle(sw, "PURGE VALVE   [SwA / Ch8]",
+                                  #lambda v: self.ctl.set_prg(v))
         self.chk_purge = tk.Checkbutton(
             sw, text="purge valve fitted (enables SwA)", bg=CARD, fg=DIM,
             selectcolor=CARD, activebackground=CARD, activeforeground=FG,
-            command=self._enable_purge)
+            command=self._enable_purge, state=tk.DISABLED)
         self.chk_purge.pack(anchor="w", padx=12, pady=(0, 8))
 
         ig = self._card(left, "IGNITER  [SwC + stick lockout / Ch3]")
@@ -228,7 +228,7 @@ class App(tk.Tk):
         self.ctl.apply_cfg(travel_fill=self.v_tf.get(), travel_veh=self.v_tv.get(),
                            travel_prg=self.v_tp.get(), wdg_ds=self.v_wd.get(),
                            ign_max_ds=self.v_ig.get(),
-                           allow_purge=1 if self.chk_purge.get() else 0)
+                           allow_purge=1 if self.ctl.ui.purge_enabled else 0) # intended safety logic?
 
     def _panic(self):
         self.ctl.release_ign()
@@ -307,8 +307,8 @@ class App(tk.Tk):
 
     def _sync_toggles(self):
         for btn, on, label in ((self.b_fill, self.ctl.ui.fill, "FILL VALVE   [SwB / Ch5]"),
-                               (self.b_veh, self.ctl.ui.veh, "VEHICLE VALVES   [SwD / Ch6]"),
-                               (self.b_prg, self.ctl.ui.prg, "PURGE VALVE   [SwA / Ch8]")):
+                               (self.b_veh, self.ctl.ui.veh, "VEHICLE VALVES   [SwD / Ch6]")):
+                               #(self.b_prg, self.ctl.ui.prg, "PURGE VALVE   [SwA / Ch8]")):
             txt = f"{label}:  {'OPEN' if on else 'CLOSED'}"
             if btn.cget("text") != txt:
                 btn.config(text=txt, bg="#12351f" if on else "#0d1116")
