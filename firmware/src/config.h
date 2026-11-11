@@ -79,6 +79,11 @@
 #define PIN_SERVO_FILL        4
 #define PIN_SERVO_VEH         5
 #define PIN_SERVO_PRG         6
+/* Purge servo switched off: GPIO6 gets no PWM, purge commands and CFG
+ * allow_purge are ignored, and STATE reports purge closed.  The protocol
+ * fields stay (always 0), so the GUI and TX node need no change.
+ * Set to 1 to bring the purge servo back.                                   */
+#define GSE_HAS_PURGE         0
 #define PIN_RELAY_IGN         7
 #define PIN_HB                8       /* 50 Hz heartbeat -> hw keep-alive timer */
 #define PIN_STATUS_RGB       48       /* WS2812 on most S3 devkits; -1 = none */
@@ -93,8 +98,16 @@
 
 /* Servo pulse limits (DS3225-class servo). 1000/2000 us = +/-45 deg = the
  * mechanical 90 deg throw of the ball valve handle.                          */
-#define SERVO_MIN_US          1000
-#define SERVO_MAX_US          2000
+// #define SERVO_MIN_US          1000
+// #define SERVO_MAX_US          2000
+/* DS3225, 180-degree version: 500..2500 us = 0..180 deg, 1500 us = centre,
+ * i.e. 500 us per 45 deg.  The scale is fixed here, separately from the clamp,
+ * so that "travel" is real degrees each side of centre: 45 -> 1000/2000 us
+ * (unchanged), 90 -> 500/2500 us (full 180-degree range).  The clamp is only a
+ * safety limit at the servo's own pulse range.                               */
+#define SERVO_US_PER_45DEG    500
+#define SERVO_MIN_US          500
+#define SERVO_MAX_US          2500
 #define SERVO_NEUTRAL_US      1500
 #define SERVO_REFRESH_MS      20      /* 50 Hz                              */
 #define SERVO_DEFAULT_TRAVEL  45       /* deg, each side of neutral          */

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "author": "GSE pad-node bench",
+  "editor": "wokwi",
+  "parts": [
+    { "type": "board-esp32-s3-devkitc-1", "id": "esp", "top": 0, "left": 0, "attrs": {} },
+    { "type": "wokwi-logic-analyzer", "id": "logic1", "top": 20, "left": 260,
+      "attrs": { "channelNames": "FILL,VEH,PRG,IGN,HB,D5,D6,D7" } },
+    { "type": "wokwi-servo",    "id": "sFill", "top": -170, "left": 230, "attrs": {} },
+    { "type": "wokwi-servo",    "id": "sVeh",  "top": -170, "left": 420, "attrs": {} },
+    { "type": "wokwi-led",      "id": "ign",   "top": 200,  "left": 260, "attrs": { "color": "red" } },
+    { "type": "wokwi-resistor", "id": "rPd",   "top": 260,  "left": 260, "attrs": { "value": "10000" } }
+  ],
+  "connections": [
+    [ "esp:17", "$serialMonitor:RX", "", [] ],
+    [ "esp:16", "$serialMonitor:TX", "", [] ],
+    [ "esp:18", "esp:GND.1", "black", [] ],
+    [ "esp:4", "logic1:D0", "green", [] ],
+    [ "esp:5", "logic1:D1", "green", [] ],
+    [ "esp:6", "logic1:D2", "green", [] ],
+    [ "esp:7", "logic1:D3", "red", [] ],
+    [ "esp:8", "logic1:D4", "blue", [] ],
+    [ "esp:GND.2", "logic1:GND", "black", [] ],
+    [ "esp:4", "sFill:PWM", "orange", [] ], [ "esp:5", "sVeh:PWM", "orange", [] ],
+    [ "esp:7", "ign:A", "red", [] ],  [ "ign:C", "esp:GND.3", "black", [] ],
+    [ "esp:7", "rPd:1", "", [] ],     [ "rPd:2", "esp:GND.3", "black", [] ]
+  ]
+}

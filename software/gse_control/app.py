@@ -92,13 +92,9 @@ class App(tk.Tk):
                                    lambda v: self.ctl.set_fill(v))
         self.b_veh = self._toggle(sw, "VEHICLE VALVES   [SwD / Ch6]",
                                   lambda v: self.ctl.set_veh(v))
-        self.b_prg = self._toggle(sw, "PURGE VALVE   [SwA / Ch8]",
-                                  lambda v: self.ctl.set_prg(v))
-        self.chk_purge = tk.Checkbutton(
-            sw, text="purge valve fitted (enables SwA)", bg=CARD, fg=DIM,
-            selectcolor=CARD, activebackground=CARD, activeforeground=FG,
-            command=self._enable_purge)
-        self.chk_purge.pack(anchor="w", padx=12, pady=(0, 8))
+        #self.b_prg = self._toggle(sw, "PURGE VALVE   [SwA / Ch8]",
+                                  #lambda v: self.ctl.set_prg(v))
+        tk.Frame(sw, bg=CARD, height=6).pack()
 
         ig = self._card(left, "IGNITER  [SwC + stick lockout / Ch3]")
         ig.pack(fill="x")
@@ -126,8 +122,7 @@ class App(tk.Tk):
         rows = [("pad_state", "pad state"), ("age", "last valid CMD"),
                 ("link", "link"), ("armed", "arm interlock"),
                 ("ign", "igniter relay"), ("fills", "FILL"),
-                ("vehs", "VEHICLE"), ("prgs", "PURGE"),
-                ("rx", "valid CMDs"), ("crc", "rejected frames"),
+                ("vehs", "VEHICLE"), ("rx", "valid CMDs"), ("crc", "rejected frames"),
                 ("fw", "firmware"), ("uptime", "pad uptime")]
         for i, (k, label) in enumerate(rows):
             r, c = divmod(i, 2)
@@ -142,12 +137,11 @@ class App(tk.Tk):
         cfg.pack(fill="x", pady=(8, 0))
         cfgg = tk.Frame(cfg, bg=CARD); cfgg.pack(fill="x", pady=(0, 8))
         self.v_tf = tk.IntVar(value=45); self.v_tv = tk.IntVar(value=45)
-        self.v_tp = tk.IntVar(value=45); self.v_wd = tk.IntVar(value=P.DEF_WDG_DS)
+        self.v_wd = tk.IntVar(value=P.DEF_WDG_DS)
         self.v_ig = tk.IntVar(value=P.DEF_IGN_MAX_DS)
         for i, (label, var, lo, hi) in enumerate([
                 ("FILL travel (deg)", self.v_tf, 5, 90),
                 ("VEH travel (deg)", self.v_tv, 5, 90),
-                ("PRG travel (deg)", self.v_tp, 5, 90),
                 ("link watchdog (0.1 s)", self.v_wd, P.WDG_DS_MIN, P.WDG_DS_MAX),
                 ("igniter limit (0.1 s)", self.v_ig, P.IGN_DS_MIN, P.IGN_DS_MAX)]):
             tk.Label(cfgg, text=label, bg=CARD, fg=DIM, anchor="w").grid(
@@ -207,10 +201,6 @@ class App(tk.Tk):
             self.btn_conn.config(text="Disconnect", bg=DANGER)
         self.lbl_link.config(text=self.ctl.ui.link_name)
 
-    def _enable_purge(self):
-        self.ctl.ui.purge_enabled = bool(self.chk_purge.get())
-        self.ctl.note(f"purge valve {'enabled' if self.ctl.ui.purge_enabled else 'disabled'}")
-
     def _toggle_arm(self):
         self.ctl.set_arm(not self.ctl.ui.armed)
         self.btn_arm.config(bg=OK if self.ctl.ui.armed else GREY)
@@ -226,9 +216,8 @@ class App(tk.Tk):
 
     def _apply_cfg(self):
         self.ctl.apply_cfg(travel_fill=self.v_tf.get(), travel_veh=self.v_tv.get(),
-                           travel_prg=self.v_tp.get(), wdg_ds=self.v_wd.get(),
-                           ign_max_ds=self.v_ig.get(),
-                           allow_purge=1 if self.chk_purge.get() else 0)
+                           wdg_ds=self.v_wd.get(), ign_max_ds=self.v_ig.get(),
+                           allow_purge=0)          # purge servo switched off on the pad
 
     def _panic(self):
         self.ctl.release_ign()
@@ -281,8 +270,6 @@ class App(tk.Tk):
                  WARN if st.out_fill else FG)
             setv("vehs", "OPEN" if st.out_veh else "CLOSED",
                  WARN if st.out_veh else FG)
-            setv("prgs", "OPEN" if st.out_prg else "CLOSED",
-                 WARN if st.out_prg else FG)
             setv("rx", str(st.rx_count))
             setv("crc", str(st.crc_err), DANGER if st.crc_err else FG)
             setv("fw", f"{st.fw_major}.{st.fw_minor}")
@@ -307,8 +294,8 @@ class App(tk.Tk):
 
     def _sync_toggles(self):
         for btn, on, label in ((self.b_fill, self.ctl.ui.fill, "FILL VALVE   [SwB / Ch5]"),
-                               (self.b_veh, self.ctl.ui.veh, "VEHICLE VALVES   [SwD / Ch6]"),
-                               (self.b_prg, self.ctl.ui.prg, "PURGE VALVE   [SwA / Ch8]")):
+                               (self.b_veh, self.ctl.ui.veh, "VEHICLE VALVES   [SwD / Ch6]")):
+                               #(self.b_prg, self.ctl.ui.prg, "PURGE VALVE   [SwA / Ch8]")):
             txt = f"{label}:  {'OPEN' if on else 'CLOSED'}"
             if btn.cget("text") != txt:
                 btn.config(text=txt, bg="#12351f" if on else "#0d1116")
