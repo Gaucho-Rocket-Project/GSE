@@ -129,7 +129,7 @@ static inline void servoUs(int idx, int state01, uint8_t travelDeg)
 {
     static const uint8_t pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
     int deg  = constrain((int)travelDeg, SERVO_MIN_TRAVEL, SERVO_MAX_TRAVEL);
-    int span = (SERVO_MAX_US - SERVO_MIN_US) / 2;               /* 500us / 45deg */
+    int span = SERVO_US_PER_45DEG;            /* scale, not tied to the clamp */
     int us   = SERVO_NEUTRAL_US + (state01 ? span * deg / 45 : -span * deg / 45);
     us = constrain(us, SERVO_MIN_US, SERVO_MAX_US);
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
