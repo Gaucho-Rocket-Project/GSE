@@ -4,17 +4,28 @@ Replacement for the FS-i6X transmitter + FS-iA10B receiver in Section VI of the 
 *Mojave Sphinx* guidebook (HCR-5100).
 
 ```
-laptop (Python GUI) --USB-C--> ESP32-S3 TX node --UART--> DX-LR41 ))) 2.4 GHz LoRa (((
-                                    DX-LR41 --> ESP32-S3 pad node --> 3 servo PWM + igniter relay
+laptop (Python GUI) --USB--> ESP32 TX node ))) ESP-NOW ((( ESP32 pad node --> servos + igniter relay
 ```
+
+ESP-NOW is the default between ESP32 nodes; a DX-LR42/LR41 LoRa link is available
+with `-D GSE_LINK_LORA` on both ends. ESP-NOW requires provisioning both station
+MACs and replacing the published default keys before use. The older ECR and insert
+PDFs describe the original LoRa architecture, not approval of this new default.
+See [`docs/LINK_OPTIONS.md`](docs/LINK_OPTIONS.md) and complete the hardware test gates.
+
+The nodes are ESP32 devkits. **ESP32-S3-DevKitC-1 (or N16R8 "SuperMini") is the default**, and the classic
+**"ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth"** (ESP32-WROOM-32, 30/38-pin, CP2102/CH340
+USB) is supported as an *optional* board variant for either node — see
+[Board variants](#board-variants-esp32-s3-or-esp-32s).
 
 ## Read these in this order
 
 | File | What it is |
 |---|---|
-| `ECR-01_GSE_radio_replacement.pdf` | The engineering change report: rationale, architecture, safety analysis, BOM delta, risks, and the exact handbook text to replace. **Start here.** |
+| `ECR-01_GSE_radio_replacement.pdf` | The engineering change report: rationale, architecture, safety analysis, BOM delta, risks, and the exact handbook text to replace. Original LoRa design; ESP-NOW still needs its own validation. |
 | `docs/INSERT_SECTION_VI.pdf` | Insert-ready replacement pages 236–255, laid out to match HCR-5100. |
 | `docs/TEST_PLAN.md` | Bench and range test gates. Nothing flies until G1–G4 are signed. |
+| `docs/LINK_OPTIONS.md` | Default ESP-NOW vs optional LoRa: what changes, what does not, range, security, MAC provisioning. |
 | `docs/OPERATOR_CARD.md` | One page for the toolbox lid. |
 | `hardware/wiring.md` | Pinouts, keep-alive circuit, bench bring-up checklist. |
 
@@ -31,10 +42,16 @@ Channel numbers are unchanged from the handbook: **FILL Ch5, VEHICLE Ch6, PURGE 
 ## Quick start
 
 ```bash
-# firmware  (needs PlatformIO)
+# firmware (needs PlatformIO), example: ESP-32S TX, ESP32-S3 pad
 cd firmware
-pio run -e tx-node  -t upload      # first ESP32-S3 (or: pio run -e tx-nucleo -t upload)
-pio run -e pad-node -t upload      # second ESP32-S3
+# First flash each, read each local MAC from its USB banner, set both MACs and
+# private keys in src/config.h, then rebuild and reflash BOTH boards.
+pio run -e tx-node-esp32s -t upload
+pio run -e pad-node -t upload
+# Optional LoRa on BOTH ends instead:
+# pio run -e tx-node-lora-esp32s -t upload
+# pio run -e pad-node-lora -t upload
+cd ..
 
 # laptop app (tkinter + pyserial)
 python software/run_gui.py --sim               # no hardware: simulated pad
@@ -42,9 +59,54 @@ python software/run_gui.py --port /dev/ttyACM0 # real TX node
 python software/run_gui.py --port COM7
 ```
 
+## Board variants: ESP32-S3 or ESP-32S
+
+Two ESP32 board families are supported, and the choice is a build flag rather than a code fork. The
+protocol, the failsafes, the watchdog, the GUI and every procedure are identical; only the pin map and
+the USB/LED plumbing differ. **A pad node on either board talks to a TX node on either board.**
+
+| | ESP32-S3 (default) | ESP-32S (optional) |
+|---|---|---|
+| Board | ESP32-S3-DevKitC-1, N16R8 "SuperMini" | "ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth" (ESP32-WROOM-32, 30/38-pin) |
+| Build | `pio run -e tx-node` / `-e pad-node` | `pio run -e tx-node-esp32s` / `-e pad-node-esp32s` |
+| Flag | `-D GSE_BOARD_ESP32_S3` (or nothing) | `-D GSE_BOARD_ESP32S` |
+| Laptop port | native USB-CDC (`/dev/ttyACM*`) | CP2102/CH340 bridge on UART0 (`/dev/ttyUSB*`, `COM5`-style) |
+| Laptop driver | none on Linux/macOS; may need the ESP32 USB driver on Windows | CP210x/CH340 driver, which every OS ships |
+| Optional LoRa UART | UART1, D16/D17, AUX D18 | UART1, D16/D17 (RX2/TX2), AUX D18 |
+| Status LED | WS2812 on GPIO48, five colours | on-board blue LED on GPIO2, blink pattern |
+| Wiring that moves | -- | PURGE D6→**D15**, IGNITER D7→**D13**, heartbeat D8→**D33** (GPIO6–11 are SPI flash) |
+
+### Optional LoRa module wiring
+
+* **M0 and M1 → GND on both modules.** They are module outputs while the factory-default `AT+SWITCH=0` is in force,
+  but the moment a module is in `AT+SWITCH=1` they become weakly-pulled-up *mode inputs*, and a floating pin parks the
+  module in AT mode, wake-on-radio or sleep — it provisions cleanly and never receives. See
+  [`hardware/wiring.md` §1.2](hardware/wiring.md#12-m0--m1-do-not-leave-them-floating).
+* **LR42 and LR41 are not the same on VCC.** LR42-24T12D takes 3.3–5.5 V (5 V typical, ≥5 V for full power);
+  LR41-24T12S is 3.3 V only. UART levels are 3.3 V on both. Check the silkscreen before you power the board.
+* **The UART is crossed.** LR42 pin 3 is `RX` (input) and goes to the ESP32's **D17**; pin 4 is `TX` (output) and
+  goes to **D16**. The vendor's reference circuit is reproduced in [`hardware/wiring.md` §1.1](hardware/wiring.md#11-the-vendors-own-reference-circuit-lr42-manual-figure-6).
+* **AUX is optional.** Wire it to D18, or leave it off and build with `-DGSE_LORA_AUX_NONE` (you lose busy-flow
+  control, nothing else). The boot log says which mode the firmware is in.
+
+Both nodes print the module's own `AT+HELP` dump at provisioning (`LOG RADIO ...`), plus the answer to a separate
+`AT+SWITCH` query (`LOG | SWITCH:0 ...` — v2.0's `AT+HELP` banner does not carry that field), so the
+configuration that decides whether the link works is in the log instead of assumed.
+
+The three pad-node pins that move do so because GPIO6..11 are wired to the SPI flash on every
+ESP32-WROOM-32; an ESP32-S3 devkit can drive GPIO6, a WROOM-32 cannot. Everything else is the same wire.
+`src/config.h` refuses to build a pad node that puts a servo, the relay or the heartbeat on a flash pin
+or on an input-only pin (GPIO34–39), and refuses to put the igniter relay on a strapping pin. The pin
+map and the full wiring table are in [`hardware/wiring.md`](hardware/wiring.md).
+
+Neither flag is required: with no flag at all the build targets the ESP32-S3, so every existing command
+and every existing board keeps working unchanged.
+
 ## If upload fails
 
-`Failed to connect to ESP32-S3: No serial data received` is an esptool problem, not a build problem. See
+`Failed to connect to ESP32-S3: No serial data received` is an esptool problem, not a build problem. (An
+ESP-32S is easier here: its single micro-USB socket is a USB-UART bridge, so this failure basically cannot
+happen -- see the board-variant section above.) See
 **`docs/TROUBLESHOOTING_UPLOAD.md`** — in order: use the **UART** socket (not the native USB one), the upload
 speed is already pinned to 115200, and BOOT+RST forces download mode.
 
@@ -59,24 +121,31 @@ diagnosis takes one glance at the board.
 ## Tests
 
 ```bash
-make -C tests run                 # 6 C tests on the wire protocol + 29 on the portable TX core
-python software/tests/test_protocol.py   # 9 host tests, incl. byte-identical golden frames
-python software/tests/test_sim_loop.py   # 4 closed-loop tests against the pad simulator
+make -C tests run                 # wire-protocol tests (incl. one-frame-one-datagram) + the TX core
+sh tests/esp32_syntax_check.sh    # every ESP32 board variant compiles (host g++, no toolchain),
+                                  # LoRa and ESP-NOW, against Arduino-ESP32 2.x and 3.x
+python software/tests/test_protocol.py    # 9 host tests, incl. byte-identical golden frames
+python software/tests/test_sim_loop.py    # 6 closed-loop tests against the pad simulator
+python software/tests/test_gui_config.py  # 8 GUI tests (config panel, connect errors, banners)
 ```
 
-All 48 currently pass, and all three firmware targets build (`tx-node`, `pad-node`, `tx-nucleo`).
+The integration test runs the real TX core, ESP-NOW adapter and pad output loop
+with mocked radios and GPIO for both pin maps. This is not a hardware test.
+`pio run` and the physical bench/range gates still need to be run on the target
+boards; do not connect an igniter during initial tests.
 
 ## Repo map
 
 ```
-firmware/                  PlatformIO project, three environments
+firmware/                  PlatformIO project, ESP-NOW defaults and optional LoRa environments
   src/common/gse_protocol.h   wire protocol + failsafe rules (single source of truth)
-  src/config.h                all builder-editable constants (pins, channels, limits)
+  src/config.h                all builder-editable constants (board variant, pins, channels, limits)
   src/dxlr41.h                AT-command driver with verification
+  src/link.h                  transport seam: ESP-NOW (default) or LoRa module
   src/pad/pad_node.cpp        pad node firmware
   src/common/gse_hal.h        seven platform services a TX node supplies
   src/common/gse_tx_core.c    portable laptop-side bridge (pacing, stale reject, SAFE stream)
-  src/tx/tx_platform_esp32.cpp  ESP32-S3 platform layer
+  src/tx/tx_platform_esp32.cpp  ESP32 platform layer (ESP32-S3 and ESP-32S)
   src/stm32/tx_platform_nucleo.cpp  Nucleo-H753ZI platform layer (env tx-nucleo)
   stm32/tx_platform_stm32.c   STM32Cube HAL port + README for CubeIDE users
 software/
@@ -87,7 +156,7 @@ software/
   gse_control/controller.py   GUI logic (headless-testable)
   gse_control/app.py          tkinter GUI
   tests/                      protocol + closed-loop tests
-tests/                        C unit tests
+tests/                        C unit tests + the ESP32 board-variant syntax check
 tools/make_figures.py         regenerates the documentation figures
 tools/build_ecr_pdf.py        renders ECR-01 markdown -> PDF (source of truth is the .md)
 tools/finish_insert.py        stamps the HCR-5100 page chrome onto the Section VI insert

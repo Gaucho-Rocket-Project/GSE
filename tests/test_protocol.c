@@ -151,6 +151,87 @@ static void test_stream_split(void)
            (unsigned long)p.frames_bad);
 }
 
+/* ------------------------------------------------------------------------
+ * ESP-NOW transport framing (firmware/src/link.h, -DGSE_LINK_ESPNOW)
+ *
+ * Over LoRa the 7E frame goes into a UART as a byte stream.  Over ESP-NOW it
+ * goes into ONE datagram, because ESP-NOW carries 250 bytes and the largest
+ * frame this protocol can build is 39.  That removes the chunk/reassemble step
+ * the earlier Bluetooth transport needed -- but it also introduces one new way
+ * to lose a command that must be ruled out, and it is worth a test rather than
+ * an argument:
+ *
+ *   a datagram is delivered whole or not at all.  If a frame ever grew past
+ *   ESP_NOW_MAX_DATA_LEN, esp_now_send() would reject it, the TX node would
+ *   report a failed send, and the pad would simply never see that frame type.
+ *   Silently.  So the size relationship is asserted here against the real
+ *   encoder, at the real maximum, and link.h asserts it again at compile time.
+ */
+#define NOW_MAX_DATAGRAM 250u        /* ESP_NOW_MAX_DATA_LEN (esp_now.h)    */
+#define NOW_PREFIX       3u          /* LoRa fixed-point prefix, stripped    */
+
+static void test_espnow_single_datagram(void)
+{
+    uint8_t buf[GSE_MAX_FRAME];
+
+    /* The largest frame the protocol can carry, at its largest content. */
+    gse_state_t st; memset(&st, 0, sizeof st);
+    st.flags = GSE_ST_LINK_OK | GSE_ST_HELLO_OK | GSE_ST_ARMED | GSE_ST_IGN_ON;
+    st.age_ms = 65535; st.rx_count = 60000; st.uptime_s = 65535;
+    st.pad_state = GSE_PAD_RUN;
+    size_t ns = gse_encode_state(3, &st, buf);
+    assert(ns <= NOW_MAX_DATAGRAM);
+    assert(ns + NOW_PREFIX <= NOW_MAX_DATAGRAM);   /* the TX core's form too */
+
+    /* ... and it survives a round trip through the parser as one write. */
+    gse_parser_t p; gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i < ns; ++i) gse_parser_push(&p, buf[i], on_frame, NULL);
+    assert(g_frames == 1 && g_last_type == GSE_T_STATE &&
+           g_last_len == sizeof(gse_state_t));
+    assert(memcmp(g_last_payload, &st, sizeof st) == 0);
+    printf("  ok  largest frame (%zu B) fits one ESP-NOW datagram\n", ns);
+
+    /* The command frame is what matters for safety, and it is the smallest. */
+    gse_cmd_t c; memset(&c, 0, sizeof c);
+    c.arm_code = GSE_ARM_CODE; c.fill = 1; c.veh = 1; c.tx_ms = 0x1234;
+    size_t nc = gse_encode_cmd(4, &c, buf);
+    assert(nc + NOW_PREFIX <= NOW_MAX_DATAGRAM);
+    gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i < nc; ++i) gse_parser_push(&p, buf[i], on_frame, NULL);
+    assert(g_frames == 1 && g_last_type == GSE_T_CMD);
+    printf("  ok  CMD (%zu B) fits one ESP-NOW datagram\n", nc);
+}
+
+static void test_espnow_lost_datagram(void)
+{
+    /* Datagram-delivered or lost, never partial -- but the parser must behave
+     * if a future transport does hand it a partial one (a reboot mid-write, a
+     * driver revision that splits), so the same guarantee as before holds:
+     * a torn frame costs one frame and can never become a command. */
+    uint8_t sbuf[GSE_MAX_FRAME], cbuf[GSE_MAX_FRAME];
+    gse_state_t st; memset(&st, 0, sizeof st);
+    st.flags = GSE_ST_LINK_OK; st.age_ms = 7;
+    size_t ns = gse_encode_state(1, &st, sbuf);
+
+    gse_cmd_t c; memset(&c, 0, sizeof c);
+    c.arm_code = GSE_ARM_CODE; c.veh = 1; c.tx_ms = 0xABCD;
+    size_t ncmd = gse_encode_cmd(2, &c, cbuf);
+
+    gse_parser_t p; gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i < ns / 2; ++i)                 /* first half only */
+        gse_parser_push(&p, sbuf[i], on_frame, NULL);
+    for (size_t i = 0; i < ncmd; ++i)                   /* then a good one */
+        gse_parser_push(&p, cbuf[i], on_frame, NULL);
+    assert(g_frames == 1 && g_last_type == GSE_T_CMD);
+    printf("  ok  a torn frame costs one frame, never a false command\n");
+
+    gse_parser_init(&p); g_frames = 0;
+    for (size_t i = 0; i + 2 < ncmd; ++i)               /* cut before the CRC */
+        gse_parser_push(&p, cbuf[i], on_frame, NULL);
+    assert(g_frames == 0);
+    printf("  ok  a truncated frame is not delivered\n");
+}
+
 int main(void)
 {
     printf("gse_protocol tests\n");
@@ -160,6 +241,8 @@ int main(void)
     test_corruption_recovery();
     test_failsafe_matrix();
     test_stream_split();
+    test_espnow_single_datagram();
+    test_espnow_lost_datagram();
     printf("ALL PASS\n");
     return 0;
 }

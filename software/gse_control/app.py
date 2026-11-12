@@ -39,6 +39,49 @@ PURPLE = "#7b2fbf"
 GREY = "#3a444d"
 
 
+def ctl_purge_enabled(ctl) -> bool:
+    """Initial tick state of the "purge valve fitted" box.
+
+    Taken from the controller's own gate (`ui.purge_enabled`), which is what
+    `Controller.set_prg()` actually checks -- not from the widget, and not from
+    a constant.  Starting the box ticked while the controller still has purge
+    blocked would show the operator a tick they can act on and then silently
+    refuse; the two must be born equal.
+    """
+    return bool(getattr(getattr(ctl, "ui", None), "purge_enabled", False))
+
+
+def describe_port_error(port: str, exc: Exception) -> str:
+    """Turn an open() failure into something an operator can act on.
+
+    The three that actually happen, in order of frequency:
+      * the port is already open somewhere else (a terminal, or a previous copy
+        of this program that was closed with the window X and never exited);
+      * the port is a USB device that has gone away, or is not the TX node;
+      * the port name does not exist on this machine (wrong COM number, wrong
+        /dev entry, board unplugged).
+    """
+    msg = str(exc) or exc.__class__.__name__
+    low = msg.lower()
+    text = f"{port}: {msg}"
+    if "permission" in low or "access is denied" in low or "errno 13" in low:
+        text += ("\n\nThe port exists but cannot be opened - another program "
+                 "has it (a serial terminal, the Arduino IDE, or a previous "
+                 "copy of this window). Close it and press Connect again.")
+        text += ("\nOn Linux, also check that you are in the dialout group: "
+                 "sudo usermod -aG dialout $USER, then log out and in.")
+    elif "busy" in low or "resource" in low or "errno 16" in low:
+        text += ("\n\nThe port is busy: close whatever else has it open and "
+                 "press Connect again.")
+    elif "no such file" in low or "not found" in low or "could not open port" in low \
+            or "filenotfound" in low or "errno 2" in low:
+        text += ("\n\nThat port does not exist. Press Refresh and pick the "
+                 "entry for the TX node (it appears as an ESP32-S3 CDC device, "
+                 "or a CP210x/CH340 bridge on an ESP-32S). If nothing is listed, "
+                 "the board is unplugged or its cable is charge-only.")
+    return text
+
+
 class App(tk.Tk):
     def __init__(self, controller: Controller, sim: bool = False):
         super().__init__()
@@ -94,10 +137,17 @@ class App(tk.Tk):
                                   lambda v: self.ctl.set_veh(v))
         self.b_prg = self._toggle(sw, "PURGE VALVE   [SwA / Ch8]",
                                   lambda v: self.ctl.set_prg(v))
+        # A Checkbutton is a *widget*, not a variable: it has no .get() of its
+        # own (cget() reads widget options, not state).  The state lives in a
+        # BooleanVar that both the widget and the callbacks read, so the value
+        # and the tick mark can never disagree.  (Reading self.chk_purge.get()
+        # raised "AttributeError: 'Checkbutton' object has no attribute 'get'"
+        # on every Apply and on every purge toggle.)
+        self.v_purge = tk.BooleanVar(value=ctl_purge_enabled(self.ctl))
         self.chk_purge = tk.Checkbutton(
             sw, text="purge valve fitted (enables SwA)", bg=CARD, fg=DIM,
             selectcolor=CARD, activebackground=CARD, activeforeground=FG,
-            command=self._enable_purge)
+            variable=self.v_purge, command=self._enable_purge)
         self.chk_purge.pack(anchor="w", padx=12, pady=(0, 8))
 
         ig = self._card(left, "IGNITER  [SwC + stick lockout / Ch3]")
@@ -196,20 +246,46 @@ class App(tk.Tk):
         else:
             port = self.port_var.get().strip() or ("SIM" if self.sim else None)
             if not port:
-                messagebox.showwarning("Port", "Select the TX-node USB port first "
-                                               "(it appears as an ESP32-S3 CDC device).")
+                messagebox.showwarning(
+                    "Port",
+                    "Select the TX-node USB port first "
+                    "(it appears as an ESP32-S3 CDC device, or a CP210x/CH340 "
+                    "bridge on an ESP-32S board).\n\n"
+                    "Nothing listed? Press Refresh; if it is still empty the "
+                    "board is unplugged, the cable is charge-only, or the USB "
+                    "driver is missing.\n\n"
+                    "No hardware at all? Run with --sim to rehearse against the "
+                    "built-in pad simulator.")
                 return
             try:
                 self.ctl.connect(port)
             except Exception as exc:                       # noqa: BLE001
-                messagebox.showerror("Connect failed", str(exc))
+                # "unable to connect" with a bare OSError string is not enough
+                # to act on.  Say which of the three usual causes it is, and
+                # put it in the event log as well as the dialog, because the
+                # dialog disappears and the log does not.
+                why = describe_port_error(port, exc)
+                self._log(f"connect failed: {why}")
+                self.ctl.note(f"connect failed: {why}")
+                messagebox.showerror("Connect failed", why)
                 return
             self.btn_conn.config(text="Disconnect", bg=DANGER)
         self.lbl_link.config(text=self.ctl.ui.link_name)
 
     def _enable_purge(self):
-        self.ctl.ui.purge_enabled = bool(self.chk_purge.get())
-        self.ctl.note(f"purge valve {'enabled' if self.ctl.ui.purge_enabled else 'disabled'}")
+        """Tick box <-> the two places the answer actually matters.
+
+        `ui.purge_enabled` is the GUI-side gate (Controller.set_prg refuses
+        PURGE while it is false); `cfg.allow_purge` is the field sent to the pad
+        in a CFG frame.  Both are updated here so they cannot drift; the pad is
+        told on the next "Apply to pad", exactly like the other configuration
+        fields, and the note says so.
+        """
+        on = bool(self.v_purge.get())
+        self.ctl.ui.purge_enabled = on
+        self.ctl.cfg.allow_purge = 1 if on else 0
+        self.ctl.note(f"purge valve {'enabled' if on else 'disabled'}"
+                      " (press 'Apply to pad' to send)")
 
     def _toggle_arm(self):
         self.ctl.set_arm(not self.ctl.ui.armed)
@@ -228,7 +304,7 @@ class App(tk.Tk):
         self.ctl.apply_cfg(travel_fill=self.v_tf.get(), travel_veh=self.v_tv.get(),
                            travel_prg=self.v_tp.get(), wdg_ds=self.v_wd.get(),
                            ign_max_ds=self.v_ig.get(),
-                           allow_purge=1 if self.chk_purge.get() else 0)
+                           allow_purge=1 if self.v_purge.get() else 0)
 
     def _panic(self):
         self.ctl.release_ign()
