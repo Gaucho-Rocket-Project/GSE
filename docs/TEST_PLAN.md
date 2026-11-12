@@ -4,16 +4,26 @@
 
 Legend — **B** bench, **R** range, **H** hardware-only (no firmware change needed to pass).
 
+**Hardware warning:** the former simple GPIO/resistor/capacitor keep-alive circuit
+cannot detect a heartbeat stuck high. An independently reviewed edge-sensitive
+watchdog and fail-safe ignition disconnect must be designed and validated for
+stuck-high, stuck-low, startup and power loss before hazardous operation. The
+software/host tests do not verify this hardware.
+
 ---
 
 ## Gate summary
 
 | Gate | Tests | Blocks |
 |---|---|---|
-| G1 — modules alive | T-01, T-02 | anything |
+| G1 — modules alive | T-00, T-01, T-01a, T-02 | anything |
 | G2 — link | T-03, T-05, T-07 | servo integration |
 | G3 — safety | T-04, T-06 | connecting a real e-match |
 | G4 — flight worthiness | T-08, T-09, T-10 | the first live oxidizer fill |
+
+**ESP-NOW builds (`-DGSE_LINK_ESPNOW`):** substitute **T-11** for T-00, T-01, T-01a, T-02, T-03 and
+T-07. G1 becomes "the Wi-Fi radio started and both peer MACs are provisioned" (T-11 steps 1–3), G2
+becomes T-11 steps 4–7, and G3/G4 are unchanged. For LoRa builds, retain the original module tests.
 
 ---
 
@@ -26,6 +36,42 @@ Legend — **B** bench, **R** range, **H** hardware-only (no firmware change nee
 5. Repeat for the second module; it must show the mirrored channel (`0e`) and `MAC=00,01`.
 
 **Pass:** both banners match the values in `firmware/src/config.h`. Attach the banners to the test record.
+
+---
+
+## T-00 · Mode-select pins and module identity (B) — do this first
+
+Purpose: two silent, "everything looks configured" failures are excluded before any other test.
+
+1. With the module powered, read its `AT+HELP` banner (terminal at 9600, or the node's own `LOG RADIO` block).
+2. Confirm `SWITCH:0`. If it reads `1`, the module is in hardware-mode-select and **M0/M1 must not be floating** —
+   send `AT+SWITCH0`, then tie M0 and M1 to GND and re-power. A floating pin in that state parks the module in AT,
+   WOR or sleep mode: it answers commands and never receives.
+3. Confirm the UART direction: module **pin 3 (`RX`, data in) ← D17**, module **pin 4 (`TX`, data out) → D16**.
+   With the node's firmware running, a module wired backwards answers no AT commands and provisioning stops at
+   `AT entry failed`.
+4. Record **which module** is fitted — `DX-LR41-24T12S` (3.3 V only) or `DX-LR42-24T12D` (3.3–5.5 V, 5 V typical) —
+   and measure VCC against it. UART signalling is 3.3 V for both.
+
+**Pass:** `SWITCH:0` on both modules, M0/M1 tied to GND on both, UART crossed as above, VCC within the datasheet range of the module
+actually fitted (LR41: 3.2–3.4 V; LR42: 3.3–5.5 V). Record the two module part numbers in the log book.
+
+---
+
+## T-01a · Board variant identification (B) — required if either node is not an ESP32-S3
+
+Purpose: prove the board in the hand matches the firmware in it. The ESP-32S variant moves three pad-node
+pads (PURGE D6→D15, IGNITER D7→D13, heartbeat D8→D33) because GPIO6–11 are SPI flash on a WROOM-32.
+
+1. Open each node's USB port at 115200 and power-cycle it.
+2. TX node must print `LOG TX esp32s3 fw 1.0 ready`, `LOG TX esp32s fw 1.0 ready` or
+   `LOG TX stm32 fw 1.0 ready`; the board name must match the board.
+3. Pad node must print `LOG PAD boot fw 1.0 board=<board> pins FILL=… VEH=… PRG=… IGN=… HB=…`.
+   ESP32-S3: `PRG=6 IGN=7 HB=8`. ESP-32S: `PRG=15 IGN=13 HB=33`.
+4. With a lamp (never an igniter) on IGN: confirm the relay clicks only on the pad listed in the banner.
+
+**Pass:** banner board and pin numbers match the physical harness; no probing needed to find out which
+pad does what. Record board type and environment name for both nodes.
 
 ---
 
@@ -135,6 +181,51 @@ Before every launch day, record the configuration actually in force (read from t
 
 **Pass:** every difference is explained in the log.
 
+---
+
+## T-11 · ESP-NOW transport (B, then R) — for default ESP-NOW builds
+
+ESP-NOW is the ESP32 default and needs its own gate. For optional LoRa builds, T-00…T-10 apply.
+
+**This test replaces T-00, T-01, T-01a, T-02, T-03 and T-07** (there is no module to provision, no
+M0/M1, no channel/KEY word pair, no UART to cross, no baud rate). **T-04, T-06, T-08, T-09 and T-10
+still apply in full** — they are transport-independent and are the ones that decide whether the vehicle
+is safe.
+
+0. **Host tests.** `python software/tests/test_gui_config.py` passes — it drives the
+   GUI's own callbacks headlessly and covers the configuration panel, the
+   connect-failure messages and the banner wording (this is the test that would
+   have caught `AttributeError: 'Checkbutton' object has no attribute 'get'`).
+1. **Builds.** `sh tests/esp32_syntax_check.sh` passes, and `pio run -e pad-node` /
+   `pio run -e tx-node` complete with no warnings from `src/`.
+2. **Provisioning (B).** First flash prints `local MAC …` on each board. Both MACs go into
+   `firmware/src/config.h`, both boards are rebuilt and reflashed. **Before** the rebuild each node must
+   say `peer MAC NOT CONFIGURED` and must **not** report `LINK OK` — a pad that cannot hear its TX node
+   must not look healthy. **Record both MACs here.**
+3. **Boot banners.** Pad: `PAD link: espnow -- ESP-NOW ch 1, local … -> peer …` then `PAD LINK OK`. TX:
+   `link: espnow …` then `espnow: ch 1 -> peer registered` then `TX … ready`. No `LINK FAULT` /
+   `RADIO FAULT` on either.
+4. **Link.** Both powered: within 2 s the pad's heartbeat reads `LINK OK` with `bytes`, `sof` and
+   `valid` all climbing, the TX node's `state=` counter climbing, and the GUI banner **LINK OK — NOT
+   ARMED**. `rx foreign` reads 0 with nothing else on that channel.
+5. **Kill and recover.** Power-cycle the TX node. Pad goes `NO-LINK (safe)` within 1 s, holds outputs
+   safe, and returns to `LINK OK` on its own within ~1 s of the TX node returning — no reset of the pad.
+6. **Key mismatch (B).** Rebuild **one** end with a different `GSE_NOW_KEY_TEXT`. Neither node may
+   receive valid commands or fresh telemetry; outputs must remain in their safe positions. A local
+   `PAD LINK OK (waiting...)` banner alone does not prove the peer is reachable. Restore matching keys.
+7. **Range (R).** Walk the TX node away until the pad drops to NO-LINK; record distance and what was in
+   between. Repeat ×3. **Pass: measured range ≥ 2× the planned operating separation.**
+8. **Watchdog (H).** With FILL commanded open, power off the TX node: FILL closes and VEHICLE opens
+   within `wdg_ds`. Same acceptance as T-04.
+9. **Igniter (H).** IGN outlet **unloaded**, scope/LED on the relay contacts: arm, fire, one pulse
+   ≤ `ign_max_ds`, no repeat while held. Same acceptance as T-06.
+10. **Wrong-pair check.** One node LoRa, one node ESP-NOW: no valid command or fresh telemetry may
+    arrive; pad outputs must remain safe. A local setup-success banner is not proof of communication.
+11. **Sign-off.** Record board serials, **both MACs**, firmware commit, the measured range from step 7,
+    and who ran steps 7–9.
+
+**Pass:** all of the above, with the range figure written down. See [LINK_OPTIONS.md](LINK_OPTIONS.md)
+for the full comparison and the security note.
 ---
 
 ## Sign-off

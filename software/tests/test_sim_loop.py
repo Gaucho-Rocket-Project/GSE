@@ -39,6 +39,21 @@ def test_link_stays_up():
     ctl.disconnect()
 
 
+def test_fill_and_srv_controls_follow_both_states():
+    ctl = Controller(port="SIM")
+    ctl.connect()
+    pump(ctl, 0.3)
+    ctl.set_fill(True)
+    ctl.set_veh(True)
+    pump(ctl, 0.2)
+    assert ctl.pad.out_fill == 1 and ctl.pad.out_veh == 1
+    ctl.set_fill(False)
+    ctl.set_veh(False)
+    pump(ctl, 0.2)
+    assert ctl.pad.out_fill == 0 and ctl.pad.out_veh == 0
+    ctl.disconnect()
+
+
 def test_watchdog_safes_on_silence():
     ctl = Controller(port="SIM")
     ctl.connect()
@@ -115,13 +130,18 @@ def test_verdict_names_the_failure():
     ctl.link.node_log = []
     assert ctl.verdict() == ("red", "NO PAD TELEMETRY")
 
-    ctl.link.node_log = ["PAD RADIO OK  (waiting for the TX node)"]
+    # the wording is "PAD LINK OK / PAD LINK FAULT" now that the pad can be on
+    # either transport (the LoRa module or Bluetooth); the old text said RADIO
+    ctl.link.node_log = ["PAD LINK OK  (waiting for the TX node)"]
     colour, text = ctl.verdict()
-    assert colour == "red" and "LINK DEAD" in text, text
+    assert colour == "red" and "NO DATA" in text, text
 
-    ctl.link.node_log.append("PAD RADIO FAULT: CHANNEL did not stick")
+    ctl.link.node_log.append("PAD LINK FAULT: CHANNEL did not stick")
     colour, text = ctl.verdict()
-    assert "RADIO FAULT" in text and "did not stick" in text, text
+    assert "LINK FAULT" in text and "did not stick" in text, text
+    ctl.link.node_log = ["TX esp32s3 fw 1.0 RADIO FAULT"]
+    colour, text = ctl.verdict()
+    assert colour == "red" and "TX LINK FAULT" in text, text
 
 
 if __name__ == "__main__":
