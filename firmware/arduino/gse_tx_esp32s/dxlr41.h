@@ -1,0 +1,352 @@
+/*
+ * dxlr41.h  --  driver for the DX-LR41-24T12S (Semtech SX1281, 2.4 GHz)
+ *
+ * The module is an opaque UART "transparent pipe": whatever you write into
+ * TXD comes out of the remote module's RXD (same channel, same LEVEL, same
+ * KEY).  No packet boundaries, no addressing, no ACK -- the GSE protocol
+ * frame in gse_protocol.h provides all of that.
+ *
+ * Verified against "DX-LR41-24T12S 串口应用指导 v2.0 (2025-08-11)":
+ *   - UART default 9600 8N1, AT+BAUD index 2
+ *   - AT+LEVEL n : n=0..7 LoRa, n=8 FLRC. Default 3 (10 kbit/s, 2.2 km).
+ *       LEVEL 8 (FLRC 1.04 Mbit/s) needs payload >= 6 bytes, <= 127 bytes,
+ *       and disables the KEY feature.  Our frames are 19/27/10 bytes -> OK.
+ *   - AT+MODE 1 = fixed-point transfer (receiver address + channel prefix),
+ *     then packets can be filtered per module.  Unicast is worth the 3 bytes.
+ *   - AT+CHANNEL hh : 2400 MHz + 2 MHz * hh, 0x00..0x32.  Default 0x0C (2424).
+ *   - AT+PACKET 0..3 = 32/64/128/230 byte chunks.
+ *   - AT+POWE 0..13 dBm (default 13).
+ *   - AT+OPENKEY 1 / AT+KEY n (0..65535) XOR "encryption" + KEY.  With only
+ *     two nodes on a private channel this is not a security boundary; it does
+ *     stop the occasional neighbour's LR41 from being understood.
+ *   - AUX pin: high while the module is busy (TX in progress / RX / config).
+ *     The module raises AUX 2-3 ms *before* it starts pushing received bytes.
+ *   - AT+SWITCH 0 (factory default) = modes selected over the UART with AT
+ *     commands.  AT+SWITCH 1 = modes selected by the M0/M1 PINS, and the
+ *     vendor is explicit that with SWITCH=1 those pins are weakly pulled up
+ *     and "must not be left floating, or mode switching becomes abnormal".
+ *     We use mode 0 (AT commands) and pin M0/M1 low anyway -- see the
+ *     "M0/M1" note in hardware/wiring.md.  A module whose M0/M1 float can
+ *     random-walk between high-timeliness / AT / WOR / sleep at every reset,
+ *     which looks exactly like "the radio provisions but never receives".
+ *   - AT+SWITCH is NOT part of the AT+HELP banner in v2.0 (the banner is
+ *     +VERSION / MODE / LEVEL / SLEEP / Frequency / MAC / CRC / Openkey /
+ *     Power).  It has to be asked for with a bare "AT+SWITCH" query, which
+ *     answers "+SWITCH=n".  configure() therefore asks explicitly and appends
+ *     the answer to the banner it prints, so the console line the docs tell
+ *     operators to read ("SWITCH:0") really is there.  Before that fix the
+ *     docs pointed at a field the module never sent, which reads as "the
+ *     firmware cannot see the switch state" -- exactly the wrong conclusion
+ *     when the switch state is the thing being diagnosed.
+ *   - "+++" toggles AT mode; it resets the module and is NOT saved.
+ *
+ * The driver deliberately uses the module's *defaults* for transport and only
+ * writes the parameters that must agree between the two ends, then verifies
+ * them with AT+HELP.  A pad node that fails verification keeps its outputs in
+ * the safe state and reports a fault.
+ */
+#ifndef DXLR41_H
+#define DXLR41_H
+
+#include <Arduino.h>
+#include "gse_protocol.h"
+
+/* Optional hook: the node firmware defines GSE_RADIO_TRACE to a function that
+ * prints one line, so the module's own AT+HELP dump ends up in the console log
+ * of whichever board is being debugged (see pad_diag.h / the TX platform).   */
+#ifdef GSE_RADIO_TRACE
+#define DXLR41_TRACE(...) GSE_RADIO_TRACE(__VA_ARGS__)
+#else
+#define DXLR41_TRACE(...) do { } while (0)
+#endif
+
+class DxLr41 {
+public:
+    DxLr41(HardwareSerial &uart, int pinAux, int pinM0 = -1, int pinM1 = -1,
+           bool auxPullup = true)
+        : _uart(uart), _aux(pinAux), _m0(pinM0), _m1(pinM1),
+          _auxPullup(auxPullup) { _lastBanner[0] = 0; }
+
+    void begin(unsigned long baud)
+    {
+        /* AUX is an output from the module, so pull-up or not makes no
+         * functional difference to it -- but INPUT (no pull-up) is used when
+         * the pin can float, so a module that is unpowered or unconnected does
+         * not hold the line low against the module's own push-pull output. */
+        if (_aux >= 0) pinMode(_aux, _auxPullup ? INPUT_PULLUP : INPUT);
+        /* Drive M0/M1 low when the board wires them (PIN_LORA_M0/M1).  Low/low
+         * is high-timeliness mode if the module is ever in AT+SWITCH=1, and
+         * harmless in the SWITCH=0 default.  Boards that leave them
+         * unconnected must tie them low at the module -- see wiring.md. */
+        if (_m0  >= 0) { pinMode(_m0, OUTPUT); digitalWrite(_m0, LOW); }
+        if (_m1  >= 0) { pinMode(_m1, OUTPUT); digitalWrite(_m1, LOW); }
+        _uart.begin(baud, SERIAL_8N1, PIN_LORA_RX, PIN_LORA_TX);
+        _uart.setTimeout(120);
+        delay(50);
+        while (_uart.available()) _uart.read();     /* flush boot noise */
+    }
+
+    /* Polled only when AUX is actually wired (PIN_LORA_AUX >= 0).  When the
+     * node is built with -DGSE_LORA_AUX_NONE the pin is not read at all and
+     * flow control is by pacing alone -- see config.h. */
+    bool auxEnabled() const { return _aux >= 0; }
+    bool busy() const { return _aux >= 0 && digitalRead(_aux) == HIGH; }
+
+    /* Blocking write; waits for AUX to clear so a slow air rate cannot
+     * silently overflow the module's 230-byte buffer.  With AUX not wired
+     * this is a plain write, and the caller's pacing (the 20 Hz command
+     * stream) is what keeps the module's FIFO from overflowing: at LEVEL 3
+     * one 22-byte frame occupies the air for ~27 ms of a 50 ms slot.       */
+    size_t write(const uint8_t *data, size_t len, uint16_t timeoutMs = 60)
+    {
+        size_t n = _uart.write(data, len);
+        if (_aux < 0) return n;
+        uint32_t t0 = millis();
+        while (busy() && (millis() - t0) < timeoutMs) delay(1);
+        return n;
+    }
+
+    int available() { return _uart.available(); }
+    int read()      { return _uart.read(); }
+    void flushInput() { while (_uart.available()) _uart.read(); }
+
+    /* -------------------------------------------------------- AT helpers */
+    /* Returns true if module echoed OK (or the expected +RESP) within timeout */
+    bool at(const char *cmd, const char *expect = "OK", uint32_t timeoutMs = 400)
+    {
+        flushInput();
+        _uart.print(cmd);
+        _uart.print("\r\n");
+        return _collect(expect, timeoutMs);
+    }
+
+    /* Read the whole AT+HELP banner into buf (NUL-terminated). */
+    bool help(char *buf, size_t bufLen, uint32_t timeoutMs = 600)
+    {
+        flushInput();
+        _uart.print("AT+HELP\r\n");
+        size_t i = 0;
+        uint32_t t0 = millis();
+        while ((millis() - t0) < timeoutMs) {
+            while (_uart.available() && i + 1 < bufLen) {
+                char c = (char)_uart.read();
+                if (c != '\r') buf[i++] = c;
+            }
+            if (i > 0 && strstr(buf, "====") && strchr(buf, '\n')) break;
+            delay(2);
+        }
+        buf[i] = 0;
+        return strstr(buf, "LoRa Parameter") != nullptr;
+    }
+
+    bool enterAt()  { flushInput(); delay(20); _uart.print("+++"); return _collect("AT", 600); }
+    bool exitAt()   { return at("+++", "Power On", 900); }   /* exits + reboots */
+
+    /* Configure this end and verify.  Returns an empty String on success,
+     * otherwise a short human-readable fault.                             */
+    String configure(uint8_t level, uint8_t channelHex, uint16_t key,
+                     bool fixedPoint, uint16_t myAddr, uint16_t peerAddr)
+    {
+        _lastBanner[0] = 0;
+        if (!enterAt()) return F("AT entry failed");
+        if (!at("AT+MODE1")) return F("AT+MODE1 rejected");
+        if (!at((String("AT+LEVEL") + String(level)).c_str())) return F("AT+LEVEL rejected");
+        char ch[16]; snprintf(ch, sizeof ch, "AT+CHANNEL%02X", channelHex);
+        if (!at(ch)) return F("AT+CHANNEL rejected");
+        if (level < 8) {
+            at("AT+OPENKEY1");
+            if (!at((String("AT+KEY") + String(key)).c_str())) return F("AT+KEY rejected");
+        }
+        char mac[24];
+        snprintf(mac, sizeof mac, "AT+MAC%02X,%02X",
+                 (unsigned)(myAddr >> 8), (unsigned)(myAddr & 0xFF));
+        if (!at(mac)) return F("AT+MAC rejected");
+        if (!at("AT+PACKET1")) return F("AT+PACKET rejected");   /* 64 B */
+        if (!at("AT+POWE13")) return F("AT+POWE rejected");
+        if (!at("AT+SLEEP2")) return F("AT+SLEEP rejected");     /* low latency */
+
+        /* read the module back BEFORE leaving AT mode.  This is the check that
+         * would have caught the real bug on the bench: AT+RESET is a plain
+         * reboot ("Power On"), and the receive parameters -- MODE / LEVEL /
+         * CHANNEL / MAC / KEY -- are not written to the module's non-volatile
+         * store by the set commands in this firmware revision.  A reset
+         * therefore puts back whatever was last saved, silently undoing
+         * everything above.  Verify, and say exactly what is wrong.          */
+        char help[600];
+        bool gotHelp = help_(help, sizeof help);
+        captureBanner(gotHelp ? help : "");
+        /* Print what the module says it is, *before* the first mismatch can
+         * return early: the banner is the whole diagnosis, and leaving AT mode
+         * wipes the reader's chance to ask again without another handshake. */
+        if (gotHelp) DXLR41_TRACE("%s", help);
+        if (!gotHelp) return F("AT+HELP silent");
+        if (!strstr(help, "MODE:1"))        return F("MODE did not stick");
+        {
+            char want[24];
+            snprintf(want, sizeof want, "LEVEL:%u", (unsigned)level);
+            if (!strstr(help, want))        return F("LEVEL did not stick");
+        }
+        {
+            char want[32];
+            snprintf(want, sizeof want, ">> %02x", (unsigned)channelHex);
+            if (!strstr(help, want))        return F("CHANNEL did not stick");
+        }
+        {
+            char want[24];
+            snprintf(want, sizeof want, "MAC:%02X,%02x",
+                     (unsigned)(myAddr >> 8), (unsigned)(myAddr & 0xFF));
+            if (!strstr(help, want)) {
+                snprintf(want, sizeof want, "MAC:%02x,%02x",
+                         (unsigned)(myAddr >> 8), (unsigned)(myAddr & 0xFF));
+                if (!strstr(help, want))    return F("MAC did not stick");
+            }
+        }
+
+        /* Leave AT mode.  "+++" alone exits; AT+RESET is kept as the fallback
+         * because a few module revisions answer only to the named command.
+         * After either, everything must be re-verified -- that is the whole
+         * point of this function.                                              */
+        if (!at("+++", "Power On", 900)) {
+            if (!at("AT+RESET", "Power On", 900)) return F("cannot leave AT mode");
+        }
+        delay(250);
+
+        if (!enterAt()) return F("AT re-entry failed (module lost config)");
+        if (!help_(help, sizeof help)) return F("AT+HELP silent after reset");
+        captureBanner(help);
+        DXLR41_TRACE("%s", help);   /* post-reboot read-back, same reason */
+        if (!strstr(help, "MODE:1")) return F("reset wiped MODE (config not saved)");
+        at("+++", "Power On", 900);           /* back to transparent mode */
+        delay(250);
+        return String();
+    }
+
+    /* Read the AT+HELP banner into buf; true if it looks like the banner. */
+    bool help_(char *buf, size_t bufLen)
+    {
+        buf[0] = 0;
+        return help(buf, bufLen);
+    }
+
+    /* AT+SWITCH read-back: 0 = modes by AT command, 1 = modes by M0/M1 pins,
+     * -1 = the module did not answer the query.  See the class comment. */
+    int switchMode() const { return _switch; }
+
+    /* The module's own AT+HELP dump from the last configure(), NUL-terminated
+     * and line-ended with '\n' (see copyBanner()).  Both nodes print it to
+     * their console: the values that decide whether the two ends can hear each
+     * other (MODE / LEVEL / Frequency / MAC / SWITCH / SLEEP) are then in the
+     * log instead of "it looked fine".  Empty until configure() has run.      */
+    const char *banner() const { return _lastBanner; }
+
+    /* Compose an uplink packet in fixed-point mode: dst(2) + chan(1) + data */
+    size_t buildFixedPoint(uint8_t *out, uint16_t dst, uint8_t chan,
+                           const uint8_t *data, size_t len)
+    {
+        out[0] = (uint8_t)(dst >> 8); out[1] = (uint8_t)(dst & 0xFF);
+        out[2] = chan;
+        memcpy(out + 3, data, len);
+        return len + 3;
+    }
+
+private:
+    /* Copy the banner, ask the module the one question the banner does not
+     * answer (AT+SWITCH), and append the answer as its own line.  The result
+     * is what the nodes print, so "SWITCH:0" in the console is the module's
+     * actual answer rather than an assumption about its defaults.           */
+    void captureBanner(const char *help)
+    {
+        copyBanner(help);
+        char reply[48];
+        _switch = -1;
+        if (!query("AT+SWITCH", reply, sizeof reply)) {
+            copyAppend("SWITCH:? (AT+SWITCH did not answer -- read the pins)\n");
+            return;
+        }
+        const char *p = strstr(reply, "+SWITCH=");
+        if (!p) {
+            copyAppend("SWITCH:? (unexpected AT+SWITCH reply)\n");
+            return;
+        }
+        _switch = (p[8] == '1') ? 1 : 0;
+        copyAppend(_switch ? "SWITCH:1 (M0/M1 are mode inputs -- tie them low!)\n"
+                           : "SWITCH:0 (modes set by AT command)\n");
+    }
+
+    /* Append one text line to _lastBanner (used only by captureBanner). */
+    void copyAppend(const char *text)
+    {
+        size_t j = strlen(_lastBanner);
+        for (size_t i = 0; text[i] && j + 2 < sizeof _lastBanner; ++i)
+            _lastBanner[j++] = text[i];
+        _lastBanner[j] = 0;
+    }
+
+    /* Send one command and collect its reply text for up to timeoutMs.  Used
+     * for queries whose *answer* matters (AT+SWITCH); at() only says whether
+     * an expected token showed up.                                          */
+    bool query(const char *cmd, char *out, size_t cap, uint32_t timeoutMs = 400)
+    {
+        flushInput();
+        _uart.print(cmd);
+        _uart.print("\r\n");
+        size_t i = 0;
+        uint32_t t0 = millis();
+        out[0] = 0;
+        while ((millis() - t0) < timeoutMs) {
+            while (_uart.available() && i + 1 < cap) {
+                char c = (char)_uart.read();
+                if (c != '\r' && c != '\n') { out[i++] = c; out[i] = 0; }
+                t0 = millis();                    /* character just arrived  */
+            }
+            if (strstr(out, "ERROR")) return false;
+            /* The answer is what we came for: wait out a trailing OK (10 ms
+             * is several characters at 9600) and stop, rather than sitting out
+             * the full timeout on every boot. */
+            if (strstr(out, "+SWITCH=")) {
+                delay(10);
+                while (_uart.available() && i + 1 < cap) {
+                    char c = (char)_uart.read();
+                    if (c != '\r' && c != '\n') { out[i++] = c; out[i] = 0; }
+                }
+                return true;
+            }
+            delay(2);
+        }
+        return i > 0;
+    }
+
+    /* help() strips '\r' but keeps '\n'; normalise to '\n' line ends and cap
+     * the size so diag::blob() can print it one "LOG | " line at a time.     */
+    void copyBanner(const char *help)
+    {
+        size_t j = 0;
+        for (size_t i = 0; help[i] && j + 2 < sizeof _lastBanner; ++i) {
+            char c = help[i];
+            if (c == '\r') continue;
+            _lastBanner[j++] = c;
+        }
+        _lastBanner[j] = 0;
+    }
+
+    bool _collect(const char *expect, uint32_t timeoutMs)
+    {
+        String resp;
+        uint32_t t0 = millis();
+        while ((millis() - t0) < timeoutMs) {
+            while (_uart.available()) resp += (char)_uart.read();
+            if (strstr(resp.c_str(), expect)) return true;
+            if (strstr(resp.c_str(), "ERROR")) return false;
+            delay(5);
+        }
+        return strstr(resp.c_str(), expect) != nullptr;
+    }
+
+    HardwareSerial &_uart;
+    int _aux, _m0, _m1;
+    bool _auxPullup;
+    int  _switch = -1;                              /* AT+SWITCH read-back     */
+    char _lastBanner[600] = {0};
+};
+
+#endif /* DXLR41_H */
