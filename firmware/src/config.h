@@ -241,13 +241,15 @@
  */
 #define GSE_NOW_CHANNEL        1
 
-/* The pad's station MAC.  Placeholder = "not configured yet". */
+/* The pad's station MAC: the ESP32-S3 vehicle board, 14:C1:9F:C9:E9:B8
+ * (read with esptool read_mac).  Placeholder was 02:00:00:00:00:02. */
 #ifndef GSE_NOW_PAD_MAC
-#  define GSE_NOW_PAD_MAC      { 0x02, 0x00, 0x00, 0x00, 0x00, 0x02 }
+#  define GSE_NOW_PAD_MAC      { 0x14, 0xC1, 0x9F, 0xC9, 0xE9, 0xB8 }
 #endif
-/* The TX node's station MAC.  Placeholder = "not configured yet". */
+/* The TX node's station MAC: the ESP32S ground box, B0:CB:D8:89:4F:B8
+ * (read with esptool read_mac).  Placeholder was 02:00:00:00:00:01. */
 #ifndef GSE_NOW_TX_MAC
-#  define GSE_NOW_TX_MAC       { 0x02, 0x00, 0x00, 0x00, 0x00, 0x01 }
+#  define GSE_NOW_TX_MAC       { 0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8 }
 #endif
 /* A real ESP32 station MAC carries the Espressif OUI, it is not the 02:00:...
  * locally-administered form above.  Booting with a placeholder is not a fault
