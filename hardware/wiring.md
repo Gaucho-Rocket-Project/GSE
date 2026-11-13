@@ -217,18 +217,33 @@ position) and appears as an ordinary COM port. Full detail in `firmware/stm32/RE
 
 | Function | GPIO (ESP32-S3) | GPIO (ESP-32S) | Direction | Load |
 |---|---|---|---|---|
-| FILL servo | 4 | 4 (D4) | out, 50 Hz PWM | DS3225, 5 V |
-| VEHICLE servos (Y-harness) | 5 | 5 (D5) | out, 50 Hz PWM | 2 × DS3225, 5 V |
-| PURGE servo | 6 | **15 (D15)** | out, 50 Hz PWM | DS3225, 5 V |
-| Igniter relay (Q2 gate) | 7 | **13 (D13)** | out | 10 kΩ to GND, gate of IRLZ44N |
+| FILL servo ("SERVO1") | **18** | 4 (D4) | out, 50 Hz PWM | DS3225, 5 V |
+| VEHICLE servo #1 ("SERVO 2") | 5 | 5 (D5) | out, 50 Hz PWM | DS3225, 5 V |
+| VEHICLE servo #2 ("SERVO 2") | **15** | — (Y-harness on D5) | out, 50 Hz PWM | DS3225, 5 V |
+| PURGE servo ("SERVO3") | **48** | **15 (D15)** | out, 50 Hz PWM | DS3225, 5 V |
+| Igniter relay (Q2 gate) | 7 (see note) | **13 (D13)** | out | 10 kΩ to GND, gate of IRLZ44N |
 | Keep-alive heartbeat | 8 | **33 (D33)** | out, 25 Hz | input to an independently designed and tested edge-sensitive watchdog |
-| UART RX / TX / AUX | 16 / 17 / 18 | 16 / 17 / 18 | see above | module |
-| Status LED | 48 (WS2812) | 2 (plain blue) | out | on-board indicator |
+| UART RX / TX / AUX (LoRa builds only) | 16 / 17 / 18 | 16 / 17 / 18 | see above | module |
+| Status LED | — (GPIO48 is a servo now) | 2 (plain blue) | out | on-board indicator |
+
+**ESP32-S3 column (GSE pinout diagram, Nov 2026).**
+- **Vehicle servos:** the two vehicle-valve servos (fuel and oxidizer) each have their own pin instead of a
+  Y-harness. They still follow the single VEHICLE command together.
+- **Direction and trim:** each servo has its own direction and trim in `config.h` (`GSE_SERVO_*_REV`,
+  `GSE_SERVO_*_TRIM_US`), set on the bench.
+- **GPIO48:** it's the devkit's WS2812 LED. With PURGE on it, the firmware stops driving the LED, which may
+  flicker with the servo signal.
+- **Relay:** the diagram shows it on GPIO32, which is an internal flash line on every ESP32-S3 module and
+  cannot be used. The relay stays on GPIO7 until a usable S3 pin is confirmed.
+- **LoRa builds:** FILL on GPIO18 shares the pin with the LoRa AUX input. Build with `-DGSE_LORA_AUX_NONE`
+  or move one of them. ESP-NOW builds don't use GPIO16–18.
 
 Both columns are compiled in `firmware/src/config.h`: the S3 map is the default, the ESP-32S map is
-selected by `-D GSE_BOARD_ESP32S` (envs `*-esp32s`). The firmware will not build a pad node that puts a
-servo, the relay or the heartbeat on GPIO6–11 (flash) or GPIO34–39 (input-only), or that puts the igniter
-on a strapping pin — so a pin mistake is a compile error, not a bench surprise.
+selected by `-D GSE_BOARD_ESP32S` (envs `*-esp32s`). The firmware will not build a pad node with a pin on
+the wrong kind of GPIO, so a pin mistake is a compile error, not a bench surprise:
+- **ESP-32S:** a servo, the relay or the heartbeat on GPIO6–11 (flash);
+- **ESP32-S3:** an output on GPIO26–37 (flash/PSRAM), 19/20 (USB) or 43/44 (UART0);
+- **either board:** an output on GPIO34–39 (input-only), or the igniter on a strapping pin.
 
 ### Independent hardware keep-alive
 

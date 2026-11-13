@@ -291,17 +291,34 @@
  *      IGNITER relay   "Ch3"   (SwC + left stick lockout)
  *
  * The pin numbers are the *GPIO* numbers, not the silkscreen "D4/D5/..." of a
- * particular board, and they are deliberately identical on the two boards:
+ * particular board:
  *
- *      function          GPIO   ESP32-S3 devkit   ESP-32S devkit
- *      FILL servo         4     D4 / GPIO4         D4  (IO4)
- *      VEHICLE servo      5     D5 / GPIO5         D5  (IO5)
- *      PURGE servo        6     GPIO6              D15 (IO15)  <-- see below
- *      IGNITER relay      7     GPIO7              D13 (IO13)
- *      heartbeat          8     GPIO8              D33 (IO33)
- *      radio RX          16     GPIO16             RX2 (IO16)
- *      radio TX          17     GPIO17             TX2 (IO17)
- *      radio AUX         18     GPIO18             D18 (IO18)
+ *      function             ESP32-S3 pad (GSE pinout diagram)   ESP-32S pad
+ *      FILL servo           GPIO18  ("SERVO1")                  D4  (IO4)
+ *      VEHICLE servo        GPIO5   ("SERVO 2")                 D5  (IO5)
+ *      VEHICLE servo #2     GPIO15  ("SERVO 2", second pin)     -- (Y-harness)
+ *      PURGE servo          GPIO48  ("SERVO3")                  D15 (IO15)  <-- see below
+ *      IGNITER relay        GPIO7   (unchanged, see note)       D13 (IO13)
+ *      heartbeat            GPIO8                               D33 (IO33)
+ *      radio RX / TX / AUX  GPIO16 / 17 / 18 (LoRa builds only)  RX2 / TX2 / D18
+ *
+ * ESP32-S3 notes (GSE pinout diagram, Nov 2026):
+ *   - the two vehicle-valve servos (fuel and oxidizer, HCR-5100 OP 8) now have
+ *     a pin each instead of sharing one through a Y-harness.  They follow the
+ *     single VEHICLE command together; each has its own direction and trim
+ *     (GSE_SERVO_*_REV / _TRIM_US below).  Set GSE_PIN_SERVO_VEH2 to -1 to go
+ *     back to a Y-harness on GPIO5.
+ *   - GPIO48 is the devkit's WS2812 status LED.  With a servo on it the LED is
+ *     switched off automatically (see "status LED" below) -- expect it to
+ *     flicker with the servo signal, since it is still wired to the pin.
+ *   - The diagram puts the relay on GPIO32.  On an ESP32-S3 module GPIO26..32
+ *     are the internal SPI-flash lines (and 33..37 the octal PSRAM on R8 parts
+ *     such as this board), so driving GPIO32 would crash the chip.  The relay
+ *     stays on GPIO7 until the hardware team confirms a usable S3 pin; the
+ *     checks below reject 26..37 on an S3 pad.
+ *   - With FILL on GPIO18, a LoRa (-DGSE_LINK_LORA) pad build collides with
+ *     the module's AUX input on the same pin: build with -DGSE_LORA_AUX_NONE or
+ *     move one of them.  ESP-NOW builds (the default) do not use GPIO16..18.
  *
  * "See below": GPIO6..11 are the SPI flash lines on every ESP32-WROOM-32 and
  * are NOT available.  An S3 devkit happily drives a pad node from GPIO6, an
@@ -342,6 +359,10 @@
 #  ifndef GSE_PIN_SERVO_VEH
 #    define GSE_PIN_SERVO_VEH    5       /* D5  */
 #  endif
+#  ifndef GSE_PIN_SERVO_VEH2
+#    define GSE_PIN_SERVO_VEH2  -1       /* none: both vehicle servos on D5 via
+                                          * the Y-harness                       */
+#  endif
 #  ifndef GSE_PIN_SERVO_PRG
 #    define GSE_PIN_SERVO_PRG   15       /* D15 -- GPIO6 is flash on a WROOM-32 */
 #  endif
@@ -361,23 +382,41 @@
 #    define GSE_STATUS_LED_ACTIVE_LOW 0
 #  endif
 #else
+ /* ESP32-S3 pad: servo pins from the GSE pinout diagram (SERVO1/2/3).      */
 #  ifndef GSE_PIN_SERVO_FILL
-#    define GSE_PIN_SERVO_FILL   4
+#    define GSE_PIN_SERVO_FILL  18       /* "SERVO1"                            */
 #  endif
 #  ifndef GSE_PIN_SERVO_VEH
-#    define GSE_PIN_SERVO_VEH    5
+#    define GSE_PIN_SERVO_VEH    5       /* "SERVO 2", first vehicle servo      */
+#  endif
+#  ifndef GSE_PIN_SERVO_VEH2
+#    define GSE_PIN_SERVO_VEH2  15       /* "SERVO 2", second vehicle servo;
+                                          * -1 = Y-harness on GPIO5 instead     */
 #  endif
 #  ifndef GSE_PIN_SERVO_PRG
-#    define GSE_PIN_SERVO_PRG    6
+#    define GSE_PIN_SERVO_PRG   48       /* "SERVO3" -- also the WS2812 pin     */
 #  endif
 #  ifndef GSE_PIN_RELAY_IGN
-#    define GSE_PIN_RELAY_IGN    7
+#    define GSE_PIN_RELAY_IGN    7       /* diagram says GPIO32: flash on an S3 */
 #  endif
 #  ifndef GSE_PIN_HB
 #    define GSE_PIN_HB           8       /* 50 Hz heartbeat -> hw keep-alive    */
 #  endif
 #  define PIN_STATUS_RGB      48         /* WS2812 on most S3 devkits; -1 = none*/
 #  define PIN_STATUS_LED      -1         /* S3 devkits have no plain LED        */
+#endif
+
+/* Status LED vs. servo: the S3 devkit's WS2812 is hard-wired to GPIO48.  If a
+ * servo is assigned there, stop driving the LED so the two never fight over
+ * the pin (the LED then just shows whatever the servo signal makes it show). */
+#if GSE_HAS_RGB_LED && (GSE_PIN_SERVO_FILL == PIN_STATUS_RGB || \
+                        GSE_PIN_SERVO_VEH  == PIN_STATUS_RGB || \
+                        GSE_PIN_SERVO_VEH2 == PIN_STATUS_RGB || \
+                        GSE_PIN_SERVO_PRG  == PIN_STATUS_RGB)
+#  undef  GSE_HAS_RGB_LED
+#  define GSE_HAS_RGB_LED     0
+#  undef  PIN_STATUS_RGB
+#  define PIN_STATUS_RGB     -1
 #endif
 
 /* The mistakes that would otherwise be found on the bench:
@@ -397,6 +436,8 @@ static_assert(!((GSE_PIN_SERVO_FILL >= 6 && GSE_PIN_SERVO_FILL <= 11)),
               "FILL servo on GPIO6..11: SPI flash on an ESP32-WROOM-32");
 static_assert(!((GSE_PIN_SERVO_VEH  >= 6 && GSE_PIN_SERVO_VEH  <= 11)),
               "VEHICLE servo on GPIO6..11: SPI flash on an ESP32-WROOM-32");
+static_assert(!((GSE_PIN_SERVO_VEH2 >= 6 && GSE_PIN_SERVO_VEH2 <= 11)),
+              "VEHICLE servo #2 on GPIO6..11: SPI flash on an ESP32-WROOM-32");
 static_assert(!((GSE_PIN_SERVO_PRG  >= 6 && GSE_PIN_SERVO_PRG  <= 11)),
               "PURGE servo on GPIO6..11: SPI flash on an ESP32-WROOM-32");
 static_assert(!((GSE_PIN_RELAY_IGN  >= 6 && GSE_PIN_RELAY_IGN  <= 11)),
@@ -409,6 +450,8 @@ static_assert(!(GSE_PIN_SERVO_FILL >= 34 && GSE_PIN_SERVO_FILL <= 39),
               "FILL servo on GPIO34..39: input-only pins");
 static_assert(!(GSE_PIN_SERVO_VEH  >= 34 && GSE_PIN_SERVO_VEH  <= 39),
               "VEHICLE servo on GPIO34..39: input-only pins");
+static_assert(!(GSE_PIN_SERVO_VEH2 >= 34 && GSE_PIN_SERVO_VEH2 <= 39),
+              "VEHICLE servo #2 on GPIO34..39: input-only pins");
 static_assert(!(GSE_PIN_SERVO_PRG  >= 34 && GSE_PIN_SERVO_PRG  <= 39),
               "PURGE servo on GPIO34..39: input-only pins");
 static_assert(!(GSE_PIN_RELAY_IGN  >= 34 && GSE_PIN_RELAY_IGN  <= 39),
@@ -419,10 +462,30 @@ static_assert(GSE_PIN_RELAY_IGN != 0 && GSE_PIN_RELAY_IGN != 2 &&
               GSE_PIN_RELAY_IGN != 12,
               "igniter relay on a strapping pin (GPIO0/2/12): glitches at reset");
 #endif
+/* ESP32-S3 pad: pins that exist on the chip but are taken on the module/devkit.
+ *   GPIO26..32  SPI flash (every S3 module); 33..37 octal PSRAM on R8 parts
+ *   GPIO19/20   native USB (the PlatformIO build's log port)
+ *   GPIO43/44   UART0 (upload port; the Arduino build's log port)
+ * and the S3's strapping pins for the relay: GPIO0/3/45/46.                  */
+#if defined(GSE_ROLE_PAD) && defined(GSE_BOARD_ESP32_S3)
+#  define GSE_S3_TAKEN(p) (((p) >= 26 && (p) <= 37) || (p) == 19 || (p) == 20 || \
+                           (p) == 43 || (p) == 44)
+static_assert(!GSE_S3_TAKEN(GSE_PIN_SERVO_FILL), "FILL servo on a flash/PSRAM/USB/UART0 pin of the ESP32-S3");
+static_assert(!GSE_S3_TAKEN(GSE_PIN_SERVO_VEH),  "VEHICLE servo on a flash/PSRAM/USB/UART0 pin of the ESP32-S3");
+static_assert(!GSE_S3_TAKEN(GSE_PIN_SERVO_VEH2), "VEHICLE servo #2 on a flash/PSRAM/USB/UART0 pin of the ESP32-S3");
+static_assert(!GSE_S3_TAKEN(GSE_PIN_SERVO_PRG),  "PURGE servo on a flash/PSRAM/USB/UART0 pin of the ESP32-S3");
+static_assert(!GSE_S3_TAKEN(GSE_PIN_RELAY_IGN),  "igniter relay on a flash/PSRAM/USB/UART0 pin of the ESP32-S3 (GPIO32 is flash)");
+static_assert(!GSE_S3_TAKEN(GSE_PIN_HB),         "heartbeat on a flash/PSRAM/USB/UART0 pin of the ESP32-S3");
+static_assert(GSE_PIN_RELAY_IGN != 0 && GSE_PIN_RELAY_IGN != 3 &&
+              GSE_PIN_RELAY_IGN != 45 && GSE_PIN_RELAY_IGN != 46,
+              "igniter relay on an ESP32-S3 strapping pin (GPIO0/3/45/46): glitches at reset");
+#  undef GSE_S3_TAKEN
+#endif
 
 /* The pin names the firmware uses, after the guard above has had its say.    */
 #define PIN_SERVO_FILL    GSE_PIN_SERVO_FILL
 #define PIN_SERVO_VEH     GSE_PIN_SERVO_VEH
+#define PIN_SERVO_VEH2    GSE_PIN_SERVO_VEH2   /* -1 = not fitted (Y-harness)  */
 #define PIN_SERVO_PRG     GSE_PIN_SERVO_PRG
 #define PIN_RELAY_IGN     GSE_PIN_RELAY_IGN
 #define PIN_HB            GSE_PIN_HB
@@ -466,6 +529,26 @@ static_assert(GSE_PIN_RELAY_IGN != 0 && GSE_PIN_RELAY_IGN != 2 &&
                                        * (driver drives both LOW) but is only
                                        * safe while the module is AT+SWITCH=0 */
 
+/* A LoRa pad build uses GPIO16/17 (UART) and, unless GSE_LORA_AUX_NONE, GPIO18
+ * (AUX input).  The S3 pinout puts the FILL servo on GPIO18, and the radio
+ * driver would then reconfigure that pin as an input after the servo attached.
+ * ESP-NOW builds (the default) are not affected. */
+#if defined(GSE_ROLE_PAD) && defined(GSE_LINK_LORA)
+#  if PIN_LORA_AUX >= 0 && \
+      (PIN_SERVO_FILL == PIN_LORA_AUX || PIN_SERVO_VEH == PIN_LORA_AUX || \
+       PIN_SERVO_VEH2 == PIN_LORA_AUX || PIN_SERVO_PRG == PIN_LORA_AUX || \
+       PIN_RELAY_IGN == PIN_LORA_AUX)
+#    warning "a pad output shares GPIO18 with the LoRa AUX input: build with -DGSE_LORA_AUX_NONE or move the pin"
+#  endif
+#  if PIN_SERVO_FILL == PIN_LORA_RX || PIN_SERVO_FILL == PIN_LORA_TX || \
+      PIN_SERVO_VEH  == PIN_LORA_RX || PIN_SERVO_VEH  == PIN_LORA_TX || \
+      PIN_SERVO_VEH2 == PIN_LORA_RX || PIN_SERVO_VEH2 == PIN_LORA_TX || \
+      PIN_SERVO_PRG  == PIN_LORA_RX || PIN_SERVO_PRG  == PIN_LORA_TX || \
+      PIN_RELAY_IGN  == PIN_LORA_RX || PIN_RELAY_IGN  == PIN_LORA_TX
+#    error "a pad output is on the LoRa UART pins (GPIO16/17)"
+#  endif
+#endif
+
 /* ------------------------------------------------------------- host console */
 /* The pad node talks to the laptop, and the TX node talks to the laptop, on
  * this port.  On an ESP32-S3 that is the chip's native USB-CDC ("Serial"); on
@@ -489,6 +572,55 @@ static_assert(GSE_PIN_RELAY_IGN != 0 && GSE_PIN_RELAY_IGN != 2 &&
 #define SERVO_DEFAULT_TRAVEL  45       /* deg, each side of neutral          */
 #define SERVO_MIN_TRAVEL      5
 #define SERVO_MAX_TRAVEL      90
+
+/* Per-servo direction and trim -- set on the bench, per physical servo.
+ *
+ *   GSE_SERVO_x_REV      0 = OPEN is above centre (longer pulse), as before.
+ *                        1 = mirrored: OPEN and CLOSED swap sides of centre.
+ *                        Use it for a servo mounted the other way round, e.g.
+ *                        one of the two vehicle valves facing its twin.
+ *   GSE_SERVO_x_TRIM_US  shifts that servo's centre -- and so both its OPEN
+ *                        and CLOSED positions -- by this many microseconds, to
+ *                        line a horn up exactly (HCR-5100 OP 8: CLOSED =
+ *                        perpendicular, OPEN = parallel).  500 us = 45 deg, so
+ *                        about 11 us per degree; limited to +/-250 us (~22 deg).
+ *
+ * Applied after the travel, before the 500..2500 us clamp.  The GUI, the
+ * protocol and STATE are unchanged: VEHICLE is still one command, and both
+ * vehicle servos follow it with their own direction and trim.  Each can be
+ * overridden with -D, like the pins. */
+#ifndef GSE_SERVO_FILL_REV
+#  define GSE_SERVO_FILL_REV       0
+#endif
+#ifndef GSE_SERVO_FILL_TRIM_US
+#  define GSE_SERVO_FILL_TRIM_US   0
+#endif
+#ifndef GSE_SERVO_VEH_REV
+#  define GSE_SERVO_VEH_REV        0
+#endif
+#ifndef GSE_SERVO_VEH_TRIM_US
+#  define GSE_SERVO_VEH_TRIM_US    0
+#endif
+#ifndef GSE_SERVO_VEH2_REV
+#  define GSE_SERVO_VEH2_REV       0
+#endif
+#ifndef GSE_SERVO_VEH2_TRIM_US
+#  define GSE_SERVO_VEH2_TRIM_US   0
+#endif
+#ifndef GSE_SERVO_PRG_REV
+#  define GSE_SERVO_PRG_REV        0
+#endif
+#ifndef GSE_SERVO_PRG_TRIM_US
+#  define GSE_SERVO_PRG_TRIM_US    0
+#endif
+#if defined(GSE_ROLE_PAD)
+#  define GSE_TRIM_OK(t) ((t) >= -250 && (t) <= 250)
+static_assert(GSE_TRIM_OK(GSE_SERVO_FILL_TRIM_US), "GSE_SERVO_FILL_TRIM_US outside +/-250 us");
+static_assert(GSE_TRIM_OK(GSE_SERVO_VEH_TRIM_US),  "GSE_SERVO_VEH_TRIM_US outside +/-250 us");
+static_assert(GSE_TRIM_OK(GSE_SERVO_VEH2_TRIM_US), "GSE_SERVO_VEH2_TRIM_US outside +/-250 us");
+static_assert(GSE_TRIM_OK(GSE_SERVO_PRG_TRIM_US),  "GSE_SERVO_PRG_TRIM_US outside +/-250 us");
+#  undef GSE_TRIM_OK
+#endif
 
 /* ----------------------------------------------------------------- failsafe */
 #define GSE_WDG_DS_DEFAULT        GSE_DEF_WDG_DS      /* 1.0 s  */

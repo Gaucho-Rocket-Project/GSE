@@ -7,6 +7,7 @@ The same firmware as the PlatformIO project, for flashing from the Arduino IDE. 
 |---|---|---|
 | `gse_tx_esp32s/` | ESP32S ground box | Board **ESP32 Dev Module**; Port: the ESP32S (CP210x) |
 | `gse_pad_esp32s3/` | ESP32-S3 vehicle | Board **ESP32S3 Dev Module**; **USB CDC On Boot: Disabled**; Port: the S3's UART socket |
+| `gse_servo_sweep_esp32s3/` | ESP32-S3 vehicle, **bench test only** | As above; needs the **ESP32Servo** library. Sweeps the 3 servos 0–180° (500–2500 µs) on the pad's pins, igniter held off. Flash `gse_pad_esp32s3` back afterwards. |
 
 - Needs the esp32 board package (Boards Manager → "esp32" by Espressif). Tested with 3.3.12.
 - With USB CDC On Boot disabled, the vehicle's log (Serial Monitor, 115200) comes out of the same UART socket you flash through.

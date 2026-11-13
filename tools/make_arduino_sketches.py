@@ -46,6 +46,16 @@ SKETCHES = {
                   "    same UART socket you flash through (Enabled = native USB socket)",
                   "Everything else: defaults"],
     },
+    "gse_servo_sweep_esp32s3": {
+        "what": "BENCH TEST, not flight firmware: sweeps the pad's 3 servos 0..180 deg",
+        "files": ["config.h", "common/gse_protocol.h", "bench/servo_sweep.cpp"],
+        "flags": ["-DGSE_ROLE_PAD", "-DGSE_BOARD_ESP32_S3"],
+        "board": ["Library: ESP32Servo (Library Manager)",
+                  "Tools > Board: esp32 > ESP32S3 Dev Module",
+                  "Tools > Port: the S3's UART socket",
+                  "Tools > USB CDC On Boot: Disabled  -> sweep log on the same port",
+                  "Afterwards, flash gse_pad_esp32s3 back onto the S3"],
+    },
 }
 
 

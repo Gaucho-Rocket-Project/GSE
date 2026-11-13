@@ -125,26 +125,42 @@ static void led_show(uint8_t mode, bool ph)
 /* 50 Hz, 12-bit LEDC: period 20 000 us == 4096 counts -> 0.2048 counts/us  */
 #define US_TO_DUTY(us) ((uint32_t)(((uint32_t)(us) * 4096u) / 20000u))
 
-static inline void servoUs(int idx, int state01, uint8_t travelDeg)
+/* One row per servo output.  The two vehicle-valve servos (fuel and oxidizer)
+ * both follow the VEHICLE command and share its travel; each has its own pin,
+ * direction and trim (config.h).  A pin of -1 means "not fitted" -- VEH2 is -1
+ * when both vehicle servos hang off one pin through a Y-harness.  The row
+ * index is also the LEDC channel on the 2.x core. */
+enum { SRV_FILL, SRV_VEH, SRV_VEH2, SRV_PRG, SRV_COUNT };
+struct ServoOut { int pin; uint8_t travelIdx; bool reversed; int trimUs; };
+static const ServoOut kServos[SRV_COUNT] = {
+    { PIN_SERVO_FILL, 0, GSE_SERVO_FILL_REV != 0, GSE_SERVO_FILL_TRIM_US },
+    { PIN_SERVO_VEH,  1, GSE_SERVO_VEH_REV  != 0, GSE_SERVO_VEH_TRIM_US  },
+    { PIN_SERVO_VEH2, 1, GSE_SERVO_VEH2_REV != 0, GSE_SERVO_VEH2_TRIM_US },
+    { PIN_SERVO_PRG,  2, GSE_SERVO_PRG_REV  != 0, GSE_SERVO_PRG_TRIM_US  },
+};
+
+static inline void servoUs(int ch, int state01)
 {
-    static const uint8_t pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
-    int deg  = constrain((int)travelDeg, SERVO_MIN_TRAVEL, SERVO_MAX_TRAVEL);
-    int span = SERVO_US_PER_45DEG;            /* scale, not tied to the clamp */
-    int us   = SERVO_NEUTRAL_US + (state01 ? span * deg / 45 : -span * deg / 45);
+    const ServoOut &s = kServos[ch];
+    if (s.pin < 0) return;                         /* not fitted            */
+    int deg  = constrain((int)travel[s.travelIdx], SERVO_MIN_TRAVEL, SERVO_MAX_TRAVEL);
+    int off  = SERVO_US_PER_45DEG * deg / 45;      /* scale, not the clamp  */
+    bool open = (state01 != 0) != s.reversed;      /* mirrored servo        */
+    int us   = SERVO_NEUTRAL_US + s.trimUs + (open ? off : -off);
     us = constrain(us, SERVO_MIN_US, SERVO_MAX_US);
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    ledcWrite(pins[idx], US_TO_DUTY(us));          /* core 3.x: pin-keyed   */
+    ledcWrite(s.pin, US_TO_DUTY(us));              /* core 3.x: pin-keyed   */
 #else
-    (void)pins;
-    ledcWrite(idx, US_TO_DUTY(us));                /* core 2.x: channel     */
+    ledcWrite(ch, US_TO_DUTY(us));                 /* core 2.x: channel     */
 #endif
 }
 
 static void driveOutputs(const gse_outputs_t &o)
 {
-    servoUs(0, o.fill, travel[0]);
-    servoUs(1, o.veh,  travel[1]);
-    servoUs(2, allowPurge ? o.prg : 0, travel[2]);              /* never purge */
+    servoUs(SRV_FILL, o.fill);
+    servoUs(SRV_VEH,  o.veh);
+    servoUs(SRV_VEH2, o.veh);                      /* same command, own pin */
+    servoUs(SRV_PRG,  allowPurge ? o.prg : 0);                  /* never purge */
 }
 
 /* Outgoing frames are bare 7E packets.  On LoRa the link adds the fixed-point
@@ -280,12 +296,15 @@ void setup()
     pinMode(PIN_HB, OUTPUT);
     diag::led_pin_begin();                    /* plain LED board only      */
 
-    const int pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
+    for (int ch = 0; ch < SRV_COUNT; ++ch) {
+        if (kServos[ch].pin < 0) continue;             /* not fitted          */
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    for (int i = 0; i < 3; ++i) ledcAttach(pins[i], 50, 12);
+        ledcAttach(kServos[ch].pin, 50, 12);
 #else
-    for (int ch = 0; ch < 3; ++ch) { ledcSetup(ch, 50, 12); ledcAttachPin(pins[ch], ch); }
+        ledcSetup(ch, 50, 12);
+        ledcAttachPin(kServos[ch].pin, ch);
 #endif
+    }
 
     gse_outputs_t safe;
     gse_cfg_t bootCfg = cfg;
@@ -293,9 +312,15 @@ void setup()
     driveOutputs(safe);                                /* safe before radio  */
 
     diag::begin();
-    diag::line("PAD boot fw %u.%u board=%s pins FILL=%d VEH=%d PRG=%d IGN=%d HB=%d",
+    diag::line("PAD boot fw %u.%u board=%s pins FILL=%d VEH=%d VEH2=%d PRG=%d IGN=%d HB=%d",
                GSE_FW_MAJOR, GSE_FW_MINOR, GSE_BOARD_NAME,
-               PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
+               PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_VEH2, PIN_SERVO_PRG,
+               PIN_RELAY_IGN, PIN_HB);
+    diag::line("PAD servo rev/trim(us) FILL=%d/%d VEH=%d/%d VEH2=%d/%d PRG=%d/%d",
+               GSE_SERVO_FILL_REV, GSE_SERVO_FILL_TRIM_US,
+               GSE_SERVO_VEH_REV,  GSE_SERVO_VEH_TRIM_US,
+               GSE_SERVO_VEH2_REV, GSE_SERVO_VEH2_TRIM_US,
+               GSE_SERVO_PRG_REV,  GSE_SERVO_PRG_TRIM_US);
     led_show(LED_BOOT, false);                 /* blue / solid: booting    */
 
     /* The transport, named in the log before anything can fail.  A pad and a
