@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/gse-proto",
     "crates/gse-fw-core",
+    "crates/gse-espnow",
     "crates/gse-app",
     "crates/gse-sim",
     "crates/gse-fw-check",

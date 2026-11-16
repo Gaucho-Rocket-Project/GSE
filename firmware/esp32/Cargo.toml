@@ -1,0 +1,32 @@
+[package]
+name = "gse-esp32"
+version = "1.0.0"
+edition = "2021"
+resolver = "2"
+publish = false
+
+[features]
+default = ["vehicle"]
+vehicle = []
+ground = []
+
+[dependencies]
+critical-section = "1"
+esp-idf-hal = "0.45"
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
+gse-espnow = { path = "../../crates/gse-espnow" }
+gse-fw-core = { path = "../../crates/gse-fw-core", default-features = false }
+gse-proto = { path = "../../crates/gse-proto", default-features = false }
+
+[build-dependencies]
+embuild = "0.33"
+
+[[bin]]
+name = "gse-esp32-vehicle"
+path = "src/bin/vehicle.rs"
+required-features = ["vehicle"]
+
+[[bin]]
+name = "gse-esp32-ground"
+path = "src/bin/ground.rs"
+required-features = ["ground"]

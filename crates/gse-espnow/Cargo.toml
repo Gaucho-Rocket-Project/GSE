@@ -1,0 +1,16 @@
+[package]
+name = "gse-espnow"
+description = "ESP-NOW transport adapters for the shared GSE firmware state machines"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+gse-fw-core = { workspace = true }
+gse-proto = { workspace = true }
+
+[features]
+default = []
+mock = []
