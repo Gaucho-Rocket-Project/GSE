@@ -11,8 +11,8 @@ vehicle = []
 ground = []
 
 [dependencies]
-critical-section = "1"
 esp-idf-hal = "0.45"
+esp-idf-svc = "0.51"
 esp-idf-sys = { version = "0.36", features = ["binstart"] }
 gse-espnow = { path = "../../crates/gse-espnow" }
 gse-fw-core = { path = "../../crates/gse-fw-core", default-features = false }
@@ -20,6 +20,13 @@ gse-proto = { path = "../../crates/gse-proto", default-features = false }
 
 [build-dependencies]
 embuild = "0.33"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true
+opt-level = "z"
 
 [[bin]]
 name = "gse-esp32-vehicle"

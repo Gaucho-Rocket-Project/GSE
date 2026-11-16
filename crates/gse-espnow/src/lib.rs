@@ -24,6 +24,8 @@ pub struct PacketQueue {
     packets: [[u8; ESPNOW_MTU]; RX_QUEUE_LEN],
     lengths: [u16; RX_QUEUE_LEN],
     read: usize,
+    /// Bytes of the packet at `read` already handed out by a short `pop`.
+    head_offset: usize,
     write: usize,
     count: usize,
     dropped: u32,
@@ -35,6 +37,7 @@ impl PacketQueue {
             packets: [[0; ESPNOW_MTU]; RX_QUEUE_LEN],
             lengths: [0; RX_QUEUE_LEN],
             read: 0,
+            head_offset: 0,
             write: 0,
             count: 0,
             dropped: 0,
@@ -53,18 +56,27 @@ impl PacketQueue {
         true
     }
 
+    /// Copy the next queued bytes into `out`.
+    ///
+    /// The firmware cores read the radio as a byte stream, so a packet larger
+    /// than `out` is handed out over several calls instead of blocking the queue.
+    /// One call never mixes bytes from two packets.
     pub fn pop(&mut self, out: &mut [u8]) -> usize {
-        if self.count == 0 {
+        if self.count == 0 || out.is_empty() {
             return 0;
         }
         let len = self.lengths[self.read] as usize;
-        if out.len() < len {
-            return 0;
+        let start = self.head_offset;
+        let n = (len - start).min(out.len());
+        out[..n].copy_from_slice(&self.packets[self.read][start..start + n]);
+        if start + n == len {
+            self.head_offset = 0;
+            self.read = (self.read + 1) % RX_QUEUE_LEN;
+            self.count -= 1;
+        } else {
+            self.head_offset = start + n;
         }
-        out[..len].copy_from_slice(&self.packets[self.read][..len]);
-        self.read = (self.read + 1) % RX_QUEUE_LEN;
-        self.count -= 1;
-        len
+        n
     }
 
     pub const fn pending(&self) -> usize {
@@ -87,12 +99,28 @@ pub trait EspNowIo {
     fn now_ms(&self) -> u32;
     fn receive(&mut self, out: &mut [u8]) -> usize;
     fn send(&mut self, data: &[u8]) -> bool;
+    /// True while sent datagrams are still waiting for their ESP-NOW send callback.
     fn tx_busy(&self) -> bool {
         false
+    }
+    /// True when another datagram can be queued for transmission.
+    fn tx_ready(&self) -> bool {
+        !self.tx_busy()
     }
     fn set_leds(&mut self, leds: Leds);
     fn kick_watchdog(&mut self);
     fn device_id(&self) -> u32;
+}
+
+/// Send one complete `gse-proto` frame as one ESP-NOW datagram.
+///
+/// The cores also write DX-LR42 control bytes (the `+++` AT escape) to the
+/// radio. Those mean nothing over ESP-NOW, so only COBS frames, which always
+/// end in the `0x00` delimiter, are put on the air.
+fn send_frame<I: EspNowIo>(io: &mut I, data: &[u8]) {
+    if data.len() <= ESPNOW_MTU && data.last() == Some(&0) {
+        let _ = io.send(data);
+    }
 }
 
 /// Vehicle-specific GPIO/PWM operations.
@@ -136,11 +164,11 @@ impl<I: EspNowIo, O: VehicleOutputs> VehicleHal for EspNowVehicleHal<I, O> {
     }
 
     fn write_radio(&mut self, data: &[u8]) {
-        let _ = self.io.send(data);
+        send_frame(&mut self.io, data);
     }
 
     fn radio_ready(&mut self) -> bool {
-        !self.io.tx_busy()
+        self.io.tx_ready()
     }
 
     fn radio_tx_busy(&self) -> bool {
@@ -164,7 +192,9 @@ impl<I: EspNowIo, O: VehicleOutputs> VehicleHal for EspNowVehicleHal<I, O> {
     }
 
     fn probe_radio_module(&mut self, _radio: gse_proto::RadioModule) -> bool {
-        true
+        // Neither LoRa module exists on an ESP-NOW board, so a radio switch is
+        // answered with `HardwareFault` instead of being acknowledged.
+        false
     }
 
     fn apply_link_config(&mut self, _cfg: LinkConfig) -> Result<bool, Reason> {
@@ -221,11 +251,11 @@ impl<I: EspNowIo, U: UsbIo> GroundHal for EspNowGroundHal<I, U> {
     }
 
     fn write_radio(&mut self, data: &[u8]) {
-        let _ = self.io.send(data);
+        send_frame(&mut self.io, data);
     }
 
     fn radio_ready(&mut self) -> bool {
-        !self.io.tx_busy()
+        self.io.tx_ready()
     }
 
     fn radio_tx_busy(&self) -> bool {
@@ -249,7 +279,9 @@ impl<I: EspNowIo, U: UsbIo> GroundHal for EspNowGroundHal<I, U> {
     }
 
     fn probe_radio_module(&mut self, _radio: gse_proto::RadioModule) -> bool {
-        true
+        // Neither LoRa module exists on an ESP-NOW board, so a radio switch is
+        // answered with `HardwareFault` instead of being acknowledged.
+        false
     }
 
     fn apply_link_config(&mut self, _cfg: LinkConfig) -> Result<bool, Reason> {
@@ -326,8 +358,38 @@ mod tests {
             sent: 0,
         };
         let mut hal = EspNowGroundHal::new(io, Usb);
-        hal.write_radio(b"abc");
-        assert_eq!(hal.io.sent, 3);
+        hal.write_radio(b"abc\0");
+        assert_eq!(hal.io.sent, 4);
+    }
+
+    #[test]
+    fn non_frame_radio_writes_are_not_sent() {
+        let io = Io {
+            rx: [0; ESPNOW_MTU],
+            rx_len: 0,
+            sent: 0,
+        };
+        let mut hal = EspNowVehicleHal::new(io, Outputs);
+        hal.write_radio(b"+++");
+        assert_eq!(hal.io.sent, 0);
+        assert!(!hal.probe_radio_module(gse_proto::RadioModule::E28_2G4M27S));
+    }
+
+    #[test]
+    fn queue_hands_out_large_packet_over_short_reads() {
+        let mut queue = PacketQueue::new();
+        assert!(queue.push(b"abcdefgh"));
+        assert!(queue.push(b"xy"));
+        let mut out = [0; 3];
+        assert_eq!(queue.pop(&mut out), 3);
+        assert_eq!(&out, b"abc");
+        assert_eq!(queue.pop(&mut out), 3);
+        assert_eq!(&out, b"def");
+        assert_eq!(queue.pop(&mut out), 2);
+        assert_eq!(&out[..2], b"gh");
+        assert_eq!(queue.pop(&mut out), 2);
+        assert_eq!(&out[..2], b"xy");
+        assert_eq!(queue.pending(), 0);
     }
 
     #[test]

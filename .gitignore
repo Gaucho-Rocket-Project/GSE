@@ -30,3 +30,6 @@ rustc-ice-*.txt
 # Python bytecode (scripts/*.py are run in place)
 __pycache__/
 *.py[cod]
+
+# ESP-IDF checkout and tools downloaded by the ESP32 build
+/firmware/esp32/.embuild/

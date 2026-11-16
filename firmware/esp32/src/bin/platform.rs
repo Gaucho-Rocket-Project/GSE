@@ -1,128 +1,183 @@
 //! ESP-IDF board layer shared by the ground and vehicle images.
 
-use core::cell::RefCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+// Each binary includes this file and uses only its own role's half.
+#![allow(dead_code)]
 
-use critical_section::Mutex;
-use esp_idf_hal::gpio::{
-    Gpio1, Gpio2, Gpio3, Gpio43, Gpio44, Gpio6, Gpio7, Gpio8, Output, PinDriver,
-};
-use esp_idf_hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver, Resolution, Speed};
+use core::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+use esp_idf_hal::delay::{FreeRtos, NON_BLOCK};
+use esp_idf_hal::gpio::{AnyIOPin, AnyOutputPin, Output, OutputPin, PinDriver};
+use esp_idf_hal::ledc::{config::TimerConfig, LedcDriver, LedcTimerDriver, Resolution};
+use esp_idf_hal::modem::Modem;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::prelude::*;
 use esp_idf_hal::uart::{config::Config as UartConfig, UartDriver};
-use esp_idf_sys as sys;
+use esp_idf_svc::espnow::{EspNow, PeerInfo, ReceiveInfo, SendStatus};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::sys;
+use esp_idf_svc::wifi::{ClientConfiguration, Configuration, WifiDriver};
 use gse_espnow::{
     EspNowGroundHal, EspNowIo, EspNowVehicleHal, PacketQueue, UsbIo, VehicleOutputs, ESPNOW_MTU,
 };
 use gse_fw_core::hal::Leds;
 
-pub const GROUND_MAC: [u8; 6] = [0x24, 0x6F, 0x28, 0x00, 0x00, 0x01];
-pub const VEHICLE_MAC: [u8; 6] = [0x24, 0x6F, 0x28, 0x00, 0x00, 0x02];
+// GROUND_MAC, VEHICLE_MAC, ESPNOW_PMK, ESPNOW_LMK, ESPNOW_CHANNEL from build.rs.
+include!(concat!(env!("OUT_DIR"), "/link_config.rs"));
 
-static RX_QUEUE: Mutex<RefCell<PacketQueue>> = Mutex::new(RefCell::new(PacketQueue::new()));
-static LAST_SEND_MS: AtomicU32 = AtomicU32::new(0);
+/// Datagrams allowed in ESP-NOW's TX queue before `radio_ready` reports false.
+const MAX_TX_IN_FLIGHT: u32 = 4;
+/// Servo pulse widths at 50 Hz.
+const SERVO_SAFE_US: u32 = 1_000;
+const SERVO_ACTIVE_US: u32 = 2_000;
+const SERVO_PERIOD_US: u32 = 20_000;
+/// Ground host UART TX ring buffer; `pending` reports how much of it is in use.
+const GROUND_UART_TX_BUFFER: usize = 4096;
 
-extern "C" fn on_receive(_info: *const sys::esp_now_recv_info_t, data: *const u8, len: i32) {
-    if data.is_null() || len <= 0 || len as usize > ESPNOW_MTU {
-        return;
-    }
-    let packet = unsafe { core::slice::from_raw_parts(data, len as usize) };
-    critical_section::with(|cs| {
-        let _ = RX_QUEUE.borrow(*cs).borrow_mut().push(packet);
-    });
-}
+static RX_QUEUE: Mutex<PacketQueue> = Mutex::new(PacketQueue::new());
+static TX_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+static TX_FAILURES: AtomicU32 = AtomicU32::new(0);
 
-fn check(result: sys::esp_err_t, operation: &str) {
-    if result != sys::ESP_OK {
-        panic!("{operation} failed: ESP error {result}");
-    }
-}
-
-pub fn init_esp_now(peer: [u8; 6]) {
-    unsafe {
-        check(sys::esp_netif_init(), "esp_netif_init");
-        check(
-            sys::esp_event_loop_create_default(),
-            "esp_event_loop_create_default",
-        );
-        let config = sys::wifi_init_config_t::default();
-        check(sys::esp_wifi_init(&config), "esp_wifi_init");
-        check(
-            sys::esp_wifi_set_mode(sys::wifi_mode_t_WIFI_MODE_STA),
-            "esp_wifi_set_mode",
-        );
-        check(sys::esp_wifi_start(), "esp_wifi_start");
-        check(sys::esp_now_init(), "esp_now_init");
-
-        let mut info = sys::esp_now_peer_info_t::default();
-        info.peer_addr.copy_from_slice(&peer);
-        info.channel = 1;
-        info.ifidx = sys::wifi_interface_t_WIFI_IF_STA;
-        info.encrypt = false;
-        check(sys::esp_now_add_peer(&info), "esp_now_add_peer");
-        check(
-            sys::esp_now_register_recv_cb(Some(on_receive)),
-            "esp_now_register_recv_cb",
-        );
+/// Subscribe the calling task to the task watchdog, then poll forever.
+///
+/// Each pass yields for one FreeRTOS tick (1 ms, see `sdkconfig.defaults`) so
+/// the idle tasks run and the idle-task watchdog stays quiet.
+pub fn run_forever(mut poll: impl FnMut()) -> ! {
+    esp_idf_svc::sys::esp!(unsafe { sys::esp_task_wdt_add(core::ptr::null_mut()) })
+        .expect("esp_task_wdt_add");
+    loop {
+        poll();
+        FreeRtos::delay_ms(1);
     }
 }
 
+/// Wi-Fi in station mode on a fixed channel, with one encrypted ESP-NOW peer.
 pub struct NowIo {
+    _wifi: WifiDriver<'static>,
+    espnow: EspNow<'static>,
     peer: [u8; 6],
-    leds: (
-        PinDriver<'static, Gpio1, Output>,
-        PinDriver<'static, Gpio2, Output>,
-        PinDriver<'static, Gpio3, Output>,
-    ),
+    leds: [PinDriver<'static, AnyOutputPin, Output>; 3],
     id: u32,
 }
 
 impl NowIo {
     pub fn new(
+        modem: Modem,
+        own_mac: [u8; 6],
         peer: [u8; 6],
-        leds: (
-            PinDriver<'static, Gpio1, Output>,
-            PinDriver<'static, Gpio2, Output>,
-            PinDriver<'static, Gpio3, Output>,
-        ),
+        leds: [PinDriver<'static, AnyOutputPin, Output>; 3],
     ) -> Self {
-        init_esp_now(peer);
-        Self { peer, leds, id: 0 }
+        let sysloop = EspSystemEventLoop::take().expect("system event loop");
+        let nvs = EspDefaultNvsPartition::take().expect("NVS partition");
+        let mut wifi = WifiDriver::new(modem, sysloop, Some(nvs)).expect("Wi-Fi init");
+        wifi.set_configuration(&Configuration::Client(ClientConfiguration::default()))
+            .expect("Wi-Fi station mode");
+        sys::esp!(unsafe {
+            sys::esp_wifi_set_mac(sys::wifi_interface_t_WIFI_IF_STA, own_mac.as_ptr())
+        })
+        .expect("esp_wifi_set_mac");
+        wifi.start().expect("Wi-Fi start");
+        unsafe {
+            sys::esp!(sys::esp_wifi_set_ps(sys::wifi_ps_type_t_WIFI_PS_NONE))
+                .expect("esp_wifi_set_ps");
+            sys::esp!(sys::esp_wifi_set_channel(
+                ESPNOW_CHANNEL,
+                sys::wifi_second_chan_t_WIFI_SECOND_CHAN_NONE,
+            ))
+            .expect("esp_wifi_set_channel");
+        }
+
+        let espnow = EspNow::take().expect("ESP-NOW init");
+        espnow.set_pmk(&ESPNOW_PMK).expect("ESP-NOW PMK");
+        espnow
+            .add_peer(PeerInfo {
+                peer_addr: peer,
+                lmk: ESPNOW_LMK,
+                channel: ESPNOW_CHANNEL,
+                ifidx: sys::wifi_interface_t_WIFI_IF_STA,
+                encrypt: true,
+                ..Default::default()
+            })
+            .expect("ESP-NOW add peer");
+        espnow
+            .register_recv_cb(move |info: &ReceiveInfo, data: &[u8]| {
+                // Only the configured peer is accepted; everything else on the
+                // channel is ignored before it reaches the protocol decoder.
+                if *info.src_addr != peer || data.len() > ESPNOW_MTU {
+                    return;
+                }
+                if let Ok(mut queue) = RX_QUEUE.lock() {
+                    let _ = queue.push(data);
+                }
+            })
+            .expect("ESP-NOW receive callback");
+        espnow
+            .register_send_cb(|_mac: &[u8], status: SendStatus| {
+                let _ = TX_IN_FLIGHT
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+                if matches!(status, SendStatus::FAIL) {
+                    TX_FAILURES.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .expect("ESP-NOW send callback");
+
+        Self {
+            _wifi: wifi,
+            espnow,
+            peer,
+            leds,
+            id: factory_id(),
+        }
     }
+}
+
+/// Low four bytes of the factory (eFuse) MAC; unique per chip, unlike the
+/// configured station MAC, which is the same for every board of one role.
+fn factory_id() -> u32 {
+    let mut mac = [0u8; 6];
+    unsafe {
+        sys::esp_efuse_mac_get_default(mac.as_mut_ptr());
+    }
+    u32::from_be_bytes([mac[2], mac[3], mac[4], mac[5]])
 }
 
 impl EspNowIo for NowIo {
     fn now_ms(&self) -> u32 {
-        unsafe { (sys::esp_timer_get_time() as u64 / 1000) as u32 }
+        (unsafe { sys::esp_timer_get_time() } / 1000) as u32
     }
 
     fn receive(&mut self, out: &mut [u8]) -> usize {
-        critical_section::with(|cs| RX_QUEUE.borrow(*cs).borrow_mut().pop(out))
+        RX_QUEUE.lock().map(|mut q| q.pop(out)).unwrap_or(0)
     }
 
     fn send(&mut self, data: &[u8]) -> bool {
-        if data.len() > ESPNOW_MTU {
-            return false;
-        }
-        let result = unsafe { sys::esp_now_send(self.peer.as_ptr(), data.as_ptr(), data.len()) };
-        if result == sys::ESP_OK {
-            LAST_SEND_MS.store(self.now_ms(), Ordering::Relaxed);
+        TX_IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+        if self.espnow.send(self.peer, data).is_ok() {
             true
         } else {
+            TX_IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
             false
         }
     }
 
+    fn tx_busy(&self) -> bool {
+        TX_IN_FLIGHT.load(Ordering::Acquire) != 0
+    }
+
+    fn tx_ready(&self) -> bool {
+        TX_IN_FLIGHT.load(Ordering::Acquire) < MAX_TX_IN_FLIGHT
+    }
+
     fn set_leds(&mut self, leds: Leds) {
-        set_output(&mut self.leds.0, leds.link);
-        set_output(&mut self.leds.1, leds.activity);
-        set_output(&mut self.leds.2, leds.fault);
+        set_output(&mut self.leds[0], leds.link);
+        set_output(&mut self.leds[1], leds.activity);
+        set_output(&mut self.leds[2], leds.fault);
     }
 
     fn kick_watchdog(&mut self) {
         unsafe {
-            let _ = sys::esp_task_wdt_reset();
+            sys::esp_task_wdt_reset();
         }
     }
 
@@ -134,55 +189,23 @@ impl EspNowIo for NowIo {
 pub struct VehicleActuators {
     fill: LedcDriver<'static>,
     srv: LedcDriver<'static>,
-    ign: PinDriver<'static, Gpio6, Output>,
+    ign: PinDriver<'static, AnyOutputPin, Output>,
 }
 
 impl VehicleActuators {
-    pub fn new(peripherals: &Peripherals) -> Self {
-        let timer_config = TimerConfig::new()
-            .frequency(50.Hz())
-            .resolution(Resolution::Bits12)
-            .speed_mode(Speed::LowSpeed);
-        let fill_timer = Box::leak(Box::new(
-            LedcTimerDriver::new(peripherals.ledc.timer0, &timer_config).unwrap(),
-        ));
-        let srv_timer = Box::leak(Box::new(
-            LedcTimerDriver::new(peripherals.ledc.timer1, &timer_config).unwrap(),
-        ));
-        let mut fill = LedcDriver::new(
-            peripherals.ledc.channel0,
-            fill_timer,
-            peripherals.pins.gpio7,
-        )
-        .unwrap();
-        let mut srv =
-            LedcDriver::new(peripherals.ledc.channel1, srv_timer, peripherals.pins.gpio8).unwrap();
-        let mut ign = PinDriver::output(peripherals.pins.gpio6).unwrap();
-        let safe_duty = fill.max_duty() / 20;
-        fill.set_duty(safe_duty).unwrap();
-        srv.set_duty(safe_duty).unwrap();
-        ign.set_low().unwrap();
-        Self { fill, srv, ign }
+    fn set_servo(servo: &mut LedcDriver<'static>, on: bool) {
+        let pulse_us = if on { SERVO_ACTIVE_US } else { SERVO_SAFE_US };
+        let _ = servo.set_duty(servo.get_max_duty() * pulse_us / SERVO_PERIOD_US);
     }
 }
 
 impl VehicleOutputs for VehicleActuators {
     fn set_fill(&mut self, on: bool) {
-        let duty = if on {
-            self.fill.max_duty() * 2 / 20
-        } else {
-            self.fill.max_duty() / 20
-        };
-        let _ = self.fill.set_duty(duty);
+        Self::set_servo(&mut self.fill, on);
     }
 
     fn set_srv(&mut self, on: bool) {
-        let duty = if on {
-            self.srv.max_duty() * 2 / 20
-        } else {
-            self.srv.max_duty() / 20
-        };
-        let _ = self.srv.set_duty(duty);
+        Self::set_servo(&mut self.srv, on);
     }
 
     fn set_ign(&mut self, on: bool) {
@@ -190,64 +213,90 @@ impl VehicleOutputs for VehicleActuators {
     }
 }
 
-fn set_output<P: esp_idf_hal::gpio::OutputPin>(pin: &mut PinDriver<'static, P, Output>, on: bool) {
-    if on {
-        let _ = pin.set_high();
-    } else {
-        let _ = pin.set_low();
-    }
+fn set_output(pin: &mut PinDriver<'static, AnyOutputPin, Output>, on: bool) {
+    let _ = if on { pin.set_high() } else { pin.set_low() };
+}
+
+fn output(pin: impl OutputPin) -> PinDriver<'static, AnyOutputPin, Output> {
+    let mut driver = PinDriver::output(pin.downgrade_output()).expect("GPIO output");
+    let _ = driver.set_low();
+    driver
 }
 
 pub struct GroundUsb {
     uart: UartDriver<'static>,
 }
 
-impl GroundUsb {
-    pub fn new(peripherals: &Peripherals) -> Self {
-        let config = UartConfig::new().baudrate(115_200);
-        let uart = UartDriver::new(
-            peripherals.uart0,
-            peripherals.pins.gpio43,
-            peripherals.pins.gpio44,
-            Option::<esp_idf_hal::gpio::AnyIOPin>::None,
-            Option::<esp_idf_hal::gpio::AnyIOPin>::None,
-            &config,
-        )
-        .unwrap();
-        Self { uart }
-    }
-}
-
 impl UsbIo for GroundUsb {
     fn read(&mut self, out: &mut [u8]) -> usize {
-        self.uart.read(out, 0).unwrap_or(0)
+        self.uart.read(out, NON_BLOCK).unwrap_or(0)
     }
 
     fn write(&mut self, data: &[u8]) {
-        let _ = self.uart.write(data);
+        let mut rest = data;
+        while !rest.is_empty() {
+            match self.uart.write(rest) {
+                Ok(n) if n > 0 => rest = &rest[n..],
+                _ => break,
+            }
+        }
+    }
+
+    fn pending(&self) -> usize {
+        let free = self.uart.remaining_write().unwrap_or(0);
+        GROUND_UART_TX_BUFFER.saturating_sub(free)
     }
 }
 
 pub type VehicleHal = EspNowVehicleHal<NowIo, VehicleActuators>;
 pub type GroundHal = EspNowGroundHal<NowIo, GroundUsb>;
 
-pub fn vehicle_hal(peripherals: &Peripherals) -> VehicleHal {
-    let leds = (
-        PinDriver::output(peripherals.pins.gpio1).unwrap(),
-        PinDriver::output(peripherals.pins.gpio2).unwrap(),
-        PinDriver::output(peripherals.pins.gpio3).unwrap(),
-    );
-    EspNowVehicleHal::new(
-        NowIo::new(GROUND_MAC, leds),
-        VehicleActuators::new(peripherals),
+pub fn vehicle_hal(p: Peripherals) -> VehicleHal {
+    // Outputs first: IGN low and both servos at their safe pulse before the
+    // radio (which takes hundreds of milliseconds to start) is brought up.
+    let ign = output(p.pins.gpio6);
+    let timer = LedcTimerDriver::new(
+        p.ledc.timer0,
+        &TimerConfig::new()
+            .frequency(50.Hz())
+            .resolution(Resolution::Bits14),
     )
+    .expect("LEDC timer");
+    let timer: &'static LedcTimerDriver<'static, _> = Box::leak(Box::new(timer));
+    let mut fill = LedcDriver::new(p.ledc.channel0, timer, p.pins.gpio7).expect("FILL PWM");
+    VehicleActuators::set_servo(&mut fill, false);
+    let mut srv = LedcDriver::new(p.ledc.channel1, timer, p.pins.gpio8).expect("SRV PWM");
+    VehicleActuators::set_servo(&mut srv, false);
+    let outputs = VehicleActuators { fill, srv, ign };
+
+    let leds = [
+        output(p.pins.gpio1),
+        output(p.pins.gpio2),
+        output(p.pins.gpio3),
+    ];
+    EspNowVehicleHal::new(NowIo::new(p.modem, VEHICLE_MAC, GROUND_MAC, leds), outputs)
 }
 
-pub fn ground_hal(peripherals: &Peripherals) -> GroundHal {
-    let leds = (
-        PinDriver::output(peripherals.pins.gpio1).unwrap(),
-        PinDriver::output(peripherals.pins.gpio2).unwrap(),
-        PinDriver::output(peripherals.pins.gpio3).unwrap(),
-    );
-    EspNowGroundHal::new(NowIo::new(VEHICLE_MAC, leds), GroundUsb::new(peripherals))
+pub fn ground_hal(p: Peripherals) -> GroundHal {
+    let uart = UartDriver::new(
+        p.uart0,
+        p.pins.gpio43,
+        p.pins.gpio44,
+        Option::<AnyIOPin>::None,
+        Option::<AnyIOPin>::None,
+        &UartConfig::new()
+            .baudrate(115_200.Hz())
+            .rx_fifo_size(1024)
+            .tx_fifo_size(GROUND_UART_TX_BUFFER),
+    )
+    .expect("host UART");
+    let leds = [
+        output(p.pins.gpio1),
+        output(p.pins.gpio2),
+        output(p.pins.gpio3),
+    ];
+    EspNowGroundHal::new(
+        NowIo::new(p.modem, GROUND_MAC, VEHICLE_MAC, leds),
+        GroundUsb { uart },
+    )
 }

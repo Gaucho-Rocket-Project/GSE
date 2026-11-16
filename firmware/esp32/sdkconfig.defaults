@@ -1,0 +1,19 @@
+# The Rust std runtime and the firmware cores need more than the 3.5 KB default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+
+# 1 ms tick so the main loop's one-tick yield is 1 ms, not 10 ms.
+CONFIG_FREERTOS_HZ=1000
+
+# UART0 (GPIO43/44) carries gse-proto frames to the laptop on the ground board,
+# so ESP-IDF's console, logs and panic output go to the native USB port instead.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# A stalled main loop resets the board; the vehicle core boots into the safe state.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=2
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
