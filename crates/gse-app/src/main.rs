@@ -51,8 +51,10 @@ OPTIONS:
                           tcp:host:port, or 'auto' (default)
     --baud <RATE>         USB CDC serial baud rate (default 115200)
     --uart-baud <RATE>    MCU <-> UART radio baud rate (default 9600)
-    --radio <MODULE>      Link: esp-now (default; ESP32 pad, GSE-simple control set),
-                          dx-lr42-24t12d or e28-2g4m27s (NUCLEO + LoRa)
+    --radio <MODULE>      Link: esp-now (default; ESP32 boards), dx-lr42-24t12d or
+                          e28-2g4m27s (NUCLEO + LoRa)
+    --control <SET>       Vehicle firmware: auto (default, detected per connection),
+                          pad (GSE-simple pad node) or gse (GSE vehicle firmware)
     --config <PATH>       Configuration file
     --host <ADDR>         Console bind address (default 127.0.0.1)
     --http-port <PORT>    Console HTTP port (default 8765)
@@ -85,6 +87,7 @@ struct Options {
     baud: Option<u32>,
     uart_baud: Option<u32>,
     radio: Option<gse_proto::radio::RadioModule>,
+    control: Option<crate::config::ControlSet>,
     config: Option<PathBuf>,
     host: Option<String>,
     http_port: Option<u16>,
@@ -145,6 +148,13 @@ impl Options {
                         },
                     )?);
                 }
+                "--control" => {
+                    let text = value("--control")?;
+                    opts.control =
+                        Some(crate::config::ControlSet::parse(&text).ok_or_else(|| {
+                            format!("invalid control set '{text}' (expected auto, pad or gse)")
+                        })?);
+                }
                 "--config" => opts.config = Some(PathBuf::from(value("--config")?)),
                 "--host" => opts.host = Some(value("--host")?),
                 "--http-port" => {
@@ -204,6 +214,7 @@ fn run(opts: Options) -> Result<(), String> {
             || opts.config.is_some()
             || opts.uart_baud.is_some()
             || opts.radio.is_some()
+            || opts.control.is_some()
             || opts.host.is_some()
             || opts.http_port.is_some()
             || opts.no_browser
@@ -254,6 +265,9 @@ fn run(opts: Options) -> Result<(), String> {
     if let Some(radio) = opts.radio {
         config.radio = radio;
     }
+    if let Some(control) = opts.control {
+        config.control = control;
+    }
     if let Some(host) = &opts.host {
         config.host = host.clone();
     }
@@ -286,7 +300,7 @@ fn run(opts: Options) -> Result<(), String> {
     let mut port_override = None;
     if opts.sim {
         port_override = Some(SIM_SPEC.to_string());
-        spawn_simulator(&opts, config.radio);
+        spawn_simulator(&opts, config.radio, config.control);
     } else if config.port != "auto" {
         port_override = Some(config.port.clone());
     }
@@ -449,7 +463,17 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 }
 
 /// Start `gse-sim` from next to the executable when running in simulation mode.
-fn spawn_simulator(opts: &Options, radio: gse_proto::radio::RadioModule) {
+fn spawn_simulator(
+    opts: &Options,
+    radio: gse_proto::radio::RadioModule,
+    control: crate::config::ControlSet,
+) {
+    // `auto` simulates the vehicle firmware the console would expect.
+    let vehicle = if control.expects_pad(radio) {
+        "pad"
+    } else {
+        "gse"
+    };
     if std::net::TcpStream::connect(SIM_ADDR).is_ok() {
         return;
     }
@@ -470,7 +494,14 @@ fn spawn_simulator(opts: &Options, radio: gse_proto::radio::RadioModule) {
         return;
     }
     match Command::new(&candidate)
-        .args(["--listen", SIM_ADDR, "--radio", radio.id()])
+        .args([
+            "--listen",
+            SIM_ADDR,
+            "--radio",
+            radio.id(),
+            "--control",
+            vehicle,
+        ])
         .spawn()
     {
         Ok(mut child) => {

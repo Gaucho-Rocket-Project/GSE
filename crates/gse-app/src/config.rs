@@ -38,6 +38,48 @@ impl OperationMode {
     }
 }
 
+/// Which vehicle firmware the console drives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlSet {
+    /// Decide per connection from the vehicle's first frames: GSE-simple pad
+    /// node (`PAD_STATE` / `PAD_EVENT` / HELLO with `PAD_STREAM`) or the GSE
+    /// vehicle state machine (`STATE` / `ACK` / `EVENT`).
+    #[default]
+    Auto,
+    /// GSE-simple pad node (ESP32 `pad` or NUCLEO `gse-pad`).
+    Pad,
+    /// GSE vehicle state machine (NUCLEO `gse-vehicle`).
+    Gse,
+}
+
+impl ControlSet {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ControlSet::Auto => "auto",
+            ControlSet::Pad => "pad",
+            ControlSet::Gse => "gse",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(ControlSet::Auto),
+            "pad" | "gse-simple" => Some(ControlSet::Pad),
+            "gse" | "vehicle" => Some(ControlSet::Gse),
+            _ => None,
+        }
+    }
+
+    /// The control set expected before the vehicle has identified itself.
+    pub const fn expects_pad(self, radio: RadioModule) -> bool {
+        match self {
+            ControlSet::Auto => radio.is_esp_now(),
+            ControlSet::Pad => true,
+            ControlSet::Gse => false,
+        }
+    }
+}
+
 /// Action ids used by the keyboard shortcut system.
 pub const SHORTCUT_ACTIONS: &[(&str, &str)] = &[
     ("fill_toggle", "FILL ON / OFF"),
@@ -85,6 +127,8 @@ pub struct Config {
     /// Active 2.4 GHz link: `DX-LR42-24T12D` / `E28-2G4M27S` on the NUCLEO
     /// boards, or ESP-NOW on the ESP32 boards (GSE-simple pad control set).
     pub radio: RadioModule,
+    /// Vehicle firmware: auto-detected (default), GSE-simple pad, or GSE vehicle.
+    pub control: ControlSet,
     /// ESP-NOW pad: link watchdog in deciseconds (`3..=30`, default 1.0 s).
     pub pad_wdg_ds: u8,
     /// ESP-NOW pad: igniter on-time limit per press, deciseconds (`1..=20`).
@@ -111,6 +155,7 @@ impl Default for Config {
             uart_baud: gse_proto::RADIO_BAUD,
             // This branch is the ESP32 + ESP-NOW version of GSE.
             radio: RadioModule::EspNow,
+            control: ControlSet::Auto,
             pad_wdg_ds: pad::DEFAULT_WDG_DS,
             pad_ign_max_ds: pad::DEFAULT_IGN_MAX_DS,
             pad_travel_fill: pad::DEFAULT_TRAVEL_DEG,
@@ -231,6 +276,7 @@ impl Config {
         json::field(&mut out, "baud", &self.baud.to_string());
         json::field(&mut out, "uart_baud", &self.uart_baud.to_string());
         json::field(&mut out, "radio", &json::quoted(self.radio.id()));
+        json::field(&mut out, "control", &json::quoted(self.control.as_str()));
         json::field(&mut out, "pad_wdg_ds", &self.pad_wdg_ds.to_string());
         json::field(&mut out, "pad_ign_max_ds", &self.pad_ign_max_ds.to_string());
         json::field(
@@ -280,6 +326,11 @@ impl Config {
         if let Some(v) = value.get("radio").and_then(Value::as_str) {
             if let Some(radio) = RadioModule::parse(v) {
                 cfg.radio = radio;
+            }
+        }
+        if let Some(v) = value.get("control").and_then(Value::as_str) {
+            if let Some(control) = ControlSet::parse(v) {
+                cfg.control = control;
             }
         }
         for (key, slot) in [
@@ -367,6 +418,10 @@ impl Config {
             "  \"radio\": {},\n",
             json::quoted(self.radio.id())
         ));
+        out.push_str(&format!(
+            "  \"control\": {},\n",
+            json::quoted(self.control.as_str())
+        ));
         out.push_str(&format!("  \"pad_wdg_ds\": {},\n", self.pad_wdg_ds));
         out.push_str(&format!("  \"pad_ign_max_ds\": {},\n", self.pad_ign_max_ds));
         out.push_str(&format!(
@@ -411,6 +466,7 @@ mod tests {
             baud: 230_400,
             uart_baud: 57_600,
             radio: RadioModule::E28_2G4M27S,
+            control: ControlSet::Pad,
             pad_wdg_ds: 15,
             pad_ign_max_ds: 8,
             pad_travel_fill: 90,
@@ -475,6 +531,12 @@ mod tests {
         assert_eq!(parsed.get("fill_seconds").unwrap().as_u64(), Some(60));
         assert_eq!(parsed.get("uart_baud").unwrap().as_u64(), Some(9_600));
         assert_eq!(parsed.get("radio").unwrap().as_str(), Some("esp-now"));
+        assert_eq!(parsed.get("control").unwrap().as_str(), Some("auto"));
+        assert_eq!(ControlSet::parse("GSE"), Some(ControlSet::Gse));
+        assert_eq!(ControlSet::parse("nope"), None);
+        assert!(ControlSet::Auto.expects_pad(RadioModule::EspNow));
+        assert!(!ControlSet::Auto.expects_pad(RadioModule::DxLr42));
+        assert!(ControlSet::Pad.expects_pad(RadioModule::DxLr42));
         assert_eq!(parsed.get("pad_wdg_ds").unwrap().as_u64(), Some(10));
         assert_eq!(parsed.get("pad_travel_prg").unwrap().as_u64(), Some(45));
     }

@@ -35,10 +35,11 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use gse_fw_core::e28::{E28Driver, Sx128xBus};
 use gse_fw_core::hal::{elapsed_ms, GroundHal, Leds, LinkState, VehicleHal};
+use gse_fw_core::pad::{PadBoard, PadHal, PadServo, ServoSetup};
 use gse_proto::crc::crc16;
 use gse_proto::radio::AUX_MAX_WAIT_MS;
 use gse_proto::{DxLr42Baud, LinkConfig, RadioModule, Reason, UsbBaud};
@@ -143,6 +144,9 @@ const CONFIG_MAGIC: u32 = 0x4753_4531; // "GSE1"
 const CONFIG_RECORD_VERSION: u8 = 1;
 
 pub const TIM1: usize = 0x4001_0000;
+/// TIM4 (APB1, 16-bit): pad image VEH2 (`PD12`, CH1) and PURGE (`PD13`, CH2).
+pub const TIM4: usize = 0x4000_0800;
+const RCC_APB1LENR_TIM4EN: u32 = 1 << 2;
 const TIM_CR1: usize = 0x00;
 const TIM_EGR: usize = 0x14;
 const TIM_CCMR1: usize = 0x18;
@@ -1321,8 +1325,34 @@ impl ServoPair {
         ServoPair { tim: TIM1 }
     }
 
+    /// TIM4 CH1/CH2 (`PD12` / `PD13`, AF2): same 1 MHz / 20 ms PWM. TIM4 is a
+    /// general-purpose timer, so it has no break / main-output stage.
+    pub const fn tim4() -> Self {
+        ServoPair { tim: TIM4 }
+    }
+
     pub fn init(&mut self) {
         unsafe {
+            if self.tim == TIM4 {
+                set_bits(RCC_APB1LENR, RCC_APB1LENR_TIM4EN);
+                // Read back so the clock is running before the first access.
+                let _ = rd(RCC_APB1LENR);
+                let tim = self.tim;
+                wr(tim + TIM_CR1, 0);
+                wr(tim + TIM_PSC, 63); // 64 MHz APB1 timer clock / 64 = 1 MHz
+                wr(tim + TIM_ARR, 19_999); // 20 ms period
+                                           // Safe 1.0 ms pulses are loaded *before* the counter starts.
+                wr(tim + TIM_CCR1, SERVO_OFF_US as u32);
+                wr(tim + TIM_CCR2, SERVO_OFF_US as u32);
+                wr(
+                    tim + TIM_CCMR1,
+                    (0b110 << 4) | (1 << 3) | (0b110 << 12) | (1 << 11),
+                );
+                wr(tim + TIM_CCER, (1 << 0) | (1 << 4));
+                wr(tim + TIM_EGR, 1 << 0); // load PSC/ARR/CCR preloads
+                wr(tim + TIM_CR1, (1 << 7) | (1 << 0)); // ARPE | CEN
+                return;
+            }
             set_bits(RCC_APB2ENR, 1 << 0); // TIM1EN
             let tim = self.tim;
             wr(tim + TIM_CR1, 0);
@@ -1345,6 +1375,12 @@ impl ServoPair {
             wr(self.tim + TIM_CCR1, clamp_pulse(fill_us) as u32);
             wr(self.tim + TIM_CCR2, clamp_pulse(srv_us) as u32);
         }
+    }
+
+    /// Set one channel (`false` = CH1, `true` = CH2), clamped to 0.5–2.5 ms.
+    pub fn set_channel(&mut self, ch2: bool, us: u16) {
+        let reg = if ch2 { TIM_CCR2 } else { TIM_CCR1 };
+        unsafe { wr(self.tim + reg, clamp_pulse(us) as u32) }
     }
 }
 
@@ -1412,10 +1448,42 @@ impl LedBank {
 
 pub const IGN_PIN: Pin = Pin::new(GPIOE, 13);
 
+/// Set once the pad image (`gse-pad`) has configured its outputs.
+static PAD_IMAGE: AtomicBool = AtomicBool::new(false);
+/// FILL / PURGE "closed" pulses with the pad's current travel, direction and
+/// trim (refreshed every 20 ms by the pad core via `note_closed_pulses`).
+static PAD_FILL_CLOSED_US: AtomicU32 = AtomicU32::new(SERVO_OFF_US as u32);
+static PAD_PURGE_CLOSED_US: AtomicU32 = AtomicU32::new(SERVO_OFF_US as u32);
+
+/// Panic / HardFault: igniter off, E28 PA off, valves to their safe position.
+///
+/// Vehicle image: FILL and SRV to 1.0 ms (OFF). Pad image: FILL and PURGE to
+/// the pad's own closed pulses, the two VEHICLE servos hold their last
+/// position, and the 4 s IWDG reboot then drives the GSE-simple SAFE set.
 pub fn force_safe_outputs() {
     IGN_PIN.set(false);
     // Ensure E28 500 mW PA is never left keyed on fault.
     E28_TX_EN_PIN.set(false);
+    if PAD_IMAGE.load(Ordering::Relaxed) {
+        unsafe {
+            wr(
+                TIM1 + TIM_CCR1,
+                clamp_pulse(PAD_FILL_CLOSED_US.load(Ordering::Relaxed) as u16) as u32,
+            );
+            if rd(RCC_APB1LENR) & RCC_APB1LENR_TIM4EN != 0 {
+                wr(
+                    TIM4 + TIM_CCR2,
+                    clamp_pulse(PAD_PURGE_CLOSED_US.load(Ordering::Relaxed) as u16) as u32,
+                );
+            }
+        }
+        LedBank::nucleo().apply(Leds {
+            link: false,
+            activity: false,
+            fault: true,
+        });
+        return;
+    }
     unsafe {
         wr(TIM1 + TIM_CCR1, SERVO_OFF_US as u32);
         wr(TIM1 + TIM_CCR2, SERVO_OFF_US as u32);
@@ -1753,12 +1821,232 @@ impl VehicleHal for VehicleBoard {
 }
 
 // ---------------------------------------------------------------------------
+// Pad board (gse-pad image: GSE-simple control set over DX-LR42 / E28 LoRa)
+// ---------------------------------------------------------------------------
+
+/// Heartbeat for an external igniter keep-alive circuit (`PE14`, ZIO `D4`),
+/// toggled every 20 ms output tick (25 Hz square wave) while the pad runs.
+pub const PAD_HEARTBEAT_PIN: Pin = Pin::new(GPIOE, 14);
+
+/// Pad image servo wiring (all 50 Hz, 3.3 V signal):
+///
+/// | Servo | Function | MCU pin | NUCLEO ZIO | Timer |
+/// |---|---|---|---|---|
+/// | 1 | FILL | `PE9` | `D6` | TIM1_CH1 (same pin as the vehicle image) |
+/// | 2 | VEH (fuel) | `PE11` | `D5` | TIM1_CH2 (the vehicle image's SRV pin) |
+/// | 3 | VEH2 (oxidizer) | `PD12` | `D29` | TIM4_CH1 |
+/// | 4 | PURGE | `PD13` | `D28` | TIM4_CH2 |
+///
+/// IGN stays on `PE13` (`D3`), push-pull, HIGH = energised.
+pub const fn pad_servo_route(servo: PadServo) -> (usize, bool) {
+    match servo {
+        PadServo::Fill => (TIM1, false),
+        PadServo::Veh => (TIM1, true),
+        PadServo::Veh2 => (TIM4, false),
+        PadServo::Purge => (TIM4, true),
+    }
+}
+
+/// Mechanical setup per servo: set `reversed` for a servo mounted mirrored
+/// and `trim_us` to centre it, or `fitted: false` to leave an output idle.
+/// Check every valve's travel with the linkage disconnected first.
+pub const PAD_SERVO_SETUP: PadBoard = PadBoard {
+    servos: [
+        ServoSetup::FITTED, // 1 FILL  (PE9)
+        ServoSetup::FITTED, // 2 VEH   (PE11)
+        ServoSetup::FITTED, // 3 VEH2  (PD12)
+        ServoSetup::FITTED, // 4 PURGE (PD13)
+    ],
+};
+
+/// NUCLEO-H753ZI vehicle board running the GSE-simple pad node.
+pub struct PadVehicleBoard {
+    usb_baud_shadow: UsbBaud,
+    radio: DualRadioPort,
+    flash_saved: bool,
+    tim1: ServoPair,
+    tim4: ServoPair,
+    leds: LedBank,
+    device: u32,
+}
+
+impl PadVehicleBoard {
+    pub fn init() -> Self {
+        enable_gpio(1); // GPIOB: LEDs
+        enable_gpio(3); // GPIOD: PD12 / PD13 servos
+        enable_gpio(4); // GPIOE: LED, servos, IGN, heartbeat
+
+        // Igniter first: latched LOW before the pin is ever driven.
+        IGN_PIN.as_output_level(false);
+        PAD_HEARTBEAT_PIN.as_output_level(false);
+
+        // Timers start with 1.0 ms pulses; the pad core's first pass (within
+        // milliseconds of boot) then drives the GSE-simple SAFE set.
+        let mut tim1 = ServoPair::new();
+        tim1.init();
+        Pin::new(GPIOE, 9).as_alternate(1); // TIM1_CH1  FILL
+        Pin::new(GPIOE, 11).as_alternate(1); // TIM1_CH2  VEH
+        let mut tim4 = ServoPair::tim4();
+        tim4.init();
+        Pin::new(GPIOD, 12).as_alternate(2); // TIM4_CH1  VEH2
+        Pin::new(GPIOD, 13).as_alternate(2); // TIM4_CH2  PURGE
+        PAD_IMAGE.store(true, Ordering::Relaxed);
+
+        let leds = LedBank::nucleo();
+        leds.init();
+
+        timebase_init();
+        watchdog_init();
+
+        let boot_cfg = boot_link_state();
+        let radio = DualRadioPort::init(boot_cfg.radio, boot_cfg.uart_baud);
+
+        PadVehicleBoard {
+            usb_baud_shadow: boot_cfg.usb_baud,
+            radio,
+            flash_saved: boot_cfg.flash_saved,
+            tim1,
+            tim4,
+            leds,
+            device: device_id(0x5041_0000), // "PA"
+        }
+    }
+
+    pub fn pump(&mut self) {
+        self.radio.pump(now_ms());
+    }
+}
+
+impl PadHal for PadVehicleBoard {
+    fn now_ms(&self) -> u32 {
+        now_ms()
+    }
+
+    fn set_servo_us(&mut self, servo: PadServo, pulse_us: u16) {
+        let (tim, ch2) = pad_servo_route(servo);
+        if tim == TIM1 {
+            self.tim1.set_channel(ch2, pulse_us);
+        } else {
+            self.tim4.set_channel(ch2, pulse_us);
+        }
+    }
+
+    fn set_ign(&mut self, on: bool) {
+        IGN_PIN.set(on);
+    }
+
+    fn set_heartbeat(&mut self, level: bool) {
+        PAD_HEARTBEAT_PIN.set(level);
+    }
+
+    fn read_radio(&mut self, buf: &mut [u8]) -> usize {
+        self.radio.read(buf)
+    }
+
+    fn write_radio(&mut self, data: &[u8]) {
+        let _ = self.radio.write(data);
+    }
+
+    fn radio_ready(&mut self) -> bool {
+        self.radio.ready(now_ms())
+    }
+
+    fn set_leds(&mut self, leds: Leds) {
+        self.leds.apply(leds);
+    }
+
+    fn kick_watchdog(&mut self) {
+        watchdog_kick();
+    }
+
+    fn device_id(&self) -> u32 {
+        self.device
+    }
+
+    fn link_state(&self) -> LinkState {
+        LinkState {
+            usb_baud: self.usb_baud_shadow,
+            uart_baud: self.radio.uart_baud(),
+            radio: self.radio.active_radio(),
+            flash_saved: self.flash_saved,
+        }
+    }
+
+    fn radio_tx_busy(&self) -> bool {
+        self.radio.tx_busy()
+    }
+
+    fn set_radio_transparent(&mut self) {
+        self.radio.set_transparent_mode();
+    }
+
+    fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
+        self.radio.probe(radio)
+    }
+
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        self.radio.apply(cfg.radio, cfg.uart_baud)?;
+        self.usb_baud_shadow = cfg.usb_baud;
+        let persisted = if cfg.persist() {
+            let saved = persist_link_state(LinkState {
+                usb_baud: self.usb_baud_shadow,
+                uart_baud: self.radio.uart_baud(),
+                radio: self.radio.active_radio(),
+                flash_saved: true,
+            });
+            self.flash_saved = saved;
+            saved
+        } else {
+            false
+        };
+        Ok(persisted)
+    }
+
+    fn note_closed_pulses(&mut self, fill_us: u16, purge_us: u16) {
+        PAD_FILL_CLOSED_US.store(fill_us as u32, Ordering::Relaxed);
+        PAD_PURGE_CLOSED_US.store(purge_us as u32, Ordering::Relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Host-checkable helpers
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_image_keeps_the_vehicle_wiring_and_adds_two_free_pins() {
+        // Servo 1 / 2 and IGN stay on the vehicle image's pins, so an existing
+        // harness keeps FILL on FILL and the igniter on the igniter.
+        assert_eq!(pad_servo_route(PadServo::Fill), (TIM1, false)); // PE9
+        assert_eq!(pad_servo_route(PadServo::Veh), (TIM1, true)); // PE11
+        assert_eq!(pad_servo_route(PadServo::Veh2), (TIM4, false)); // PD12
+        assert_eq!(pad_servo_route(PadServo::Purge), (TIM4, true)); // PD13
+        assert_eq!((IGN_PIN.port, IGN_PIN.pin), (GPIOE, 13));
+        // New outputs never collide with an existing function.
+        let used = [
+            (GPIOD, 8),  // USART3 TX
+            (GPIOD, 9),  // USART3 RX
+            (GPIOD, 14), // E28 NSS
+            (GPIOE, 1),  // LED
+            (GPIOE, 9),  // TIM1 CH1
+            (GPIOE, 11), // TIM1 CH2
+            (GPIOE, 13), // IGN
+        ];
+        for new in [
+            (GPIOD, 12),
+            (GPIOD, 13),
+            (PAD_HEARTBEAT_PIN.port, PAD_HEARTBEAT_PIN.pin),
+        ] {
+            assert!(!used.contains(&new), "{new:?} already in use");
+        }
+        assert!(PAD_SERVO_SETUP
+            .servos
+            .iter()
+            .all(|s| s.fitted && !s.reversed && s.trim_us == 0));
+    }
 
     #[test]
     fn baud_divider_matches_reference_across_all_presets() {

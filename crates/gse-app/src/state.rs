@@ -323,6 +323,8 @@ pub struct PadUi {
     pub active: bool,
     /// A pad link is open (serial/TCP connected in ESP-NOW mode).
     pub connected: bool,
+    /// Detected vehicle firmware: `pad`, `gse`, `detecting` (empty offline).
+    pub vehicle_fw: &'static str,
     pub view: PadView,
 }
 
@@ -371,6 +373,7 @@ impl PadUi {
         let mut out = String::from("{");
         json::field(&mut out, "active", json::bool_json(self.active));
         json::field(&mut out, "connected", json::bool_json(self.connected));
+        json::field(&mut out, "vehicle_fw", &json::quoted(self.vehicle_fw));
         json::field(&mut out, "fresh", json::bool_json(v.fresh));
         json::field(
             &mut out,

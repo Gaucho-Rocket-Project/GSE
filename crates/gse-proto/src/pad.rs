@@ -25,10 +25,57 @@
 /// Arm code that must be present in *every* command for the igniter to fire.
 pub const ARM_CODE: u8 = 0xA5;
 
-/// Host command stream period (20 Hz).
+/// Host command stream period on ESP-NOW (20 Hz). See [`PadTiming`].
 pub const CMD_PERIOD_MS: u32 = 50;
-/// Pad telemetry period (10 Hz).
+/// Pad telemetry period on ESP-NOW (10 Hz). See [`PadTiming`].
 pub const STATE_PERIOD_MS: u32 = 100;
+
+/// Command-stream and telemetry rates for one radio link.
+///
+/// ESP-NOW runs GSE-simple's 20 Hz / 10 Hz. The LoRa modules are half-duplex
+/// and far slower: at `DX-LR42` LEVEL 3 (10 kbps) a 25-byte `PAD_CMD` is
+/// ~26 ms of air time and a 37-byte `PAD_STATE` ~36 ms, so 20 Hz + 10 Hz
+/// would occupy ~90 % of the channel. LoRa therefore uses 10 Hz commands and
+/// 4 Hz telemetry (~41 % at LEVEL 3; the 1 s watchdog still spans 10 command
+/// periods). LEVEL 1 and 2 are too slow for the pad stream at any rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PadTiming {
+    /// Host (and ground SAFE-stream) command period.
+    pub cmd_period_ms: u32,
+    /// Pad telemetry period.
+    pub state_period_ms: u32,
+}
+
+impl PadTiming {
+    /// ESP-NOW: GSE-simple's 20 Hz commands / 10 Hz telemetry.
+    pub const ESPNOW: PadTiming = PadTiming {
+        cmd_period_ms: CMD_PERIOD_MS,
+        state_period_ms: STATE_PERIOD_MS,
+    };
+
+    /// DX-LR42 (LEVEL >= 3) and E28 LoRa: 10 Hz commands / 4 Hz telemetry.
+    pub const LORA: PadTiming = PadTiming {
+        cmd_period_ms: 100,
+        state_period_ms: 250,
+    };
+
+    pub const fn for_radio(radio: crate::RadioModule) -> PadTiming {
+        if radio.is_esp_now() {
+            PadTiming::ESPNOW
+        } else {
+            PadTiming::LORA
+        }
+    }
+}
+
+// Every timing must leave the host's stale-telemetry window and the default
+// watchdog several periods of margin.
+const _: () = {
+    assert!(PadTiming::LORA.state_period_ms * 4 <= STATE_STALE_MS);
+    assert!(PadTiming::LORA.cmd_period_ms * 5 <= DEFAULT_WDG_DS as u32 * 100);
+    assert!(PadTiming::LORA.cmd_period_ms < HOST_STALE_MS);
+    assert!(PadTiming::LORA.cmd_period_ms * 2 <= HOST_SILENT_MS);
+};
 /// Pad output recompute / servo refresh period (50 Hz).
 pub const OUTPUT_TICK_MS: u32 = 20;
 /// Host side: pad telemetry older than this is "stale" (no blind arming).
@@ -740,6 +787,35 @@ mod tests {
         assert_eq!(servo_pulse_us(false, 90, false, -20), 500);
         assert_eq!(servo_pulse_us(true, 60, false, 0), 2_166);
         assert_eq!(servo_pulse_us(true, 1, false, 30), 1_585);
+    }
+
+    #[test]
+    fn timing_follows_the_radio_and_fits_lora_airtime() {
+        use crate::radio::DxLr42Level;
+        assert_eq!(
+            PadTiming::for_radio(crate::RadioModule::EspNow),
+            PadTiming::ESPNOW
+        );
+        assert_eq!(
+            PadTiming::for_radio(crate::RadioModule::DxLr42),
+            PadTiming::LORA
+        );
+        assert_eq!(
+            PadTiming::for_radio(crate::RadioModule::E28_2G4M27S),
+            PadTiming::LORA
+        );
+        // Air time per frame at DX-LR42 LEVEL 3, duty cycle of the LoRa timing.
+        let air_ms = |bytes: u64| (bytes + 8) * 8 * 1000 / DxLr42Level::Level3.air_bps() as u64;
+        let cmd = 25; // 0x00 + COBS(8 + 12 + 2) + 0x00
+        let state = 37; // 0x00 + COBS(8 + 24 + 2) + 0x00
+        let t = PadTiming::LORA;
+        let busy = air_ms(cmd) * 1000 / t.cmd_period_ms as u64
+            + air_ms(state) * 1000 / t.state_period_ms as u64;
+        assert!(busy < 500, "LoRa channel {busy}/1000 busy at LEVEL 3");
+        let e = PadTiming::ESPNOW;
+        let busy_fast = air_ms(cmd) * 1000 / e.cmd_period_ms as u64
+            + air_ms(state) * 1000 / e.state_period_ms as u64;
+        assert!(busy_fast > 800, "the ESP-NOW rates would saturate LoRa");
     }
 
     #[test]

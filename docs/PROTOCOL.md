@@ -306,19 +306,39 @@ implementation: `crates/gse-proto/src/pad.rs` (wire + pure failsafe) and
 
 | Rule | Behaviour |
 |---|---|
-| Command model | The host streams the **complete desired output state** in `PAD_CMD` at 20 Hz; there is no per-command ACK |
+| Command model | The host streams the **complete desired output state** in `PAD_CMD` (20 Hz ESP-NOW, 10 Hz LoRa — see *Rates per link*); there is no per-command ACK |
 | Output pass | Every 20 ms the pad recomputes its outputs from the last valid `PAD_CMD` and its age (`failsafe()`) |
 | Link watchdog | No valid `PAD_CMD` for `wdg_ds` (1.0 s default, 0.3–3.0 s) → **FILL closed, PURGE closed, VEHICLE open, IGN off** |
 | Boot | Same SAFE set until the first valid command (`LATCHED`) |
 | Valves | FILL, VEHICLE (fuel + oxidizer servos, one command, own pin/direction/trim each) and PURGE pass straight through — no interlocks on the pad |
 | Purge | Forced closed unless `PAD_CFG.allow_purge` (per-session operator enable, off at every start) |
 | Igniter | Requires `arm_code = 0xA5` in *every* command and a fresh link; one shot per press, cut after `ign_max_ds` (0.5 s default, 0.1–2.0 s); must be released before it fires again |
-| Telemetry | `PAD_STATE` at 10 Hz reports the outputs actually driven plus counters and the config in force |
-| Ground bridge | Drops a `PAD_CMD` arriving more than 200 ms after the previous host frame; after 300 ms of host silence streams SAFE `PAD_CMD`s itself at 20 Hz |
+| Telemetry | `PAD_STATE` (10 Hz ESP-NOW, 4 Hz LoRa) reports the outputs actually driven plus counters and the config in force |
+| Ground bridge | Drops a `PAD_CMD` arriving more than 200 ms after the previous host frame; after 300 ms of host silence streams SAFE `PAD_CMD`s itself at the link's command rate |
+| Live LoRa switch | The NUCLEO pad (`gse-pad`) answers `LINK_CONFIG` like `gse-vehicle` (ACK on the old link, then switch, optional flash save); refused while FILL or PURGE is open or the igniter is requested. ESP-NOW pads refuse it |
 | Host | Holds the arm code back unless the operator armed **and** pad telemetry is < 1.5 s old; sends three SAFE commands on exit |
 
 Servo pulse (50 Hz): `1500 µs + trim ± 500 µs × travel° / 45°`, clamped to
 `500..=2500 µs`; travel defaults to 45° (1.0 / 2.0 ms), range 5–90°.
+
+### Rates per link (`PadTiming`)
+
+| Link | `PAD_CMD` | `PAD_STATE` | Why |
+|---|---|---|---|
+| ESP-NOW | 20 Hz | 10 Hz | GSE-simple rates; ~0.3 ms per datagram |
+| DX-LR42 (LEVEL ≥ 3) / E28 | 10 Hz | 4 Hz | Half-duplex LoRa: at LEVEL 3 a 25 B command is ~26 ms and a 37 B state ~36 ms of air time, so 20 + 10 Hz would occupy ~90 % of the channel; 10 + 4 Hz uses ~41 %. LEVEL 1–2 are too slow for the pad stream |
+
+The pad picks its telemetry rate from its own radio; the host and the ground
+SAFE stream pick the command rate from the radio the ground board reports in
+`LINKSTAT` (10 Hz until the first report).
+
+### Which firmware is on the vehicle
+
+`gse-app` (`control = auto`, the default) identifies the vehicle firmware per
+connection from its first conclusive frame: `PAD_STATE`, `PAD_EVENT` or a HELLO
+with `PAD_STREAM` → pad control set; `STATE`, `ACK`, `EVENT` or a HELLO without
+it → GSE vehicle state machine. `control = pad | gse` forces one; frames from
+the other family are then reported once and ignored.
 
 ### PAD_CMD (12 B)
 

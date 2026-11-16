@@ -510,10 +510,9 @@
     var gLink = (s.ground && s.ground.link) || {};
     var padSt = s.pad || {};
     var isPad = !!padSt.active;
-    var activeRadioId = isPad
-      ? "esp-now"
-      : (groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config));
+    var activeRadioId = groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config);
     var activeRadioPart = radioPartOf(activeRadioId);
+    var isEspNow = activeRadioId === "esp-now";
     var activeUsbBaud = (groundOnline && gLink.usb_baud) ? gLink.usb_baud : ((config && config.baud) || 115200);
     var activeUartBaud = (groundOnline && gLink.uart_baud) ? gLink.uart_baud : ((config && config.uart_baud) || 9600);
     var isE28 = activeRadioId === "e28-2g4m27s";
@@ -522,9 +521,9 @@
 
     var titleBrand = $("term-title");
     if (titleBrand) {
-      titleBrand.textContent = isPad
+      titleBrand.textContent = isEspNow
         ? "GROUND SUPPORT · ESP32 · ESP-NOW"
-        : "GROUND SUPPORT · NUCLEO-H753ZI · " + activeRadioPart;
+        : "GROUND SUPPORT · NUCLEO-H753ZI · " + activeRadioPart + (isPad ? " · PAD" : "");
     }
     var nameSrv = $("name-srv");
     if (nameSrv) { nameSrv.textContent = isPad ? "VEH" : "SRV"; }
@@ -541,7 +540,7 @@
       s.link_reconfig ? "scanning" : (groundOnline ? "online" : "idle"),
       s.link_reconfig
         ? "switching…"
-        : (isPad
+        : (isEspNow
             ? ("ESP-NOW" + (padRssi ? " · " + padRssi : ""))
             : (isE28 ? "E28-2G4M27S · SPI1" : ("DX-LR42 · " + activeUartBaud)))
     );
@@ -764,7 +763,8 @@
       : (s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : "")));
     $("foot-config").textContent = "mode " + (live ? "LIVE" : "TEST") + " · fill " +
       (s.config ? s.config.fill_seconds : "?") + " s · countdown " + countdownSecondsCfg() + " s · " +
-      activeRadioPart + " (" + (isPad ? "ESP32 pad" : (isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud))) + ") · " +
+      activeRadioPart + " (" + (isEspNow ? "ESP32 pad" : (isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud))) + ") · " +
+      (isPad ? "pad control set · " : "") +
       (s.config ? s.config.port + " @" + activeUsbBaud : "") + (s.sim ? " · simulator" : "");
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
@@ -790,9 +790,17 @@
         : (groundOnline ? "PINGING" : "OFFLINE"),
       vehicleOnline ? "ok" : (groundOnline ? "warn" : "dim"));
     setRailVal("rail-usb", activeUsbBaud + " Bd", "cyan");
+    var vfw = (s.pad && s.pad.vehicle_fw) || "";
+    setRailVal("proc-vfw",
+      vfw === "pad" ? "GSE-SIMPLE PAD" : (vfw === "gse" ? "GSE VEHICLE" : (vfw === "detecting" ? "DETECTING" : "–")),
+      vfw === "pad" || vfw === "gse" ? "ok" : (vfw === "detecting" ? "warn" : "dim"));
     if (isPad) {
       var padSt = s.pad || {};
-      setRailVal("rail-uart", "ESP-NOW · 20 Hz", "cyan");
+      setRailVal("rail-uart",
+        activeRadioId === "esp-now"
+          ? "ESP-NOW · 20 Hz"
+          : ((isE28 ? "SPI1" : ("UART " + activeUartBaud)) + " · 10 Hz"),
+        "cyan");
       var flashName = $("rail-flash-name");
       if (flashName) { flashName.textContent = "pad cfg"; }
       setRailVal("rail-flash", padSt.cfg_synced ? "IN SYNC" : (padSt.connected ? "SENDING" : "–"),
@@ -1166,10 +1174,20 @@
     var usbVal = (usbSel && usbSel.value) || "115200";
     var uartVal = (uartSel && uartSel.value) || "9600";
     var espNow = radioSel.value === "esp-now";
+    var controlSel = $("cfg-control");
+    var control = (controlSel && controlSel.value) || "auto";
     var uartLbl = $("lbl-uart-baud");
     if (uartLbl) { uartLbl.hidden = espNow; }
     var fsPad = $("fs-pad");
-    if (fsPad) { fsPad.hidden = !espNow; }
+    if (fsPad) { fsPad.hidden = control === "gse" && !espNow; }
+    var controlHint = $("control-hint");
+    if (controlHint) {
+      controlHint.textContent = control === "auto"
+        ? "The console identifies the vehicle firmware from its first frames on every connection: gse-pad / ESP32 pad → GSE-simple control set, gse-vehicle → GSE command/ACK."
+        : (control === "pad"
+            ? "Always drive the GSE-simple pad control set (gse-pad on the NUCLEO, or the ESP32 pad). Frames from gse-vehicle are reported and ignored."
+            : "Always drive the GSE vehicle state machine (gse-vehicle). Frames from a pad firmware are reported and ignored.");
+    }
     if (espNow) {
       hint.textContent =
         "ESP32 ground (USB " + usbVal + " Bd) + ESP32 pad over encrypted ESP-NOW. The pad runs the GSE-simple " +
@@ -1186,6 +1204,9 @@
         "DX-LR42-24T12D uses USART6 (PG14=TX, PG9=RX @ " + uartVal +
         " 8N1) + PG12=M0, PG13=M1, PG10=AUX. Applies live over AT mode to Vehicle + Ground (USB " +
         usbVal + " Bd) and persists to STM32 flash.";
+    }
+    if (control !== "gse") {
+      hint.textContent += " With the pad firmware (gse-pad) the stream runs at 10 Hz with 4 Hz telemetry; keep the DX-LR42 at LEVEL 3 or faster.";
     }
   }
 
@@ -1213,6 +1234,7 @@
     populateBaudSelect($("cfg-baud"), USB_BAUDS, cfg.baud || 115200, 115200);
     populateBaudSelect($("cfg-uart-baud"), UART_BAUDS, cfg.uart_baud || 9600, 9600);
     $("cfg-radio").value = radioIdOf(cfg);
+    $("cfg-control").value = cfg.control || "auto";
     $("cfg-pad-wdg").value = ((cfg.pad_wdg_ds || 10) / 10).toFixed(1);
     $("cfg-pad-ign").value = ((cfg.pad_ign_max_ds || 5) / 10).toFixed(1);
     $("cfg-pad-travel-fill").value = cfg.pad_travel_fill || 45;
@@ -1341,6 +1363,7 @@
     $("cfg-mode").addEventListener("change", updateModeHint);
     $("cfg-countdown").addEventListener("input", updateModeHint);
     $("cfg-radio").addEventListener("change", updateRadioHint);
+    $("cfg-control").addEventListener("change", updateRadioHint);
     $("cfg-baud").addEventListener("change", updateRadioHint);
     $("cfg-uart-baud").addEventListener("change", updateRadioHint);
     $("btn-settings-close").addEventListener("click", function () { stopRecording(); $("settings").close(); });
@@ -1360,8 +1383,9 @@
         confirm_ign: $("cfg-confirm").checked,
         sound: $("cfg-sound").checked
       };
+      payload.control = $("cfg-control").value;
       var espNow = payload.radio === "esp-now";
-      if (espNow) {
+      if (espNow || payload.control !== "gse") {
         payload.pad_wdg_ds = Math.round(parseFloat($("cfg-pad-wdg").value) * 10);
         payload.pad_ign_max_ds = Math.round(parseFloat($("cfg-pad-ign").value) * 10);
         payload.pad_travel_fill = parseInt($("cfg-pad-travel-fill").value, 10);
@@ -1371,7 +1395,7 @@
       var wantPurge = $("cfg-purge-enable").checked;
       var havePurge = !!(snapshot && snapshot.pad && snapshot.pad.purge_enabled);
       api("/api/config", payload).then(function () {
-        if (espNow && wantPurge !== havePurge) {
+        if ((espNow || payload.control !== "gse") && wantPurge !== havePurge) {
           return api("/api/command", { action: wantPurge ? "purge_enable" : "purge_disable" });
         }
         return null;

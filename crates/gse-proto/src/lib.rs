@@ -36,7 +36,9 @@ pub use message::{
     capabilities, link_cfg_flags, Ack, Command, Event, FwVersion, Heartbeat, Hello, LinkConfig,
     LinkConfigAck, LinkStat, Message, Ping, Pong,
 };
-pub use pad::{PadCommand, PadConfig, PadEvent, PadEventCode, PadOutputs, PadRunState, PadState};
+pub use pad::{
+    PadCommand, PadConfig, PadEvent, PadEventCode, PadOutputs, PadRunState, PadState, PadTiming,
+};
 pub use radio::{DxLr42Baud, DxLr42Level, RadioModule, UsbBaud};
 pub use state::{faults, flags, StateSnapshot, StateSummary};
 

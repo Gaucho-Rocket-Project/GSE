@@ -98,8 +98,9 @@ def main():
     command("fill_off")
     s = wait_for(lambda st: st["fill"]["paused"] and st["pending"] is None, "FILL paused")
     check(not rb(s)["fill"], "FILL OFF closes the valve and pauses the app-side fill timer")
-    check(not s["actions"]["srv_ign_on"]["enabled"] and "ARM" in s["actions"]["srv_ign_on"]["reason"],
-          "VEH+IGN requires ARM")
+    gate = s["actions"]["srv_ign_on"]
+    check(not gate["enabled"] and "ARM" in gate["reason"],
+          f"VEH+IGN requires ARM (gate: {gate['reason'] or 'enabled'})")
 
     command("arm")
     s = wait_for(lambda st: rb(st)["armed"], "pad armed")

@@ -14,17 +14,29 @@
 //!
 //! The two vehicle-valve servos (fuel and oxidizer) both follow the `veh`
 //! command; each has its own pin, direction and trim ([`PadBoard`]).
+//!
+//! The same core runs on both board families:
+//!
+//! * ESP32 + ESP-NOW: GSE-simple's 20 Hz / 10 Hz ([`PadTiming::ESPNOW`]),
+//! * NUCLEO-H753ZI + `DX-LR42` / `E28` LoRa: 10 Hz / 4 Hz
+//!   ([`PadTiming::LORA`]), live `LINK_CONFIG` radio/baud switching with flash
+//!   persistence, and the `DX-LR42` boot-banner / AT-mode recovery receiver.
+//!
+//! The timing follows [`PadHal::link_state`], so a live radio switch also
+//! switches the telemetry rate.
 
 use gse_proto::pad::{
     self, clamp_ign_max_ds, clamp_travel, clamp_wdg_ds, failsafe, servo_pulse_us, state_flags,
-    PadCommand, PadConfig, PadEvent, PadEventCode, PadOutputs, PadRunState, PadState,
+    PadCommand, PadConfig, PadEvent, PadEventCode, PadOutputs, PadRunState, PadState, PadTiming,
 };
 use gse_proto::{
-    capabilities, encode_message, flags, Endpoint, Frame, FrameDecoder, Hello, Message, Pong,
-    StateSnapshot, FIRMWARE_VERSION, PROTOCOL_VERSION,
+    capabilities, encode_message, flags, link_cfg_flags, AckResult, DxLr42Baud, Endpoint, Frame,
+    Hello, LinkConfig, LinkConfigAck, Message, Pong, RadioModule, Reason, StateSnapshot, UsbBaud,
+    FIRMWARE_VERSION, PROTOCOL_VERSION,
 };
 
-use crate::hal::{elapsed_ms, Leds};
+use crate::hal::{elapsed_ms, Leds, LinkState};
+use crate::radio::DxLr42Receiver;
 
 const RX_CHUNK: usize = 128;
 /// LED "activity" window after the last valid command.
@@ -117,13 +129,47 @@ pub trait PadHal {
     fn rssi_dbm(&self) -> Option<i8> {
         None
     }
+    /// Active radio link. The default is the ESP32 + ESP-NOW board; the
+    /// NUCLEO LoRa board reports its `DX-LR42` / `E28` module here, which
+    /// also selects [`PadTiming::LORA`].
+    fn link_state(&self) -> LinkState {
+        LinkState {
+            usb_baud: UsbBaud::Baud115200,
+            uart_baud: DxLr42Baud::Baud115200,
+            radio: RadioModule::EspNow,
+            flash_saved: false,
+        }
+    }
+    /// True while queued radio TX bytes are still draining (a `LINK_CONFIG`
+    /// switch waits for its acknowledgement to leave on the old link).
+    fn radio_tx_busy(&self) -> bool {
+        false
+    }
+    /// Drive the `DX-LR42` mode pins to transparent mode (no-op elsewhere).
+    fn set_radio_transparent(&mut self) {}
+    /// Non-destructively check that `radio` hardware is present.
+    fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
+        radio == self.link_state().radio
+    }
+    /// Apply a live radio / baud change after its acknowledgement drained.
+    /// Returns `Ok(persisted)`. Boards without live switching refuse it.
+    fn apply_link_config(&mut self, _cfg: LinkConfig) -> Result<bool, Reason> {
+        Err(Reason::NotPermitted)
+    }
+    /// The pulses that mean FILL closed and PURGE closed with the current
+    /// travel, direction and trim, refreshed every output tick. A board's
+    /// panic / fault handler uses them to close those valves without having
+    /// to know the servo geometry.
+    fn note_closed_pulses(&mut self, _fill_us: u16, _purge_us: u16) {}
 }
 
 /// The pad node state machine.
 pub struct Pad<H: PadHal> {
     hal: H,
     board: PadBoard,
-    decoder: FrameDecoder,
+    /// `DX-LR42`-aware receiver: absorbs module status banners and recovers
+    /// from accidental AT mode; plain frame decoding for ESP-NOW.
+    decoder: DxLr42Receiver,
     last_cmd: Option<PadCommand>,
     last_cmd_ms: u32,
     rx_count: u16,
@@ -146,6 +192,8 @@ pub struct Pad<H: PadHal> {
     prev_comms_loss: bool,
     prev_armed: bool,
     tx_seq: u8,
+    /// Accepted `LINK_CONFIG`, applied once its ACK has left the old link.
+    pending_link_cfg: Option<LinkConfig>,
 }
 
 impl<H: PadHal> Pad<H> {
@@ -158,7 +206,7 @@ impl<H: PadHal> Pad<H> {
         Pad {
             hal,
             board,
-            decoder: FrameDecoder::new(),
+            decoder: DxLr42Receiver::new(),
             last_cmd: None,
             last_cmd_ms: now,
             rx_count: 0,
@@ -183,7 +231,13 @@ impl<H: PadHal> Pad<H> {
             prev_comms_loss: true,
             prev_armed: false,
             tx_seq: 0,
+            pending_link_cfg: None,
         }
+    }
+
+    /// Stream / telemetry rates for the active radio.
+    pub fn timing(&self) -> PadTiming {
+        PadTiming::for_radio(self.hal.link_state().radio)
     }
 
     pub fn hal(&self) -> &H {
@@ -220,10 +274,24 @@ impl<H: PadHal> Pad<H> {
             self.drive_outputs();
             self.hal.set_ign(false);
             self.last_tick_ms = now;
+            self.hal.set_radio_transparent();
             self.send_hello(now);
             self.send_event(PadEventCode::Boot, 0);
             // First STATE goes out on this pass.
-            self.last_state_ms = now.wrapping_sub(pad::STATE_PERIOD_MS);
+            self.last_state_ms = now.wrapping_sub(self.timing().state_period_ms);
+        }
+
+        // Complete a staged radio switch only once its acknowledgement has
+        // drained from the old link (same rule as the GSE vehicle firmware).
+        if let Some(cfg) = self.pending_link_cfg {
+            if !self.hal.radio_tx_busy() {
+                self.pending_link_cfg = None;
+                if self.hal.apply_link_config(cfg).is_ok() {
+                    self.decoder = DxLr42Receiver::new();
+                    self.send_hello(now);
+                    self.send_state(now);
+                }
+            }
         }
 
         let mut buf = [0u8; RX_CHUNK];
@@ -233,17 +301,24 @@ impl<H: PadHal> Pad<H> {
                 break;
             }
             for &byte in &buf[..n] {
-                if let Some(frame) = self.decoder.push(byte) {
+                if let Some(frame) = self.decoder.push(byte, now) {
                     self.handle_frame(frame, now);
                 }
             }
         }
 
+        if let Some(escape) = self.decoder.poll_recovery_tx(now) {
+            self.hal.set_radio_transparent();
+            self.hal.write_radio(escape);
+        }
+
+        // Outputs are recomputed every pass that a tick is due, even while a
+        // radio switch is pending: the failsafe never waits on the radio.
         if elapsed_ms(now, self.last_tick_ms) >= pad::OUTPUT_TICK_MS {
             self.last_tick_ms = now;
             self.tick(now);
         }
-        if elapsed_ms(now, self.last_state_ms) >= pad::STATE_PERIOD_MS {
+        if elapsed_ms(now, self.last_state_ms) >= self.timing().state_period_ms {
             self.last_state_ms = now;
             self.send_state(now);
         }
@@ -318,7 +393,64 @@ impl<H: PadHal> Pad<H> {
                 });
                 self.send(&pong);
             }
+            Message::LinkConfig(cfg) if frame.src == Endpoint::Host => {
+                self.handle_link_config(cfg);
+            }
             _ => {}
+        }
+    }
+
+    /// Live radio / baud switch (LoRa boards). Refused while FILL or PURGE is
+    /// open or the igniter is requested: the switch interrupts the command
+    /// stream for a moment, and the outputs must already be at rest.
+    /// VEHICLE open is the safe set itself, so it does not block the switch.
+    fn handle_link_config(&mut self, cfg: LinkConfig) {
+        let cur = self.hal.link_state();
+        let o = self.outputs;
+        let refusal = if self.ign_on || o.ign {
+            Some((AckResult::RejectedSafety, Reason::IgnPowered))
+        } else if o.fill {
+            Some((AckResult::RejectedSafety, Reason::FillActive))
+        } else if o.prg && self.allow_purge {
+            Some((AckResult::RejectedSafety, Reason::NotPermitted))
+        } else if self.pending_link_cfg.is_some() {
+            Some((AckResult::Busy, Reason::Busy))
+        } else if !self.hal.probe_radio_module(cfg.radio) {
+            Some((AckResult::HardwareFault, Reason::HardwareFault))
+        } else {
+            None
+        };
+        let saved = if cur.flash_saved {
+            link_cfg_flags::PERSIST
+        } else {
+            0
+        };
+        let ack = match refusal {
+            Some((result, reason)) => LinkConfigAck {
+                req_id: cfg.req_id,
+                result,
+                reason,
+                usb_baud: cur.usb_baud,
+                uart_baud: cur.uart_baud,
+                radio: cur.radio,
+                flags: saved,
+            },
+            None => LinkConfigAck {
+                req_id: cfg.req_id,
+                result: AckResult::Ok,
+                reason: Reason::None,
+                usb_baud: cur.usb_baud,
+                uart_baud: cfg.uart_baud,
+                radio: cfg.radio,
+                flags: if cfg.persist() {
+                    link_cfg_flags::PERSIST
+                } else {
+                    0
+                },
+            },
+        };
+        if self.send(&Message::LinkConfigAck(ack)) && refusal.is_none() {
+            self.pending_link_cfg = Some(cfg);
         }
     }
 
@@ -354,6 +486,17 @@ impl<H: PadHal> Pad<H> {
     fn drive_outputs(&mut self) {
         let o = self.outputs;
         let prg = self.allow_purge && o.prg;
+        let fill_setup = self.board.servos[PadServo::Fill as usize];
+        let prg_setup = self.board.servos[PadServo::Purge as usize];
+        self.hal.note_closed_pulses(
+            servo_pulse_us(
+                false,
+                self.travel[0],
+                fill_setup.reversed,
+                fill_setup.trim_us,
+            ),
+            servo_pulse_us(false, self.travel[2], prg_setup.reversed, prg_setup.trim_us),
+        );
         for servo in PadServo::ALL {
             let (open, travel) = match servo {
                 PadServo::Fill => (o.fill, self.travel[0]),
@@ -503,6 +646,11 @@ impl<H: PadHal> Pad<H> {
 
     fn send_hello(&mut self, now: u32) {
         self.last_hello_ms = now;
+        let radio_caps = if self.hal.link_state().radio.is_esp_now() {
+            capabilities::RADIO_ESPNOW
+        } else {
+            capabilities::LINK_CONFIG | capabilities::RADIO_E28_2G4M27S
+        };
         let hello = Message::Hello(Hello {
             protocol: PROTOCOL_VERSION,
             fw: [FIRMWARE_VERSION.0, FIRMWARE_VERSION.1, FIRMWARE_VERSION.2],
@@ -515,13 +663,14 @@ impl<H: PadHal> Pad<H> {
                 | capabilities::WATCHDOG
                 | capabilities::PAD_STREAM
                 | capabilities::PURGE
-                | capabilities::RADIO_ESPNOW,
+                | radio_caps,
         });
         self.send(&hello);
     }
 
     fn send(&mut self, message: &Message) -> bool {
-        if !self.hal.radio_ready() {
+        // Quiet while the DX-LR42 AT-mode recovery owns the UART.
+        if self.decoder.tx_inhibited(self.hal.now_ms()) || !self.hal.radio_ready() {
             return false;
         }
         let mut buf = [0u8; Frame::MAX_ENCODED];
@@ -705,6 +854,132 @@ mod tests {
         }
         assert_eq!(pad.hal().servo(PadServo::Fill), 1_000);
         assert_eq!(pad.hal().servo(PadServo::Veh), 2_000);
+    }
+
+    fn lora_pad() -> Pad<MockPad> {
+        let mut pad = Pad::new(MockPad::lora(RadioModule::DxLr42, DxLr42Baud::Baud9600));
+        pad.poll();
+        pad.hal_mut().drain_frames();
+        pad
+    }
+
+    #[test]
+    fn lora_pad_reports_at_4_hz_and_advertises_link_config() {
+        let mut pad = Pad::new(MockPad::lora(RadioModule::DxLr42, DxLr42Baud::Baud9600));
+        assert_eq!(pad.timing(), PadTiming::LORA);
+        pad.poll();
+        let boot = pad.hal_mut().drain_frames();
+        let hello = boot
+            .iter()
+            .find_map(|f| match f.message() {
+                Some(Message::Hello(h)) => Some(h),
+                _ => None,
+            })
+            .unwrap();
+        assert_ne!(hello.capabilities & capabilities::PAD_STREAM, 0);
+        assert_ne!(hello.capabilities & capabilities::LINK_CONFIG, 0);
+        assert_eq!(hello.capabilities & capabilities::RADIO_ESPNOW, 0);
+        stream(&mut pad, cmd(true, false, false, false, false), 1_000);
+        let states = pad
+            .hal_mut()
+            .drain_frames()
+            .iter()
+            .filter(|f| matches!(f.message(), Some(Message::PadState(_))))
+            .count();
+        assert!(
+            (3..=5).contains(&states),
+            "{states} telemetry frames in 1 s"
+        );
+        assert_eq!(pad.hal().servo(PadServo::Fill), 2_000);
+    }
+
+    #[test]
+    fn lora_pad_ignores_dx_lr42_boot_banner() {
+        let mut pad = lora_pad();
+        pad.hal_mut().feed_bytes(b"Power On\r\n");
+        // > one 250 ms LoRa telemetry period.
+        stream(&mut pad, cmd(true, false, false, false, false), 600);
+        let st = last_state(&mut pad);
+        assert!(st.out_fill && st.link_ok());
+        assert_eq!(st.crc_err, 0, "banner must not count as a bad frame");
+    }
+
+    fn link_cfg(radio: RadioModule) -> Message {
+        Message::LinkConfig(LinkConfig {
+            req_id: 9,
+            usb_baud: UsbBaud::Baud115200,
+            uart_baud: DxLr42Baud::Baud57600,
+            radio,
+            flags: link_cfg_flags::PERSIST,
+        })
+    }
+
+    #[test]
+    fn lora_pad_switches_radio_live_after_acking_on_the_old_link() {
+        let mut pad = lora_pad();
+        pad.hal_mut().feed_frame(
+            &link_cfg(RadioModule::E28_2G4M27S),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            1,
+        );
+        pad.poll();
+        // ACK leaves on the still-active DX-LR42 link...
+        assert_eq!(pad.hal().link.radio, RadioModule::DxLr42);
+        let frames = pad.hal_mut().drain_frames();
+        assert!(frames.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a)) if a.req_id == 9 && a.result == AckResult::Ok
+        )));
+        // ...then the switch happens and the pad re-announces itself.
+        pad.poll();
+        assert_eq!(pad.hal().link.radio, RadioModule::E28_2G4M27S);
+        assert_eq!(pad.hal().link.uart_baud, DxLr42Baud::Baud57600);
+        assert!(pad.hal().link.flash_saved);
+        assert!(pad
+            .hal_mut()
+            .drain_frames()
+            .iter()
+            .any(|f| matches!(f.message(), Some(Message::Hello(_)))));
+    }
+
+    #[test]
+    fn lora_pad_refuses_radio_switch_while_fill_is_open() {
+        let mut pad = lora_pad();
+        stream(&mut pad, cmd(true, false, false, false, false), 100);
+        pad.hal_mut().drain_frames();
+        pad.hal_mut().feed_frame(
+            &link_cfg(RadioModule::E28_2G4M27S),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            1,
+        );
+        pad.poll();
+        pad.poll();
+        assert_eq!(pad.hal().link.radio, RadioModule::DxLr42);
+        assert!(pad.hal_mut().drain_frames().iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a))
+                if a.result == AckResult::RejectedSafety && a.reason == Reason::FillActive
+        )));
+    }
+
+    #[test]
+    fn esp_now_pad_refuses_radio_switch() {
+        let mut pad = boot();
+        pad.hal_mut().feed_frame(
+            &link_cfg(RadioModule::DxLr42),
+            Endpoint::Host,
+            Endpoint::Vehicle,
+            1,
+        );
+        pad.poll();
+        pad.poll();
+        assert_eq!(pad.hal().link.radio, RadioModule::EspNow);
+        assert!(pad.hal_mut().drain_frames().iter().any(|f| matches!(
+            f.message(),
+            Some(Message::LinkConfigAck(a)) if a.result == AckResult::HardwareFault
+        )));
     }
 
     #[test]

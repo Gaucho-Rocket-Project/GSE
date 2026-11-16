@@ -54,31 +54,47 @@ fi
 python3 "$ROOT/scripts/smoke.py" "http://127.0.0.1:$HTTP_PORT" "$TOKEN"
 
 # ---------------------------------------------------------------------------
-# Second pass: ESP32 + ESP-NOW pad (GSE-simple control set).
+# Pad passes: the GSE-simple control set on both board families. The console
+# runs with its default config (`control = auto`) and must identify the pad
+# firmware and the radio family by itself.
 # ---------------------------------------------------------------------------
-kill "$APP_PID" 2>/dev/null || true
-kill "$SIM_PID" 2>/dev/null || true
-wait "$APP_PID" "$SIM_PID" 2>/dev/null || true
-APP_PID=""
-SIM_PID=""
+run_pad_pass() {
+    local name="$1"
+    shift
+    kill "$APP_PID" 2>/dev/null || true
+    kill "$SIM_PID" 2>/dev/null || true
+    wait "$APP_PID" "$SIM_PID" 2>/dev/null || true
+    APP_PID=""
+    SIM_PID=""
 
-"$ROOT/target/debug/gse-sim" --listen "127.0.0.1:$SIM_PORT" --radio esp-now     >"$WORK/sim.log" 2>&1 &
-SIM_PID=$!
+    "$ROOT/target/debug/gse-sim" --listen "127.0.0.1:$SIM_PORT" "$@" \
+        >"$WORK/sim.log" 2>&1 &
+    SIM_PID=$!
 
-XDG_STATE_HOME="$WORK/state-pad"     "$ROOT/target/debug/gse-app" --port "tcp:127.0.0.1:$SIM_PORT" --no-browser     --http-port "$HTTP_PORT" --config "$WORK/config-pad.json" --radio esp-now     >"$WORK/app.log" 2>&1 &
-APP_PID=$!
+    XDG_STATE_HOME="$WORK/state-$name" \
+        "$ROOT/target/debug/gse-app" --port "tcp:127.0.0.1:$SIM_PORT" --no-browser \
+        --http-port "$HTTP_PORT" --config "$WORK/config-$name.json" \
+        >"$WORK/app.log" 2>&1 &
+    APP_PID=$!
 
-for _ in $(seq 1 100); do
-    if curl -sf "http://127.0.0.1:$HTTP_PORT/api/health" >/dev/null; then
-        break
+    for _ in $(seq 1 100); do
+        if curl -sf "http://127.0.0.1:$HTTP_PORT/api/health" >/dev/null; then
+            break
+        fi
+        sleep 0.1
+    done
+
+    TOKEN="$(curl -sf "http://127.0.0.1:$HTTP_PORT/" | sed -n 's/.*name="gse-token" content="\([a-f0-9]*\)".*/\1/p')"
+    if [[ -z "$TOKEN" ]]; then
+        echo "could not read the session token from the $name console page" >&2
+        exit 1
     fi
-    sleep 0.1
-done
 
-TOKEN="$(curl -sf "http://127.0.0.1:$HTTP_PORT/" | sed -n 's/.*name="gse-token" content="\([a-f0-9]*\)".*/\1/p')"
-if [[ -z "$TOKEN" ]]; then
-    echo "could not read the session token from the ESP-NOW console page" >&2
-    exit 1
-fi
+    echo "--- pad smoke: $name ---"
+    python3 "$ROOT/scripts/smoke_pad.py" "http://127.0.0.1:$HTTP_PORT" "$TOKEN"
+}
 
-python3 "$ROOT/scripts/smoke_pad.py" "http://127.0.0.1:$HTTP_PORT" "$TOKEN"
+# ESP32 + ESP-NOW pad.
+run_pad_pass espnow --radio esp-now
+# NUCLEO-H753ZI + DX-LR42 running gse-pad.
+run_pad_pass nucleo-lora --control pad

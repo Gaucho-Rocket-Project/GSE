@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/grp.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=9">
+<link rel="stylesheet" href="/app.css?v=10">
 </head>
 <body>
 <div class="crt">
@@ -77,6 +77,7 @@
         <div class="rail-line"><span class="rail-name">setup</span><span class="rail-v hot" id="proc-opmode">LIVE</span></div>
         <div class="rail-line"><span class="rail-name">gse-app</span><span class="rail-v ok" id="proc-app">ONLINE</span></div>
         <div class="rail-line"><span class="rail-name">gse-sim</span><span class="rail-v" id="proc-sim">STANDBY</span></div>
+        <div class="rail-line"><span class="rail-name">vehicle fw</span><span class="rail-v dim" id="proc-vfw">–</span></div>
         <div class="rail-line"><span class="rail-name" id="proc-lora-name">dx-lr42-rf</span><span class="rail-v" id="proc-lora">OFFLINE</span></div>
       </div>
 
@@ -379,10 +380,19 @@
           </select>
         </label>
         <p class="hint" id="radio-hint"></p>
+
+        <label>vehicle firmware
+          <select id="cfg-control">
+            <option value="auto">Auto-detect per connection (recommended)</option>
+            <option value="pad">GSE-simple pad (ESP32 pad / NUCLEO gse-pad)</option>
+            <option value="gse">GSE vehicle state machine (NUCLEO gse-vehicle)</option>
+          </select>
+        </label>
+        <p class="hint" id="control-hint"></p>
       </fieldset>
 
       <fieldset id="fs-pad">
-        <legend>esp-now pad (gse-simple)</legend>
+        <legend>pad control set (gse-simple)</legend>
         <div class="settings-grid-2">
           <label>link watchdog (seconds, 0.3–3.0)
             <input type="number" id="cfg-pad-wdg" min="0.3" max="3" step="0.1">
@@ -449,6 +459,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=9"></script>
+<script src="/app.js?v=10"></script>
 </body>
 </html>

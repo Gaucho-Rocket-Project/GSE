@@ -21,6 +21,12 @@ path = "src/bin/ground.rs"
 name = "gse-vehicle"
 path = "src/bin/vehicle.rs"
 
+# Vehicle board running the GSE-simple pad node (ESP-NOW control set over LoRa).
+# Flash either this or gse-vehicle to the vehicle NUCLEO, never both.
+[[bin]]
+name = "gse-pad"
+path = "src/bin/pad.rs"
+
 [features]
 default = ["radio-dx-lr42"]
 # Replace only the gse-ground entry point with the standalone ASCII heartbeat.

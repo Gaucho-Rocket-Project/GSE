@@ -18,8 +18,8 @@
 //! * a pad command arriving more than [`pad::HOST_STALE_MS`] after the
 //!   previous host frame is stale and dropped,
 //! * after [`pad::HOST_SILENT_MS`] of host silence the bridge itself streams
-//!   SAFE pad commands at 20 Hz, so a crashed app or a pulled cable cannot
-//!   hold a valve open.
+//!   SAFE pad commands (20 Hz on ESP-NOW, 10 Hz on LoRa), so a crashed app or
+//!   a pulled cable cannot hold a valve open.
 
 use gse_proto::pad::{self, PadCommand};
 use gse_proto::{
@@ -331,7 +331,9 @@ impl<H: GroundHal> Ground<H> {
             Some(t) => elapsed_ms(now, t) >= pad::HOST_SILENT_MS,
             None => true,
         };
-        if !silent || elapsed_ms(now, self.last_safe_tx) < pad::CMD_PERIOD_MS {
+        // Same rate as the host stream on this radio (20 Hz ESP-NOW, 10 Hz LoRa).
+        let period = pad::PadTiming::for_radio(self.hal.link_state().radio).cmd_period_ms;
+        if !silent || elapsed_ms(now, self.last_safe_tx) < period {
             return;
         }
         self.last_safe_tx = now;
@@ -510,6 +512,7 @@ mod tests {
     #[test]
     fn host_silence_streams_safe_pad_commands() {
         let mut ground = new_ground();
+        ground.hal_mut().link.radio = gse_proto::RadioModule::EspNow;
         ground.poll();
         feed_host(&mut ground, &pad_cmd(true));
         ground.hal_mut().advance(20);
@@ -539,6 +542,24 @@ mod tests {
             .drain_radio_frames()
             .iter()
             .all(|f| f.src == Endpoint::Host));
+    }
+
+    #[test]
+    fn lora_pad_safe_stream_runs_at_10_hz() {
+        let mut ground = new_ground(); // MockGround defaults to DX-LR42
+        ground.poll();
+        feed_host(&mut ground, &pad_cmd(true));
+        ground.hal_mut().advance(20);
+        feed_host(&mut ground, &pad_cmd(true));
+        ground.hal_mut().drain_radio_frames();
+        let mut safe = Vec::new();
+        for _ in 0..100 {
+            ground.hal_mut().advance(10);
+            ground.poll();
+            safe.extend(ground.hal_mut().drain_radio_frames());
+        }
+        // 1 s of silence: SAFE from 300 ms on, every 100 ms -> ~7 frames.
+        assert!((6..=8).contains(&safe.len()), "got {} frames", safe.len());
     }
 
     #[test]

@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 
 use gse_fw_core::hal::{Leds, LinkState, VehicleHal};
 use gse_fw_core::vehicle::Vehicle;
-use gse_proto::pad::{self, PadCommand, PadConfig, PadEventCode, PadState, ARM_CODE};
+use gse_proto::pad::{self, PadCommand, PadConfig, PadEventCode, PadState, PadTiming, ARM_CODE};
 use gse_proto::{
     encode_message, flags, Ack, DxLr42Baud, Endpoint, EventCode, Frame, FrameDecoder, LinkConfig,
     Message, RadioModule, Reason, StateSnapshot, UsbBaud,
@@ -189,6 +189,8 @@ pub struct PadLink {
     supervisor: Vehicle<SupervisorHal>,
     sup_decoder: FrameDecoder,
     settings: PadSettings,
+    /// Stream rate for the active radio (20 Hz ESP-NOW, 10 Hz LoRa).
+    timing: PadTiming,
     started: Instant,
     readback: Option<PadState>,
     readback_at: Option<Instant>,
@@ -214,7 +216,7 @@ pub struct PadLink {
 }
 
 impl PadLink {
-    pub fn new(settings: PadSettings, purge_enabled: bool) -> Self {
+    pub fn new(settings: PadSettings, purge_enabled: bool, timing: PadTiming) -> Self {
         let now = Instant::now();
         let hal = SupervisorHal {
             epoch: now,
@@ -228,6 +230,7 @@ impl PadLink {
             supervisor: Vehicle::new(hal),
             sup_decoder: FrameDecoder::new(),
             settings,
+            timing,
             started: now,
             readback: None,
             readback_at: None,
@@ -276,6 +279,11 @@ impl PadLink {
 
     pub fn set_purge_open(&mut self, open: bool) {
         self.purge_open = open && self.purge_enabled;
+    }
+
+    /// The radio changed (e.g. the ground board reported a different module).
+    pub fn set_timing(&mut self, timing: PadTiming) {
+        self.timing = timing;
     }
 
     pub fn set_settings(&mut self, settings: PadSettings) {
@@ -349,6 +357,9 @@ impl PadLink {
                     None
                 }
             }
+            // Live LoRa reconfiguration answer from the pad: the engine's
+            // two-phase handover owns it.
+            Message::LinkConfigAck(_) => Some(frame),
             Message::Pong(mut pong) => {
                 if !self.fresh(now) {
                     return None;
@@ -515,9 +526,10 @@ impl PadLink {
         if changed {
             self.cmd_changed_at = now;
         }
-        let due = self.last_cmd_tx.map_or(true, |t| {
-            now.duration_since(t) >= Duration::from_millis(pad::CMD_PERIOD_MS as u64)
-        });
+        let period = Duration::from_millis(self.timing.cmd_period_ms as u64);
+        let due = self
+            .last_cmd_tx
+            .map_or(true, |t| now.duration_since(t) >= period);
         if due || changed {
             self.last_cmd_tx = Some(now);
             out.to_pad.push(Message::PadCmd(command));
@@ -804,7 +816,7 @@ mod tests {
                 travel_prg: 45,
             };
             Rig {
-                link: PadLink::new(settings, false),
+                link: PadLink::new(settings, false, PadTiming::ESPNOW),
                 pad: Pad::new(MockPad::default()),
                 engine_rx: Vec::new(),
             }
@@ -928,6 +940,50 @@ mod tests {
         rig.link.set_purge_enabled(false);
         rig.run(150);
         assert_eq!(rig.pad.hal().servo(PadServo::Purge), 1_000);
+    }
+
+    #[test]
+    fn lora_timing_streams_at_10_hz_and_passes_link_config_acks() {
+        use gse_proto::{AckResult, DxLr42Baud, LinkConfigAck, Reason, UsbBaud};
+        let mut link = PadLink::new(
+            PadSettings {
+                wdg_ds: 10,
+                ign_max_ds: 5,
+                travel_fill: 45,
+                travel_veh: 45,
+                travel_prg: 45,
+            },
+            false,
+            PadTiming::LORA,
+        );
+        let start = Instant::now();
+        let mut commands = 0;
+        while start.elapsed() < Duration::from_millis(500) {
+            commands += link
+                .poll(Instant::now())
+                .to_pad
+                .iter()
+                .filter(|m| matches!(m, Message::PadCmd(_)))
+                .count();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!((4..=7).contains(&commands), "{commands} commands in 500 ms");
+        let ack = Message::LinkConfigAck(LinkConfigAck {
+            req_id: 3,
+            result: AckResult::Ok,
+            reason: Reason::None,
+            usb_baud: UsbBaud::Baud115200,
+            uart_baud: DxLr42Baud::Baud57600,
+            radio: RadioModule::E28_2G4M27S,
+            flags: 0,
+        });
+        let frame = Frame::from_message(&ack, Endpoint::Vehicle, Endpoint::Host, 2).unwrap();
+        assert_eq!(
+            link.on_pad_frame(frame, Instant::now())
+                .and_then(|f| f.message()),
+            Some(ack),
+            "the engine's two-phase handover needs the pad's LINK_CONFIG_ACK"
+        );
     }
 
     #[test]

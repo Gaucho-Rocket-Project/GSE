@@ -36,7 +36,10 @@ OPTIONS:
     --listen <ADDR>        TCP address for the ground board's USB port
                            (default 127.0.0.1:8787)
     --radio <MODULE>       Initial radio module: dx-lr42-24t12d (default), e28-2g4m27s,
-                           or esp-now (ESP32 pad: FILL, 2x VEH, PURGE, one-shot IGN)
+                           or esp-now
+    --control <SET>        Vehicle firmware: pad (GSE-simple pad node: FILL, 2x VEH,
+                           PURGE, one-shot IGN) or gse (GSE vehicle state machine).
+                           Default: pad on esp-now, gse on the LoRa modules
     --uart-baud <BPS>      Initial MCU <-> UART radio baud rate (default 9600)
     --level <0..8>         Simulate DX-LR42-24T12D AT+LEVEL air-rate latency
     --latency <MS>         Fixed one-way radio latency override
@@ -57,6 +60,14 @@ struct RadioConfig {
     latency_override_ms: Option<u32>,
     drop_ppm: u32,
     corrupt_ppm: u32,
+    /// Vehicle runs the GSE-simple pad node (`None` = pad on ESP-NOW only).
+    vehicle_pad: Option<bool>,
+}
+
+impl RadioConfig {
+    fn pad_vehicle(&self) -> bool {
+        self.vehicle_pad.unwrap_or(self.initial_radio.is_esp_now())
+    }
 }
 
 impl Default for RadioConfig {
@@ -68,6 +79,7 @@ impl Default for RadioConfig {
             latency_override_ms: None,
             drop_ppm: 0,
             corrupt_ppm: 0,
+            vehicle_pad: None,
         }
     }
 }
@@ -133,6 +145,19 @@ impl Options {
                             "invalid radio module '{text}' (expected dx-lr42-24t12d, e28-2g4m27s or esp-now)"
                         )
                     })?;
+                }
+                "--control" => {
+                    let text = value("--control")?;
+                    opts.radio.vehicle_pad =
+                        Some(match text.trim().to_ascii_lowercase().as_str() {
+                            "pad" => true,
+                            "gse" => false,
+                            _ => {
+                                return Err(format!(
+                                    "invalid control set '{text}' (expected pad or gse)"
+                                ))
+                            }
+                        });
                 }
                 "--uart-baud" => {
                     let text = value("--uart-baud")?;
@@ -346,14 +371,14 @@ impl VehicleBoard {
     fn radio(&self) -> RadioModule {
         match self {
             VehicleBoard::Gse(v) => v.hal().link.radio,
-            VehicleBoard::Pad(_) => RadioModule::EspNow,
+            VehicleBoard::Pad(p) => p.hal().link.radio,
         }
     }
 
     fn uart_baud(&self) -> DxLr42Baud {
         match self {
             VehicleBoard::Gse(v) => v.hal().link.uart_baud,
-            VehicleBoard::Pad(_) => DxLr42Baud::Baud115200,
+            VehicleBoard::Pad(p) => p.hal().link.uart_baud,
         }
     }
 
@@ -393,10 +418,22 @@ impl Boards {
                 .radio_in
                 .extend(b"Power On\r\n".iter().copied());
         }
-        let vehicle = if config.initial_radio.is_esp_now() {
+        if config.initial_radio.is_esp_now() {
             // ESP-NOW boards talk to the host over a fixed 115200 Bd UART.
             mock_ground.link.uart_baud = DxLr42Baud::Baud115200;
-            VehicleBoard::Pad(Box::new(Pad::new(MockPad::default())))
+            mock_vehicle.link.uart_baud = DxLr42Baud::Baud115200;
+        }
+        let vehicle = if config.pad_vehicle() {
+            let mut hal = if config.initial_radio.is_esp_now() {
+                MockPad::default()
+            } else {
+                // NUCLEO pad: same LoRa module and UART as the ground board.
+                MockPad::lora(config.initial_radio, config.initial_uart_baud)
+            };
+            if config.initial_radio == RadioModule::DxLr42 {
+                hal.radio_in.extend(b"Power On\r\n".iter().copied());
+            }
+            VehicleBoard::Pad(Box::new(Pad::new(hal)))
         } else {
             VehicleBoard::Gse(Box::new(Vehicle::new(mock_vehicle)))
         };
@@ -556,14 +593,19 @@ fn run(opts: Options) -> Result<(), String> {
     let local = listener.local_addr().unwrap_or(addr);
     println!("gse-sim {VERSION} listening on {local}");
     if !opts.quiet {
+        let vehicle = if opts.radio.pad_vehicle() {
+            "GSE-simple pad node (FILL, 2x VEH, PURGE, one-shot IGN)"
+        } else {
+            "GSE vehicle state machine (FILL, SRV, IGN)"
+        };
         if opts.radio.initial_radio.is_esp_now() {
             println!(
-                "  radio ESP-NOW (ESP32 pad node: FILL, 2x VEH, PURGE, one-shot IGN), drop {} ppm, corruption {} ppm",
+                "  radio ESP-NOW, vehicle: {vehicle}, drop {} ppm, corruption {} ppm",
                 opts.radio.drop_ppm, opts.radio.corrupt_ppm
             );
         } else {
             println!(
-                "  radio {}, uart {} baud, drop {} ppm, corruption {} ppm",
+                "  radio {}, uart {} baud, vehicle: {vehicle}, drop {} ppm, corruption {} ppm",
                 opts.radio.initial_radio.part_number(),
                 opts.radio.initial_uart_baud.bps(),
                 opts.radio.drop_ppm,
@@ -863,25 +905,22 @@ mod tests {
             let now = Instant::now();
             boards.ground.poll();
             let g_out = std::mem::take(&mut boards.ground.hal_mut().radio_out);
-            boards.radio.transmit(
-                Dest::ToVehicle,
-                RadioModule::EspNow,
-                DxLr42Baud::Baud115200,
-                g_out,
-                now,
+            let (radio, uart) = (
+                boards.ground.hal().link.radio,
+                boards.ground.hal().link.uart_baud,
             );
+            boards
+                .radio
+                .transmit(Dest::ToVehicle, radio, uart, g_out, now);
             boards
                 .radio
                 .deliver(now, boards.ground.hal_mut(), &mut boards.vehicle);
             boards.vehicle.poll();
             let v_out = boards.vehicle.take_radio_out();
-            boards.radio.transmit(
-                Dest::ToGround,
-                RadioModule::EspNow,
-                DxLr42Baud::Baud115200,
-                v_out,
-                now,
-            );
+            let (radio, uart) = (boards.vehicle.radio(), boards.vehicle.uart_baud());
+            boards
+                .radio
+                .transmit(Dest::ToGround, radio, uart, v_out, now);
             boards
                 .radio
                 .deliver(now, boards.ground.hal_mut(), &mut boards.vehicle);
@@ -930,6 +969,51 @@ mod tests {
         assert_eq!(pad_servo(&boards, PadServo::Fill), 1_000);
         assert_eq!(pad_servo(&boards, PadServo::Veh), 2_000);
         assert!(boards.ground.pad_safe_frames() > 0);
+    }
+
+    #[test]
+    fn lora_pad_follows_stream_and_ground_safes_at_10_hz() {
+        use gse_fw_core::PadServo;
+        use gse_proto::PadCommand;
+        let opts = parse(&["--control", "pad", "--latency", "0"]);
+        assert_eq!(opts.radio.initial_radio, RadioModule::DxLr42);
+        assert!(opts.radio.pad_vehicle());
+        let mut boards = Boards::new(opts.radio, 9);
+        assert_eq!(boards.vehicle.radio(), RadioModule::DxLr42);
+        let fill = Message::PadCmd(PadCommand {
+            fill: true,
+            veh: false,
+            ..PadCommand::safe(10, 5)
+        });
+        let usb = run_pad(&mut boards, Some(fill), 600);
+        assert_eq!(pad_servo(&boards, PadServo::Fill), 2_000);
+        assert_eq!(pad_servo(&boards, PadServo::Veh2), 1_000);
+        let hello = usb.iter().find_map(|f| match f.message() {
+            Some(Message::Hello(h)) => Some(h),
+            _ => None,
+        });
+        assert!(hello.is_some_and(|h| h.capabilities & gse_proto::capabilities::LINK_CONFIG != 0));
+        run_pad(&mut boards, None, 600);
+        assert_eq!(pad_servo(&boards, PadServo::Fill), 1_000);
+        assert_eq!(pad_servo(&boards, PadServo::Veh), 2_000);
+        let safe = boards.ground.pad_safe_frames();
+        assert!(
+            (2..=4).contains(&safe),
+            "{safe} SAFE frames in 600 ms at 10 Hz"
+        );
+    }
+
+    #[test]
+    fn control_option_defaults_and_overrides() {
+        assert!(!parse(&[]).radio.pad_vehicle());
+        assert!(parse(&["--radio", "esp-now"]).radio.pad_vehicle());
+        assert!(!parse(&["--radio", "esp-now", "--control", "gse"])
+            .radio
+            .pad_vehicle());
+        assert!(parse(&["--radio=e28-2g4m27s", "--control=pad"])
+            .radio
+            .pad_vehicle());
+        assert!(Options::parse(["--control".to_string(), "both".to_string()]).is_err());
     }
 
     #[test]

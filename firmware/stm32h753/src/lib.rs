@@ -1,6 +1,6 @@
 //! GSE board support library.
 //!
-//! The hardware layer lives in [`hw`]; the two binaries in `src/bin` are thin
+//! The hardware layer lives in [`hw`]; the binaries in `src/bin` are thin
 //! wrappers that hand a board object to the corresponding state machine in
 //! `gse-fw-core`.
 //!

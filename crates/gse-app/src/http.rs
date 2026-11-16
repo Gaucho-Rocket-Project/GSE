@@ -653,6 +653,14 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
         })?;
         patch.radio = Some(radio);
     }
+    if let Some(v) = body.get("control") {
+        let text = v
+            .as_str()
+            .ok_or_else(|| "control must be 'auto', 'pad' or 'gse'".to_string())?;
+        patch.control = Some(crate::config::ControlSet::parse(text).ok_or_else(|| {
+            format!("unsupported control set '{text}' (expected 'auto', 'pad' or 'gse')")
+        })?);
+    }
     for (key, lo, hi) in [
         ("pad_wdg_ds", pad::MIN_WDG_DS, pad::MAX_WDG_DS),
         ("pad_ign_max_ds", pad::MIN_IGN_MAX_DS, pad::MAX_IGN_MAX_DS),

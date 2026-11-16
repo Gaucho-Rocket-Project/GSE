@@ -357,6 +357,9 @@ pub struct MockPad {
     pub device_id: u32,
     pub radio_ready: bool,
     pub rssi_dbm: Option<i8>,
+    /// Radio link; ESP-NOW by default, a LoRa module for the NUCLEO pad.
+    pub link: LinkState,
+    pub e28_present: bool,
 }
 
 impl Default for MockPad {
@@ -374,7 +377,25 @@ impl Default for MockPad {
             device_id: 0x5041_4431, // "PAD1"
             radio_ready: true,
             rssi_dbm: Some(-48),
+            link: LinkState {
+                usb_baud: gse_proto::UsbBaud::Baud115200,
+                uart_baud: gse_proto::DxLr42Baud::Baud115200,
+                radio: RadioModule::EspNow,
+                flash_saved: false,
+            },
+            e28_present: true,
         }
+    }
+}
+
+impl MockPad {
+    /// A NUCLEO pad on a LoRa module (`DX-LR42` or `E28`).
+    pub fn lora(radio: RadioModule, uart_baud: gse_proto::DxLr42Baud) -> Self {
+        let mut pad = MockPad::default();
+        pad.link.radio = radio;
+        pad.link.uart_baud = uart_baud;
+        pad.rssi_dbm = None;
+        pad
     }
 }
 
@@ -469,5 +490,32 @@ impl PadHal for MockPad {
 
     fn rssi_dbm(&self) -> Option<i8> {
         self.rssi_dbm
+    }
+
+    fn link_state(&self) -> LinkState {
+        self.link
+    }
+
+    fn radio_tx_busy(&self) -> bool {
+        !self.radio_out.is_empty()
+    }
+
+    fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
+        probe_radio(self.link.radio, radio, self.e28_present)
+    }
+
+    fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
+        if cfg.radio.is_esp_now() != self.link.radio.is_esp_now() {
+            return Err(Reason::NotPermitted);
+        }
+        if cfg.radio == RadioModule::E28_2G4M27S && !self.e28_present {
+            return Err(Reason::HardwareFault);
+        }
+        self.link.uart_baud = cfg.uart_baud;
+        self.link.radio = cfg.radio;
+        if cfg.persist() {
+            self.link.flash_saved = true;
+        }
+        Ok(cfg.persist())
     }
 }

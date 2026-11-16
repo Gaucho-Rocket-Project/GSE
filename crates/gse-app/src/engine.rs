@@ -19,7 +19,7 @@ use gse_proto::{
 };
 
 use crate::clock;
-use crate::config::OperationMode;
+use crate::config::{ControlSet, OperationMode};
 use crate::logging::{Level, Source};
 use crate::pad_link::{PadLink, PadSettings, PadView};
 use crate::safety;
@@ -28,6 +28,7 @@ use crate::state::{
     CountdownTarget, CountdownUi, GroundStatus, PendingInfo, Shared, VehicleStatus,
 };
 use crate::transport::{is_tcp_spec, open_link, ByteLink};
+use gse_proto::pad::PadTiming;
 
 const TICK_MS: u64 = 10;
 const PING_ONLINE_MS: u64 = 2_000;
@@ -327,11 +328,50 @@ pub struct ConfigPatch {
     pub radio: Option<RadioModule>,
     pub confirm_ign: Option<bool>,
     pub sound: Option<bool>,
+    pub control: Option<ControlSet>,
     pub pad_wdg_ds: Option<u8>,
     pub pad_ign_max_ds: Option<u8>,
     pub pad_travel_fill: Option<u8>,
     pub pad_travel_veh: Option<u8>,
     pub pad_travel_prg: Option<u8>,
+}
+
+/// Which firmware the vehicle board runs, decided once per connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VehicleKind {
+    /// `control = auto`: waiting for a frame that identifies the firmware.
+    Unknown,
+    /// GSE-simple pad node (ESP32 or NUCLEO `gse-pad`).
+    Pad,
+    /// GSE vehicle state machine (NUCLEO `gse-vehicle`).
+    Gse,
+}
+
+impl VehicleKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            VehicleKind::Unknown => "detecting",
+            VehicleKind::Pad => "pad",
+            VehicleKind::Gse => "gse",
+        }
+    }
+}
+
+/// Identify the vehicle firmware from one of its frames (`None` = not
+/// conclusive, e.g. a PONG, which both firmwares send).
+fn classify_vehicle_frame(frame: &Frame) -> Option<VehicleKind> {
+    match frame.message()? {
+        Message::PadState(_) | Message::PadEvent(_) => Some(VehicleKind::Pad),
+        Message::Hello(hello) => Some(
+            if hello.capabilities & gse_proto::capabilities::PAD_STREAM != 0 {
+                VehicleKind::Pad
+            } else {
+                VehicleKind::Gse
+            },
+        ),
+        Message::State(_) | Message::Ack(_) | Message::Event(_) => Some(VehicleKind::Gse),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -428,6 +468,9 @@ pub struct Engine {
     pad: Option<PadLink>,
     /// Per-session purge enable (ECR-01 hazard H8: never persisted).
     purge_enabled: bool,
+    vehicle_kind: VehicleKind,
+    /// A frame from the other firmware family was already reported.
+    kind_mismatch_warned: bool,
 }
 
 impl Engine {
@@ -481,6 +524,8 @@ impl Engine {
             manual_disconnect: false,
             pad: None,
             purge_enabled: false,
+            vehicle_kind: VehicleKind::Unknown,
+            kind_mismatch_warned: false,
         }
     }
 
@@ -722,7 +767,13 @@ impl Engine {
             if family_changed || (st.config.radio.is_esp_now() && (usb_changed || rf_changed)) {
                 reconnect = true;
             }
-            st.pad.active = st.config.radio.is_esp_now();
+            if let Some(control) = patch.control {
+                if control != st.config.control {
+                    st.config.control = control;
+                    notes.push(format!("vehicle firmware {}", control.as_str()));
+                    reconnect = true;
+                }
+            }
             if st.config != old {
                 st.revision = st.revision.wrapping_add(1);
             }
@@ -1341,18 +1392,20 @@ impl Engine {
         // must re-confirm OFF/SAFE before any control is enabled.
         self.controls_ready = false;
         self.startup_safe_sent = false;
-        let (pad_mode, pad_settings) = {
-            let st = self.shared.lock();
-            (
-                st.config.radio.is_esp_now(),
-                PadSettings::from_config(&st.config),
-            )
+        let control = self.shared.lock().config.control;
+        self.vehicle_kind = match control {
+            ControlSet::Auto => VehicleKind::Unknown,
+            ControlSet::Pad => VehicleKind::Pad,
+            ControlSet::Gse => VehicleKind::Gse,
         };
-        self.pad = pad_mode.then(|| PadLink::new(pad_settings, self.purge_enabled));
+        self.kind_mismatch_warned = false;
+        self.pad = None;
+        if self.vehicle_kind == VehicleKind::Pad {
+            self.pad = Some(self.new_pad_link());
+        }
         {
             let mut st = self.shared.lock();
-            st.pad.active = pad_mode;
-            st.pad.connected = pad_mode;
+            st.pad.connected = self.pad.is_some();
             st.pad.view = PadView::default();
             st.controls.ready = false;
             st.controls.target = None;
@@ -1488,14 +1541,35 @@ impl Engine {
         }
 
         for frame in frames {
-            // ESP-NOW: everything from the vehicle side is the pad; route it
-            // through the pad link (readback, events, HELLO, PONG).
-            if frame.src == Endpoint::Vehicle && self.pad.is_some() {
-                let forwarded = self.pad.as_mut().and_then(|p| p.on_pad_frame(frame, now));
-                if let Some(f) = forwarded {
-                    self.handle_frame(f, now);
+            if frame.src == Endpoint::Vehicle {
+                if self.vehicle_kind == VehicleKind::Unknown {
+                    match classify_vehicle_frame(&frame) {
+                        Some(kind) => self.adopt_vehicle_kind(kind),
+                        // Not conclusive yet (e.g. a PONG): wait for one that is.
+                        None => continue,
+                    }
                 }
-                continue;
+                // Frames from the other firmware family (including its HELLO,
+                // which would otherwise mark the vehicle online) are reported
+                // once and dropped.
+                let kind = classify_vehicle_frame(&frame);
+                let expected = if self.pad.is_some() {
+                    VehicleKind::Pad
+                } else {
+                    VehicleKind::Gse
+                };
+                if kind.is_some_and(|k| k != expected) {
+                    self.warn_kind_mismatch(kind.unwrap_or(expected));
+                    continue;
+                }
+                if self.pad.is_some() {
+                    // The pad: readback, events, HELLO, PONG, LINK_CONFIG_ACK.
+                    let forwarded = self.pad.as_mut().and_then(|p| p.on_pad_frame(frame, now));
+                    if let Some(f) = forwarded {
+                        self.handle_frame(f, now);
+                    }
+                    continue;
+                }
             }
             self.handle_frame(frame, now);
         }
@@ -1917,11 +1991,12 @@ impl Engine {
         );
     }
 
-    /// Send to `dst`. In ESP-NOW mode everything the engine addresses to the
-    /// vehicle (COMMAND, HEARTBEAT, LINK_CONFIG) goes to the app-side GSE
-    /// supervisor instead; only PINGs travel to the pad for a real round trip.
+    /// Send to `dst`. With the pad firmware, COMMAND and HEARTBEAT for the
+    /// vehicle go to the app-side GSE supervisor instead; PINGs (real round
+    /// trip) and LINK_CONFIG (live LoRa reconfiguration) go to the pad.
     fn send(&mut self, message: Message, dst: Endpoint) -> bool {
-        if dst == Endpoint::Vehicle && !matches!(message, Message::Ping(_)) {
+        if dst == Endpoint::Vehicle && !matches!(message, Message::Ping(_) | Message::LinkConfig(_))
+        {
             if let Some(pad) = self.pad.as_mut() {
                 if self.link.is_none() {
                     return false;
@@ -2043,11 +2118,23 @@ impl Engine {
                 }
                 let mut push_handover = None;
                 let mut saved_adopted = false;
+                let mut family_switch = None;
                 {
                     let mut st = self.shared.lock();
                     let first_stat = !st.ground.have_link_stat;
                     st.ground.link = stat;
                     st.ground.have_link_stat = true;
+                    // The board family follows the hardware: a ground board
+                    // reporting ESP-NOW (or a LoRa module) wins over the
+                    // configured family, which can never be live-switched.
+                    if first_stat && stat.radio.is_esp_now() != st.config.radio.is_esp_now() {
+                        family_switch = Some((st.config.radio, stat.radio));
+                        st.config.radio = stat.radio;
+                        if !stat.radio.is_esp_now() {
+                            st.config.uart_baud = stat.uart_baud.bps();
+                        }
+                        st.revision = st.revision.wrapping_add(1);
+                    }
                     // ESP-NOW boards cannot be live-reconfigured.
                     if first_stat && self.link_handover.is_none() && !st.config.radio.is_esp_now() {
                         let mismatch_usb = stat.usb_baud.bps() != st.config.baud;
@@ -2070,6 +2157,23 @@ impl Engine {
                             }
                         }
                     }
+                }
+                // The stream rate follows the radio the ground board reports.
+                if let Some(pad) = self.pad.as_mut() {
+                    pad.set_timing(PadTiming::for_radio(stat.radio));
+                }
+                if let Some((was, now_radio)) = family_switch {
+                    self.shared.save_config();
+                    self.shared.log(
+                        Level::Warn,
+                        Source::Ground,
+                        format!(
+                            "Ground board reports {} - console switched from {} to match the hardware",
+                            now_radio.part_number(),
+                            was.part_number()
+                        ),
+                        Some("radio_family"),
+                    );
                 }
                 if saved_adopted {
                     self.shared.save_config();
@@ -3011,6 +3115,73 @@ impl Engine {
     // ESP-NOW pad link
     // ---------------------------------------------------------------------
 
+    fn new_pad_link(&self) -> PadLink {
+        let (settings, timing) = {
+            let st = self.shared.lock();
+            (PadSettings::from_config(&st.config), self.pad_timing(&st))
+        };
+        PadLink::new(settings, self.purge_enabled, timing)
+    }
+
+    /// Stream rate for the radio the *ground board* reports. Until its first
+    /// LINKSTAT arrives (~1 s) use the slower LoRa rate: 10 Hz is safe on
+    /// ESP-NOW, while 20 Hz would overload a LoRa channel.
+    fn pad_timing(&self, st: &crate::state::AppState) -> PadTiming {
+        if st.ground.have_link_stat {
+            PadTiming::for_radio(st.ground.link.radio)
+        } else {
+            PadTiming::LORA
+        }
+    }
+
+    /// `control = auto`: the vehicle identified its firmware.
+    fn adopt_vehicle_kind(&mut self, kind: VehicleKind) {
+        self.vehicle_kind = kind;
+        match kind {
+            VehicleKind::Pad => {
+                self.pad = Some(self.new_pad_link());
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    "Vehicle runs the GSE-simple pad firmware - streaming the pad control set"
+                        .to_string(),
+                    Some("vehicle_fw"),
+                );
+            }
+            _ => {
+                self.shared.log(
+                    Level::Ok,
+                    Source::Vehicle,
+                    "Vehicle runs the GSE vehicle firmware - command/ACK control set".to_string(),
+                    Some("vehicle_fw"),
+                );
+            }
+        }
+        let mut st = self.shared.lock();
+        st.pad.connected = self.pad.is_some();
+        st.revision = st.revision.wrapping_add(1);
+    }
+
+    /// A frame from the other firmware family arrived (`control` forced).
+    fn warn_kind_mismatch(&mut self, seen: VehicleKind) {
+        if self.kind_mismatch_warned {
+            return;
+        }
+        self.kind_mismatch_warned = true;
+        let (seen_text, set_to) = match seen {
+            VehicleKind::Pad => ("the GSE-simple pad firmware", "pad"),
+            _ => ("the GSE vehicle firmware", "gse"),
+        };
+        self.shared.log(
+            Level::Error,
+            Source::Vehicle,
+            format!(
+                "Vehicle answers with {seen_text}, which this console is not set up for - set Settings > vehicle firmware to auto or {set_to} (its frames are ignored)"
+            ),
+            Some("vehicle_fw_mismatch"),
+        );
+    }
+
     /// Run the pad link: supervisor frames to the engine, the 20 Hz command
     /// stream and configuration to the pad, and pad notes to the log.
     fn service_pad(&mut self, now: Instant) {
@@ -3171,7 +3342,16 @@ impl Engine {
         let now = Instant::now();
         {
             let mut st = self.shared.lock();
-            st.pad.active = st.config.radio.is_esp_now();
+            st.pad.active = match self.vehicle_kind {
+                VehicleKind::Pad => true,
+                VehicleKind::Gse => false,
+                VehicleKind::Unknown => st.config.control.expects_pad(st.config.radio),
+            };
+            st.pad.vehicle_fw = if self.link.is_some() {
+                self.vehicle_kind.as_str()
+            } else {
+                ""
+            };
             match self.pad.as_ref() {
                 Some(pad) => {
                     st.pad.connected = true;
@@ -3508,6 +3688,52 @@ mod tests {
         assert_eq!(UserAction::AbortCountdown.event(), None);
         assert_eq!(UserAction::ResetFill.event(), None);
         assert_eq!(UserAction::ClearFaults.event(), None);
+    }
+
+    fn vehicle_frame(message: Message) -> Frame {
+        Frame::from_message(&message, Endpoint::Vehicle, Endpoint::Host, 1).unwrap()
+    }
+
+    #[test]
+    fn vehicle_firmware_is_identified_from_its_frames() {
+        use gse_proto::{capabilities, Hello, PadState};
+        let hello = |caps| {
+            Message::Hello(Hello {
+                protocol: 1,
+                fw: [1, 0, 0],
+                role: Endpoint::Vehicle,
+                uptime_ms: 0,
+                device_id: 0,
+                capabilities: caps,
+            })
+        };
+        let pad = Some(VehicleKind::Pad);
+        let gse = Some(VehicleKind::Gse);
+        assert_eq!(
+            classify_vehicle_frame(&vehicle_frame(Message::PadState(PadState::default()))),
+            pad
+        );
+        assert_eq!(
+            classify_vehicle_frame(&vehicle_frame(hello(
+                capabilities::PAD_STREAM | capabilities::LINK_CONFIG
+            ))),
+            pad
+        );
+        assert_eq!(
+            classify_vehicle_frame(&vehicle_frame(hello(capabilities::FILL_TIMER))),
+            gse
+        );
+        assert_eq!(
+            classify_vehicle_frame(&vehicle_frame(Message::State(StateSnapshot::all_safe()))),
+            gse
+        );
+        // Both firmwares answer PING: never conclusive.
+        let pong = Message::Pong(Pong {
+            nonce: 1,
+            uptime_ms: 0,
+            state: StateSnapshot::all_safe(),
+        });
+        assert_eq!(classify_vehicle_frame(&vehicle_frame(pong)), None);
     }
 
     #[test]
