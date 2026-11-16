@@ -35,7 +35,7 @@ SIM_PID=$!
 
 XDG_STATE_HOME="$WORK/state" \
     "$ROOT/target/debug/gse-app" --port "tcp:127.0.0.1:$SIM_PORT" --no-browser \
-    --http-port "$HTTP_PORT" --config "$WORK/config.json" >"$WORK/app.log" 2>&1 &
+    --http-port "$HTTP_PORT" --config "$WORK/config.json" --radio dx-lr42-24t12d     >"$WORK/app.log" 2>&1 &
 APP_PID=$!
 
 for _ in $(seq 1 100); do
@@ -52,3 +52,33 @@ if [[ -z "$TOKEN" ]]; then
 fi
 
 python3 "$ROOT/scripts/smoke.py" "http://127.0.0.1:$HTTP_PORT" "$TOKEN"
+
+# ---------------------------------------------------------------------------
+# Second pass: ESP32 + ESP-NOW pad (GSE-simple control set).
+# ---------------------------------------------------------------------------
+kill "$APP_PID" 2>/dev/null || true
+kill "$SIM_PID" 2>/dev/null || true
+wait "$APP_PID" "$SIM_PID" 2>/dev/null || true
+APP_PID=""
+SIM_PID=""
+
+"$ROOT/target/debug/gse-sim" --listen "127.0.0.1:$SIM_PORT" --radio esp-now     >"$WORK/sim.log" 2>&1 &
+SIM_PID=$!
+
+XDG_STATE_HOME="$WORK/state-pad"     "$ROOT/target/debug/gse-app" --port "tcp:127.0.0.1:$SIM_PORT" --no-browser     --http-port "$HTTP_PORT" --config "$WORK/config-pad.json" --radio esp-now     >"$WORK/app.log" 2>&1 &
+APP_PID=$!
+
+for _ in $(seq 1 100); do
+    if curl -sf "http://127.0.0.1:$HTTP_PORT/api/health" >/dev/null; then
+        break
+    fi
+    sleep 0.1
+done
+
+TOKEN="$(curl -sf "http://127.0.0.1:$HTTP_PORT/" | sed -n 's/.*name="gse-token" content="\([a-f0-9]*\)".*/\1/p')"
+if [[ -z "$TOKEN" ]]; then
+    echo "could not read the session token from the ESP-NOW console page" >&2
+    exit 1
+fi
+
+python3 "$ROOT/scripts/smoke_pad.py" "http://127.0.0.1:$HTTP_PORT" "$TOKEN"

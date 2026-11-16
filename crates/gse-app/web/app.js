@@ -19,7 +19,13 @@
     reset_controls: "RESET CONTROLS",
     reset_fill: "RESET FILL SEQ",
     clear_faults: "CLEAR FAULTS",
-    estop: "EMERGENCY STOP"
+    estop: "EMERGENCY STOP",
+    arm: "ARM IGNITER",
+    disarm: "DISARM",
+    purge_open: "PURGE OPEN",
+    purge_close: "PURGE CLOSE",
+    purge_enable: "PURGE ENABLE",
+    purge_disable: "PURGE DISABLE"
   };
   var SHORTCUT_LABELS = {
     fill_toggle: "FILL ON / OFF",
@@ -29,7 +35,9 @@
     estop: "All safe (E-STOP)",
     reset_controls: "Reset controls to OFF/SAFE",
     reset_fill: "Reset fill sequence",
-    clear_faults: "Clear latched faults"
+    clear_faults: "Clear latched faults",
+    arm_toggle: "ARM / DISARM igniter (ESP-NOW)",
+    purge_toggle: "PURGE OPEN / CLOSE (ESP-NOW)"
   };
 
   var snapshot = null;
@@ -49,6 +57,7 @@
   var lastVehicleOnline = null;
   var lastFillComplete = null;
   var lastFillPaused = null;
+  var lastPadVerdict = null;
 
   /* ------------------------------------------------------------------ */
   /* helpers                                                            */
@@ -77,18 +86,26 @@
   var USB_BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800];
   var UART_BAUDS = [2400, 4800, 9600, 19200, 38400, 57600, 115200];
   var RADIO_PART_NAMES = {
+    "esp-now": "ESP-NOW",
     "dx-lr42-24t12d": "DX-LR42-24T12D",
     "e28-2g4m27s": "E28-2G4M27S"
   };
 
   function radioIdOf(cfgOrLink) {
-    var r = (cfgOrLink && cfgOrLink.radio) || "dx-lr42-24t12d";
-    return String(r).toLowerCase() === "e28-2g4m27s" ? "e28-2g4m27s" : "dx-lr42-24t12d";
+    var r = String((cfgOrLink && cfgOrLink.radio) || "esp-now").toLowerCase();
+    return RADIO_PART_NAMES[r] ? r : "esp-now";
   }
 
   function radioPartOf(id) {
-    return RADIO_PART_NAMES[id] || "DX-LR42-24T12D";
+    return RADIO_PART_NAMES[id] || "ESP-NOW";
   }
+
+  /* ESP-NOW pad (GSE-simple control set): SRV is the vehicle valve pair. */
+  function padMode() {
+    return !!(snapshot && snapshot.pad && snapshot.pad.active);
+  }
+
+  function srvName() { return padMode() ? "VEH" : "SRV"; }
 
   function isLiveMode() {
     var mode = (config && config.op_mode) || "live";
@@ -331,6 +348,14 @@
       if (a.ign_pwr.enabled) { requestIgn(); }
       else if (a.ign_safe.enabled) { sendCommand("ign_safe"); }
       else { toast(a.ign_pwr.reason || a.ign_safe.reason || "IGN unavailable", "warn"); }
+    } else if (toggleAction === "arm_toggle") {
+      if (a.disarm && a.disarm.enabled) { sendCommand("disarm"); }
+      else if (a.arm && a.arm.enabled) { sendCommand("arm"); }
+      else { toast((a.arm && a.arm.reason) || "ARM unavailable", "warn"); }
+    } else if (toggleAction === "purge_toggle") {
+      if (a.purge_close && a.purge_close.enabled) { sendCommand("purge_close"); }
+      else if (a.purge_open && a.purge_open.enabled) { sendCommand("purge_open"); }
+      else { toast((a.purge_open && a.purge_open.reason) || "PURGE unavailable", "warn"); }
     } else {
       sendCommand(toggleAction);
     }
@@ -483,16 +508,28 @@
     var groundOnline = s.ground.status === "online";
     var vehicleOnline = s.vehicle.status === "online";
     var gLink = (s.ground && s.ground.link) || {};
-    var activeRadioId = groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config);
+    var padSt = s.pad || {};
+    var isPad = !!padSt.active;
+    var activeRadioId = isPad
+      ? "esp-now"
+      : (groundOnline && gLink.radio ? radioIdOf(gLink) : radioIdOf(config));
     var activeRadioPart = radioPartOf(activeRadioId);
     var activeUsbBaud = (groundOnline && gLink.usb_baud) ? gLink.usb_baud : ((config && config.baud) || 115200);
     var activeUartBaud = (groundOnline && gLink.uart_baud) ? gLink.uart_baud : ((config && config.uart_baud) || 9600);
     var isE28 = activeRadioId === "e28-2g4m27s";
+    var padRssi = padSt.readback && padSt.readback.rssi_dbm !== null && padSt.readback.rssi_dbm !== undefined
+      ? padSt.readback.rssi_dbm + " dBm" : "";
 
     var titleBrand = $("term-title");
     if (titleBrand) {
-      titleBrand.textContent = "GROUND SUPPORT · NUCLEO-H753ZI · " + activeRadioPart;
+      titleBrand.textContent = isPad
+        ? "GROUND SUPPORT · ESP32 · ESP-NOW"
+        : "GROUND SUPPORT · NUCLEO-H753ZI · " + activeRadioPart;
     }
+    var nameSrv = $("name-srv");
+    if (nameSrv) { nameSrv.textContent = isPad ? "VEH" : "SRV"; }
+    var nameSrvIgn = $("name-srv-ign");
+    if (nameSrvIgn) { nameSrvIgn.textContent = isPad ? "VEH+IGN" : "SRV+IGN"; }
 
     var gState = groundOnline ? "online" : (s.ground.status === "error" ? "error" : "scanning");
     pill("pill-ground", gState, s.ground.status + (groundOnline && s.ground.port ? " · " + s.ground.port : ""));
@@ -504,7 +541,9 @@
       s.link_reconfig ? "scanning" : (groundOnline ? "online" : "idle"),
       s.link_reconfig
         ? "switching…"
-        : (isE28 ? "E28-2G4M27S · SPI1" : ("DX-LR42 · " + activeUartBaud))
+        : (isPad
+            ? ("ESP-NOW" + (padRssi ? " · " + padRssi : ""))
+            : (isE28 ? "E28-2G4M27S · SPI1" : ("DX-LR42 · " + activeUartBaud)))
     );
     pill("pill-opmode", live ? "live" : "test", live ? "LIVE" : "TEST");
     pill("pill-mode", s.sim ? "sim" : "online", s.sim ? "SIMULATOR" : "HARDWARE");
@@ -533,7 +572,7 @@
     var fillPaused = !!(s.fill && s.fill.paused);
 
     setLed("led-fill", fillOn ? "ON" : (fillPaused ? "PAUSED" : "OFF"), fillOn ? "on" : (fillPaused ? "counting" : ""));
-    setLed("led-srv", srvOn ? "ON" : "OFF", srvOn ? "on" : "");
+    setLed("led-srv", isPad ? (srvOn ? "OPEN" : "CLOSED") : (srvOn ? "ON" : "OFF"), srvOn ? "on" : "");
     setLed("led-ign", ignPwr ? "PWR" : "SAFE", ignPwr ? "pwr" : "");
     setLed(
       "led-srv-ign",
@@ -600,9 +639,52 @@
       offAction: "srv_off",
       actions: actions,
       desc: target && target.srv !== ctl.srv
-        ? ("Awaiting ACK → " + target.srv)
-        : (srvOn ? "Vehicle servos ON · click → OFF" : "Vehicle servos · click → ON")
+        ? ((isPad ? "Awaiting pad readback → " : "Awaiting ACK → ") + target.srv)
+        : (isPad
+            ? (srvOn ? "Fuel + ox valves OPEN · click → CLOSE" : "Fuel + ox valves (servos 2+3) · click → OPEN")
+            : (srvOn ? "Vehicle servos ON · click → OFF" : "Vehicle servos · click → ON"))
     });
+
+    renderToggle({
+      btnId: "btn-arm",
+      swOnId: "sw-arm-on",
+      swOffId: "sw-arm-off",
+      descId: "desc-arm",
+      whyId: "why-arm",
+      hidden: !isPad,
+      active: !!padSt.armed,
+      danger: true,
+      counting: false,
+      onAction: "arm",
+      offAction: "disarm",
+      actions: actions,
+      desc: padSt.armed
+        ? (padSt.readback && padSt.readback.armed ? "ARMED · arm code in every command · click → DISARM" : "ARM requested · waiting for fresh pad telemetry")
+        : "Igniter arm interlock · click → ARM"
+    });
+    setLed("led-arm", padSt.armed ? "ARMED" : "SAFE", padSt.armed ? "pwr" : "");
+
+    var prgReported = !!(padSt.readback && padSt.readback.prg);
+    renderToggle({
+      btnId: "btn-purge",
+      swOnId: "sw-purge-on",
+      swOffId: "sw-purge-off",
+      descId: "desc-purge",
+      whyId: "why-purge",
+      hidden: !isPad,
+      active: !!padSt.purge_open,
+      danger: false,
+      counting: false,
+      onAction: "purge_open",
+      offAction: "purge_close",
+      actions: actions,
+      desc: !padSt.purge_enabled
+        ? "CO2 purge · disabled for this session (Settings)"
+        : (padSt.purge_open
+            ? (prgReported ? "Purge valve OPEN · click → CLOSE" : "Awaiting pad readback → OPEN")
+            : "CO2 purge valve (static fire only) · click → OPEN")
+    });
+    setLed("led-purge", prgReported ? "OPEN" : "CLOSED", prgReported ? "on" : "");
 
     renderToggle({
       btnId: "btn-ign",
@@ -643,12 +725,17 @@
           (ctl.srv || "OFF") + " · IGN " + (ctl.ign || "SAFE");
       }
     } else {
-      machineText = "FILL " + (ctl.fill || "OFF") + " · SRV " +
+      machineText = "FILL " + (ctl.fill || "OFF") + " · " + srvName() + " " +
         (ctl.srv || "OFF") + " · IGN " + (ctl.ign || "SAFE");
     }
     if (ctl.target) {
-      machineText += " → FILL " + ctl.target.fill + " · SRV " +
+      machineText += " → FILL " + ctl.target.fill + " · " + srvName() + " " +
         ctl.target.srv + " · IGN " + ctl.target.ign;
+    }
+    if (isPad) {
+      machineText += padSt.armed ? " · ARMED" : "";
+      machineText += padSt.purge_open ? " · PURGE OPEN" : "";
+      machineText += padSt.latched_safe ? " · PAD HELD IN SAFE SET (VEH vented)" : "";
     }
     $("machine-text").textContent = machineText;
     document.body.dataset.controls = ctl.ready ? "ready" : "init";
@@ -662,6 +749,7 @@
     renderChips(s);
     renderStats(s);
     renderFill(s);
+    renderPad(s);
 
     if (s.pending) {
       $("pending-text").textContent = s.pending.label + " · try " + s.pending.attempts + " · " + fmtMs(s.pending.age_ms);
@@ -676,7 +764,7 @@
       : (s.scan_note || (groundOnline ? "" : (s.port_hint ? "Looking for " + s.port_hint : "")));
     $("foot-config").textContent = "mode " + (live ? "LIVE" : "TEST") + " · fill " +
       (s.config ? s.config.fill_seconds : "?") + " s · countdown " + countdownSecondsCfg() + " s · " +
-      activeRadioPart + " (" + (isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud)) + ") · " +
+      activeRadioPart + " (" + (isPad ? "ESP32 pad" : (isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud))) + ") · " +
       (s.config ? s.config.port + " @" + activeUsbBaud : "") + (s.sim ? " · simulator" : "");
     $("foot-session").textContent = s.log_path ? "log: " + s.log_path : "log: in memory";
     updateShortcutBadges();
@@ -694,21 +782,35 @@
     var isE28 = activeRadioId === "e28-2g4m27s";
     var activeUsbBaud = (groundOnline && gLink.usb_baud) ? gLink.usb_baud : ((config && config.baud) || 115200);
     var activeUartBaud = (groundOnline && gLink.uart_baud) ? gLink.uart_baud : ((config && config.uart_baud) || 9600);
+    var isPad = padMode();
     var procLoraName = $("proc-lora-name");
-    if (procLoraName) { procLoraName.textContent = isE28 ? "e28-spi1-rf" : "dx-lr42-rf"; }
+    if (procLoraName) { procLoraName.textContent = isPad ? "esp-now-rf" : (isE28 ? "e28-spi1-rf" : "dx-lr42-rf"); }
     setRailVal("proc-lora",
       vehicleOnline ? ("ONLINE " + (s.vehicle.rtt_ms !== null ? s.vehicle.rtt_ms + "ms" : "")).trim()
         : (groundOnline ? "PINGING" : "OFFLINE"),
       vehicleOnline ? "ok" : (groundOnline ? "warn" : "dim"));
     setRailVal("rail-usb", activeUsbBaud + " Bd", "cyan");
-    setRailVal("rail-uart", isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud), isE28 ? "ok" : "cyan");
-    setRailVal("rail-flash", gLink.flash_saved ? "SAVED" : "DEFAULT", gLink.flash_saved ? "ok" : "dim");
+    if (isPad) {
+      var padSt = s.pad || {};
+      setRailVal("rail-uart", "ESP-NOW · 20 Hz", "cyan");
+      var flashName = $("rail-flash-name");
+      if (flashName) { flashName.textContent = "pad cfg"; }
+      setRailVal("rail-flash", padSt.cfg_synced ? "IN SYNC" : (padSt.connected ? "SENDING" : "–"),
+        padSt.cfg_synced ? "ok" : "warn");
+    } else {
+      setRailVal("rail-uart", isE28 ? "SPI1 4MHz" : ("UART " + activeUartBaud), isE28 ? "ok" : "cyan");
+      var flashNameL = $("rail-flash-name");
+      if (flashNameL) { flashNameL.textContent = "nvm flash"; }
+      setRailVal("rail-flash", gLink.flash_saved ? "SAVED" : "DEFAULT", gLink.flash_saved ? "ok" : "dim");
+    }
 
     var ctl = s.controls || {};
     var fill = s.fill || {};
     setRailVal("gate-init", ctl.ready ? "VERIFIED" : "PENDING", ctl.ready ? "ok" : "warn");
+    var interlockName = $("gate-interlock-name");
+    if (interlockName) { interlockName.textContent = "fill ↔ " + srvName().toLowerCase(); }
     setRailVal("gate-interlock",
-      fillOn ? "SRV LOCKED" : (srvOn ? "FILL LOCKED" : "CLEAR"),
+      fillOn ? srvName() + " LOCKED" : (srvOn ? "FILL LOCKED" : "CLEAR"),
       (fillOn || srvOn) ? "warn" : "ok");
     setRailVal("gate-fill",
       fill.active
@@ -721,7 +823,7 @@
         : (fill.seq_complete || fill.active || fill.paused ? "ok" : "dim"));
 
     var ignName = $("gate-ign-name");
-    if (ignName) { ignName.textContent = live ? "srv+ign" : "ign gate"; }
+    if (ignName) { ignName.textContent = live ? (isPad ? "veh+ign" : "srv+ign") : "ign gate"; }
     if (live) {
       setRailVal(
         "gate-ign",
@@ -754,6 +856,72 @@
       s.pending ? s.pending.label : (cdActive ? "COUNTDOWN" : "IDLE"),
       (s.pending || cdActive) ? "warn" : "dim"
     );
+  }
+
+  function padCell(id, text, cls) {
+    var el = $(id);
+    if (!el) { return; }
+    el.textContent = text;
+    el.className = cls || "";
+  }
+
+  function renderPad(s) {
+    var p = s.pad || {};
+    var panel = $("pad-panel");
+    if (!panel) { return; }
+    panel.hidden = !p.active;
+    if (!p.active) { lastPadVerdict = null; return; }
+    var verdict = p.verdict || { color: "grey", text: "DISCONNECTED" };
+    var vEl = $("pad-verdict");
+    vEl.dataset.color = verdict.color;
+    vEl.textContent = verdict.text;
+    if (lastPadVerdict !== null && verdict.text !== lastPadVerdict) {
+      if (verdict.color === "red" || verdict.color === "purple") { beep(300, 0.25); }
+      if (verdict.color === "red") { toast(verdict.text, "warn", 5000); }
+    }
+    lastPadVerdict = verdict.text;
+    $("pad-age").textContent = (p.age_ms !== null && p.age_ms !== undefined)
+      ? "updated " + fmtMs(p.age_ms) + " ago"
+      : "no telemetry";
+
+    var c = p.command || null;
+    var rb = p.readback || null;
+    [["fill", "fill"], ["veh", "veh"], ["prg", "prg"]].forEach(function (pair) {
+      var key = pair[0];
+      var cmdText = c ? (c[key] ? "OPEN" : "CLOSED") : "–";
+      var rbText = rb ? (rb[key] ? "OPEN" : "CLOSED") : "–";
+      var diff = c && rb && c[key] !== rb[key];
+      padCell("pad-cmd-" + key, cmdText, c && c[key] ? "open" : "");
+      padCell("pad-rb-" + pair[1], rbText, (rb && rb[key] ? "open" : "") + (diff ? " diff" : ""));
+    });
+    padCell("pad-cmd-ign", c ? ((c.ign ? "FIRE" : "OFF") + (c.armed ? " · armed" : "")) : "–", c && c.ign ? "hot" : "");
+    padCell("pad-rb-ign",
+      rb ? (rb.ign ? "ENERGISED" : (rb.ign_spent ? "SPENT · release" : "OFF")) : "–",
+      rb && rb.ign ? "hot" : "");
+
+    var mm = $("pad-mismatch");
+    mm.hidden = !p.mismatch;
+    mm.textContent = p.mismatch ? "READBACK MISMATCH · " + p.mismatch : "";
+
+    $("pad-armed").textContent = rb
+      ? ((rb.armed ? "ARMED" : "inhibited") + (p.armed ? " · operator ARM on" : ""))
+      : (p.armed ? "operator ARM on" : "–");
+    $("pad-link").textContent = rb
+      ? ((rb.comms_loss ? "COMMS LOSS" : (rb.link_ok ? "LINK OK" : "–")) + " · " + rb.run_state +
+         " · up " + rb.uptime_s + " s")
+      : "–";
+    $("pad-cmd-age").textContent = rb
+      ? ((rb.cmd_age_ms === null ? "never" : rb.cmd_age_ms + " ms") + " · wdg " + (rb.wdg_ds / 10).toFixed(1) + " s")
+      : "–";
+    $("pad-counters").textContent = rb
+      ? (rb.rx_count + " · " + rb.crc_err + " · " + (rb.rssi_dbm === null ? "n/a" : rb.rssi_dbm + " dBm"))
+      : "–";
+    var cfgIn = rb || p.config || {};
+    $("pad-travel").textContent = (cfgIn.travel_fill || "?") + "° / " + (cfgIn.travel_veh || "?") + "° / " +
+      (cfgIn.travel_prg || "?") + "°";
+    var cfg = p.config || {};
+    $("pad-config").textContent = (p.purge_enabled ? "purge ENABLED" : "purge disabled") + " · ign " +
+      ((cfg.ign_max_ds || 5) / 10).toFixed(1) + " s · " + (p.cfg_synced ? "in sync" : (p.connected ? "sending…" : "–"));
   }
 
   function setLed(id, text, cls) {
@@ -880,7 +1048,9 @@
       estop: "estop",
       reset_controls: "reset_controls",
       reset_fill: "reset_fill",
-      clear_faults: "clear_faults"
+      clear_faults: "clear_faults",
+      arm: "arm_toggle",
+      purge_open: "purge_toggle"
     };
     Object.keys(map).forEach(function (actionId) {
       var el = document.querySelector('[data-key-for="' + actionId + '"]');
@@ -898,16 +1068,18 @@
         displayCombo(sc.estop) + " e-stop · " +
         displayCombo(sc.reset_controls) + " reset all · " +
         displayCombo(sc.reset_fill) + " reset fill · " +
-        displayCombo(sc.clear_faults) + " faults";
+        displayCombo(sc.clear_faults) + " faults" +
+        (padMode() ? " · " + displayCombo(sc.arm_toggle) + " arm · " + displayCombo(sc.purge_toggle) + " purge" : "");
     } else {
       $("foot-keys").textContent = "keys (TEST): " +
         displayCombo(sc.fill_toggle) + " fill · " +
-        displayCombo(sc.srv_toggle) + " srv · " +
+        displayCombo(sc.srv_toggle) + " " + srvName().toLowerCase() + " · " +
         displayCombo(sc.ign_toggle) + " ign · " +
         displayCombo(sc.estop) + " e-stop · " +
         displayCombo(sc.reset_controls) + " reset all · " +
         displayCombo(sc.reset_fill) + " reset fill · " +
-        displayCombo(sc.clear_faults) + " faults";
+        displayCombo(sc.clear_faults) + " faults" +
+        (padMode() ? " · " + displayCombo(sc.arm_toggle) + " arm · " + displayCombo(sc.purge_toggle) + " purge" : "");
     }
   }
 
@@ -980,7 +1152,8 @@
     if (sel.value === "test") {
       hint.textContent = "TEST exposes independent FILL, SRV, and IGN controls; IGN runs a " + cdVal + " s countdown, then holds at 0.0 s for manual L (Shift+L cancels).";
     } else {
-      hint.textContent = "LIVE combines SRV+IGN after FILL; the " + cdVal + " s countdown holds at 0.0 s for manual L (Shift+L cancels).";
+      hint.textContent = "LIVE combines " + srvName() + "+IGN after FILL; the " + cdVal + " s countdown holds at 0.0 s for manual L (Shift+L cancels)." +
+        (padMode() ? " The igniter also needs ARM." : "");
     }
   }
 
@@ -992,6 +1165,18 @@
     if (!hint || !radioSel) { return; }
     var usbVal = (usbSel && usbSel.value) || "115200";
     var uartVal = (uartSel && uartSel.value) || "9600";
+    var espNow = radioSel.value === "esp-now";
+    var uartLbl = $("lbl-uart-baud");
+    if (uartLbl) { uartLbl.hidden = espNow; }
+    var fsPad = $("fs-pad");
+    if (fsPad) { fsPad.hidden = !espNow; }
+    if (espNow) {
+      hint.textContent =
+        "ESP32 ground (USB " + usbVal + " Bd) + ESP32 pad over encrypted ESP-NOW. The pad runs the GSE-simple " +
+        "control set: 20 Hz command stream, one-shot armed igniter, SAFE = FILL/PURGE closed, VEHICLE open. " +
+        "Switching between ESP-NOW and LoRa reconnects; it is never a live change.";
+      return;
+    }
     if (radioSel.value === "e28-2g4m27s") {
       hint.textContent =
         "E28-2G4M27S uses SPI1 (PA5=SCK, PA6=MISO, PA7=MOSI, PD14=NSS @ 4 MHz) + PG10=BUSY, PG11=NRESET, PF13=DIO1, PG12=RX_EN, PG13=TX_EN at 3.3 V ONLY (500 mW PA). Applies live to Vehicle + Ground (USB " +
@@ -1028,6 +1213,12 @@
     populateBaudSelect($("cfg-baud"), USB_BAUDS, cfg.baud || 115200, 115200);
     populateBaudSelect($("cfg-uart-baud"), UART_BAUDS, cfg.uart_baud || 9600, 9600);
     $("cfg-radio").value = radioIdOf(cfg);
+    $("cfg-pad-wdg").value = ((cfg.pad_wdg_ds || 10) / 10).toFixed(1);
+    $("cfg-pad-ign").value = ((cfg.pad_ign_max_ds || 5) / 10).toFixed(1);
+    $("cfg-pad-travel-fill").value = cfg.pad_travel_fill || 45;
+    $("cfg-pad-travel-veh").value = cfg.pad_travel_veh || 45;
+    $("cfg-pad-travel-prg").value = cfg.pad_travel_prg || 45;
+    $("cfg-purge-enable").checked = !!(snapshot && snapshot.pad && snapshot.pad.purge_enabled);
     updateRadioHint();
     renderShortcutEditor();
     refreshPorts();
@@ -1169,8 +1360,23 @@
         confirm_ign: $("cfg-confirm").checked,
         sound: $("cfg-sound").checked
       };
+      var espNow = payload.radio === "esp-now";
+      if (espNow) {
+        payload.pad_wdg_ds = Math.round(parseFloat($("cfg-pad-wdg").value) * 10);
+        payload.pad_ign_max_ds = Math.round(parseFloat($("cfg-pad-ign").value) * 10);
+        payload.pad_travel_fill = parseInt($("cfg-pad-travel-fill").value, 10);
+        payload.pad_travel_veh = parseInt($("cfg-pad-travel-veh").value, 10);
+        payload.pad_travel_prg = parseInt($("cfg-pad-travel-prg").value, 10);
+      }
+      var wantPurge = $("cfg-purge-enable").checked;
+      var havePurge = !!(snapshot && snapshot.pad && snapshot.pad.purge_enabled);
       api("/api/config", payload).then(function () {
-        toast("Settings applied — updating boards & saving to flash", "ok");
+        if (espNow && wantPurge !== havePurge) {
+          return api("/api/command", { action: wantPurge ? "purge_enable" : "purge_disable" });
+        }
+        return null;
+      }).then(function () {
+        toast(espNow ? "Settings applied — pad configuration updating" : "Settings applied — updating boards & saving to flash", "ok");
         $("settings").close();
       }).catch(function (e) { toast(e.message, "error", 5000); });
     });
@@ -1267,6 +1473,7 @@
     if (!action) { return; }
     if (isLiveMode() && (action === "srv_toggle" || action === "ign_toggle")) { return; }
     if (!isLiveMode() && action === "srv_ign_toggle") { return; }
+    if (!padMode() && (action === "arm_toggle" || action === "purge_toggle")) { return; }
     e.preventDefault();
     toggle(action);
   }

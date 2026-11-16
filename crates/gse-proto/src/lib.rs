@@ -20,6 +20,7 @@ pub mod crc;
 pub mod frame;
 pub mod fsm;
 pub mod message;
+pub mod pad;
 pub mod radio;
 pub mod state;
 
@@ -35,6 +36,7 @@ pub use message::{
     capabilities, link_cfg_flags, Ack, Command, Event, FwVersion, Heartbeat, Hello, LinkConfig,
     LinkConfigAck, LinkStat, Message, Ping, Pong,
 };
+pub use pad::{PadCommand, PadConfig, PadEvent, PadEventCode, PadOutputs, PadRunState, PadState};
 pub use radio::{DxLr42Baud, DxLr42Level, RadioModule, UsbBaud};
 pub use state::{faults, flags, StateSnapshot, StateSummary};
 
@@ -122,6 +124,26 @@ mod tests {
         let msg = Message::State(StateSnapshot::all_safe());
         let mut buf = [0u8; 8];
         assert!(encode_message(&msg, Endpoint::Vehicle, Endpoint::Host, 1, &mut buf).is_none());
+    }
+
+    #[test]
+    fn pad_messages_frame_roundtrip() {
+        let cmd = PadCommand::safe(pad::DEFAULT_WDG_DS, pad::DEFAULT_IGN_MAX_DS);
+        for msg in [
+            Message::PadCmd(cmd),
+            Message::PadState(PadState::default()),
+            Message::PadEvent(PadEvent::new(PadEventCode::Boot, 0)),
+            Message::PadConfig(PadConfig::default()),
+        ] {
+            let mut buf = [0u8; 96];
+            let n = encode_message(&msg, Endpoint::Host, Endpoint::Vehicle, 9, &mut buf).unwrap();
+            assert!(
+                n >= radio::MIN_ENCODED_FRAME_LEN,
+                "{msg:?} encoded to {n} B"
+            );
+            let frame = decode_block(&buf[1..n - 1]).unwrap();
+            assert_eq!(frame.message(), Some(msg));
+        }
     }
 
     #[test]

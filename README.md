@@ -68,6 +68,24 @@ trusts the ground station.
   ground-bridge and vehicle state machines over TCP with configurable RF
   latency, packet drops and bit errors.
 
+## ESP32 + ESP-NOW version (this branch's default)
+
+`radio: "esp-now"` (the default here; `--radio esp-now`) targets two ESP32
+boards over ESP-NOW and keeps the **GSE-simple control algorithm** on the pad:
+
+- the console streams the complete desired state (FILL, VEHICLE = fuel + ox
+  servos, PURGE, IGN) at 20 Hz and shows the pad's own read-back,
+- link loss → FILL & PURGE closed, VEHICLE open (vented), IGN off,
+- the igniter needs **ARM** (`A`) and fires once per press (0.5 s default),
+- PURGE (`P`) must be enabled for the session in **Settings**.
+
+Everything else in this README (LIVE/TEST, fill timer, countdown, E-STOP,
+interlocks) still works as an app-only layer on top. Try it with
+`cargo run -p gse-app -- --sim` (the simulator starts in ESP-NOW mode to
+match the config) or `gse-sim --radio esp-now`. Protocol details:
+[docs/PROTOCOL.md](docs/PROTOCOL.md#esp-now-pad-control-set-gse-simple).
+Select `dx-lr42-24t12d` / `e28-2g4m27s` in Settings for the NUCLEO + LoRa boards.
+
 ## Operating modes (`LIVE` vs `TEST`)
 
 Operators can switch between **`LIVE`** and **`TEST`** in **Settings → Operating
@@ -187,6 +205,7 @@ gse-app [OPTIONS]
   --sim                 use the built-in TCP simulator (tcp:127.0.0.1:8787)
   --port <PORT>         serial port, tcp:host:port, or 'auto' (default)
   --baud <RATE>         serial baud rate (default 115200)
+  --radio <MODULE>      esp-now (default), dx-lr42-24t12d or e28-2g4m27s
   --config <PATH>       path to configuration JSON file
   --host <ADDR>         HTTP bind address (default 127.0.0.1)
   --http-port <PORT>    HTTP console port (default 8765)
@@ -214,7 +233,12 @@ Persisted atomically as pretty-printed JSON on every change in **Settings**:
   "port": "auto",
   "baud": 115200,
   "uart_baud": 9600,
-  "radio": "dx-lr42-24t12d",
+  "radio": "esp-now",
+  "pad_wdg_ds": 10,
+  "pad_ign_max_ds": 5,
+  "pad_travel_fill": 45,
+  "pad_travel_veh": 45,
+  "pad_travel_prg": 45,
   "confirm_ign": true,
   "sound": true,
   "host": "127.0.0.1",
@@ -358,7 +382,7 @@ End-to-end verification against compiled `gse-sim` + `gse-app` binaries:
 
 ```bash
 cargo build --workspace
-./scripts/smoke.sh                           # 51 end-to-end checks (LIVE + TEST modes, custom countdown, E-STOP, reconnect & shutdown ALL SAFE)
+./scripts/smoke.sh                           # LoRa: 51 end-to-end checks (LIVE + TEST, countdown, E-STOP, reconnect, shutdown), then ESP-NOW pad checks (scripts/smoke_pad.py)
 python3 scripts/state_trace.py               # full SSE transition trace across LIVE & TEST sequences
 ```
 

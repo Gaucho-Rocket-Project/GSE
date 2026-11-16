@@ -12,6 +12,7 @@ use crate::clock;
 use crate::config::Config;
 use crate::json;
 use crate::logging::{Level, LogEntry, SessionLog, Source};
+use crate::pad_link::PadView;
 use crate::safety;
 
 pub const MAX_LOG: usize = 1000;
@@ -37,6 +38,15 @@ pub struct Actions {
     pub reset_fill: ActionState,
     pub clear_faults: ActionState,
     pub estop: ActionState,
+    /// ESP-NOW pad only: igniter arm interlock (GSE-simple ARM toggle).
+    pub arm: ActionState,
+    pub disarm: ActionState,
+    /// ESP-NOW pad only: CO2 purge valve.
+    pub purge_open: ActionState,
+    pub purge_close: ActionState,
+    /// ESP-NOW pad only: per-session purge enable (ECR-01 hazard H8).
+    pub purge_enable: ActionState,
+    pub purge_disable: ActionState,
 }
 
 impl Actions {
@@ -55,6 +65,12 @@ impl Actions {
             "reset_fill" => &self.reset_fill,
             "clear_faults" => &self.clear_faults,
             "estop" => &self.estop,
+            "arm" => &self.arm,
+            "disarm" => &self.disarm,
+            "purge_open" => &self.purge_open,
+            "purge_close" => &self.purge_close,
+            "purge_enable" => &self.purge_enable,
+            "purge_disable" => &self.purge_disable,
             _ => return None,
         })
     }
@@ -75,6 +91,12 @@ impl Actions {
             ("reset_fill", &self.reset_fill),
             ("clear_faults", &self.clear_faults),
             ("estop", &self.estop),
+            ("arm", &self.arm),
+            ("disarm", &self.disarm),
+            ("purge_open", &self.purge_open),
+            ("purge_close", &self.purge_close),
+            ("purge_enable", &self.purge_enable),
+            ("purge_disable", &self.purge_disable),
         ] {
             let mut obj = String::from("{");
             json::field(&mut obj, "enabled", json::bool_json(value.enabled));
@@ -294,6 +316,171 @@ impl ControlsUi {
     }
 }
 
+/// ESP-NOW pad link projection for the UI (GSE-simple PAD READ-BACK panel).
+#[derive(Clone, Debug, Default)]
+pub struct PadUi {
+    /// The ESP-NOW pad control set is selected (`radio = esp-now`).
+    pub active: bool,
+    /// A pad link is open (serial/TCP connected in ESP-NOW mode).
+    pub connected: bool,
+    pub view: PadView,
+}
+
+impl PadUi {
+    /// GSE-simple status banner (`controller.verdict()`): (colour, text).
+    pub fn verdict(&self) -> (&'static str, String) {
+        if !self.connected {
+            return ("grey", "DISCONNECTED".to_string());
+        }
+        let Some(rb) = self.view.readback else {
+            return ("red", "NO PAD TELEMETRY".to_string());
+        };
+        if self
+            .view
+            .readback_age_ms
+            .map_or(true, |age| age > gse_proto::pad::STATE_STALE_MS as u64)
+        {
+            return (
+                "red",
+                "PAD SILENT - WATCHDOG WILL SAFE THE SYSTEM".to_string(),
+            );
+        }
+        if rb.ign_on() {
+            return ("purple", "IGNITER ENERGISED".to_string());
+        }
+        if rb.comms_loss() {
+            return ("red", "COMMS LOSS - PAD SAFE".to_string());
+        }
+        if self.view.mismatch.is_some() {
+            return ("red", "PAD READBACK MISMATCH".to_string());
+        }
+        if self.view.latched_safe {
+            return (
+                "amber",
+                "SAFE SET LATCHED - VEHICLE VENTED - RESET CONTROLS TO CLEAR".to_string(),
+            );
+        }
+        if rb.armed() {
+            return ("green", "LINK OK - ARMED".to_string());
+        }
+        ("amber", "LINK OK - NOT ARMED".to_string())
+    }
+
+    pub fn to_json(&self) -> String {
+        let v = &self.view;
+        let mut out = String::from("{");
+        json::field(&mut out, "active", json::bool_json(self.active));
+        json::field(&mut out, "connected", json::bool_json(self.connected));
+        json::field(&mut out, "fresh", json::bool_json(v.fresh));
+        json::field(
+            &mut out,
+            "age_ms",
+            &v.readback_age_ms
+                .map(|a| a.to_string())
+                .unwrap_or_else(|| "null".to_string()),
+        );
+        match v.readback {
+            Some(rb) => {
+                let mut r = String::from("{");
+                json::field(&mut r, "fill", json::bool_json(rb.out_fill));
+                json::field(&mut r, "veh", json::bool_json(rb.out_veh));
+                json::field(&mut r, "prg", json::bool_json(rb.out_prg));
+                json::field(&mut r, "ign", json::bool_json(rb.out_ign));
+                json::field(&mut r, "ign_spent", json::bool_json(rb.ign_spent()));
+                json::field(&mut r, "armed", json::bool_json(rb.armed()));
+                json::field(&mut r, "link_ok", json::bool_json(rb.link_ok()));
+                json::field(&mut r, "comms_loss", json::bool_json(rb.comms_loss()));
+                json::field(&mut r, "latched", json::bool_json(rb.latched()));
+                json::field(&mut r, "hello_ok", json::bool_json(rb.hello_ok()));
+                json::field(
+                    &mut r,
+                    "cmd_age_ms",
+                    &if rb.age_ms == gse_proto::pad::AGE_NEVER {
+                        "null".to_string()
+                    } else {
+                        rb.age_ms.to_string()
+                    },
+                );
+                json::field(&mut r, "rx_count", &rb.rx_count.to_string());
+                json::field(&mut r, "crc_err", &rb.crc_err.to_string());
+                json::field(
+                    &mut r,
+                    "rssi_dbm",
+                    &if rb.rssi_dbm == gse_proto::pad::RSSI_UNKNOWN {
+                        "null".to_string()
+                    } else {
+                        rb.rssi_dbm.to_string()
+                    },
+                );
+                json::field(
+                    &mut r,
+                    "run_state",
+                    &json::quoted(rb.run_state().map_or("?", |s| s.label())),
+                );
+                json::field(&mut r, "uptime_s", &rb.uptime_s.to_string());
+                json::field(&mut r, "wdg_ds", &rb.wdg_ds.to_string());
+                json::field(&mut r, "ign_max_ds", &rb.ign_max_ds.to_string());
+                json::field(
+                    &mut r,
+                    "fw",
+                    &json::quoted(&format!("{}.{}", rb.fw_major, rb.fw_minor)),
+                );
+                json::field(&mut r, "travel_fill", &rb.travel_fill.to_string());
+                json::field(&mut r, "travel_veh", &rb.travel_veh.to_string());
+                json::field(&mut r, "travel_prg", &rb.travel_prg.to_string());
+                json::field(&mut r, "allow_purge", json::bool_json(rb.allow_purge));
+                r.push('}');
+                json::field(&mut out, "readback", &r);
+            }
+            None => json::field(&mut out, "readback", "null"),
+        }
+        match v.command {
+            Some(c) => {
+                let mut r = String::from("{");
+                json::field(&mut r, "fill", json::bool_json(c.fill));
+                json::field(&mut r, "veh", json::bool_json(c.veh));
+                json::field(&mut r, "prg", json::bool_json(c.prg));
+                json::field(&mut r, "ign", json::bool_json(c.ign));
+                json::field(&mut r, "armed", json::bool_json(c.armed()));
+                r.push('}');
+                json::field(&mut out, "command", &r);
+            }
+            None => json::field(&mut out, "command", "null"),
+        }
+        json::field(&mut out, "armed", json::bool_json(v.armed));
+        json::field(&mut out, "purge_enabled", json::bool_json(v.purge_enabled));
+        json::field(&mut out, "purge_open", json::bool_json(v.purge_open));
+        json::field(&mut out, "latched_safe", json::bool_json(v.latched_safe));
+        let mut cfg = String::from("{");
+        json::field(&mut cfg, "travel_fill", &v.config.travel_fill.to_string());
+        json::field(&mut cfg, "travel_veh", &v.config.travel_veh.to_string());
+        json::field(&mut cfg, "travel_prg", &v.config.travel_prg.to_string());
+        json::field(&mut cfg, "wdg_ds", &v.config.wdg_ds.to_string());
+        json::field(&mut cfg, "ign_max_ds", &v.config.ign_max_ds.to_string());
+        json::field(
+            &mut cfg,
+            "allow_purge",
+            json::bool_json(v.config.allow_purge),
+        );
+        cfg.push('}');
+        json::field(&mut out, "config", &cfg);
+        json::field(&mut out, "cfg_synced", json::bool_json(v.cfg_synced));
+        json::field(
+            &mut out,
+            "mismatch",
+            &json::opt_str_json(v.mismatch.as_deref()),
+        );
+        let (color, text) = self.verdict();
+        let mut verdict = String::from("{");
+        json::field(&mut verdict, "color", &json::quoted(color));
+        json::field(&mut verdict, "text", &json::quoted(&text));
+        verdict.push('}');
+        json::field(&mut out, "verdict", &verdict);
+        out.push('}');
+        out
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PendingInfo {
     pub cmd_id: u16,
@@ -325,6 +512,7 @@ pub struct AppState {
     pub controls: ControlsUi,
     pub fill: FillUi,
     pub countdown: CountdownUi,
+    pub pad: PadUi,
     pub pending: Option<PendingInfo>,
     pub log: VecDeque<LogEntry>,
     pub next_log_id: u64,
@@ -344,6 +532,7 @@ pub struct AppState {
 impl AppState {
     pub fn new(config: Config, sim: bool, url: String, port_hint: String) -> Self {
         let now = clock::unix_ms();
+        let pad_active = config.radio.is_esp_now();
         AppState {
             fill: FillUi {
                 duration_s: config.fill_seconds,
@@ -355,6 +544,10 @@ impl AppState {
             actions: Actions::default(),
             controls: ControlsUi::default(),
             countdown: CountdownUi::default(),
+            pad: PadUi {
+                active: pad_active,
+                ..PadUi::default()
+            },
             pending: None,
             log: VecDeque::new(),
             next_log_id: 1,
@@ -400,6 +593,16 @@ impl AppState {
         self.vehicle.status == VehicleStatus::Online
     }
 
+    /// Pad-only gate inputs, `None` unless the ESP-NOW pad control set is active.
+    pub fn pad_gate(&self) -> Option<safety::PadGate> {
+        self.pad.active.then_some(safety::PadGate {
+            armed: self.pad.view.armed,
+            purge_enabled: self.pad.view.purge_enabled,
+            purge_open: self.pad.view.purge_open,
+            latched: self.pad.view.latched_safe,
+        })
+    }
+
     /// Recompute derived UI state. Called every engine tick.
     pub fn refresh(&mut self) {
         let now = clock::unix_ms();
@@ -430,6 +633,7 @@ impl AppState {
             countdown_holding: self.countdown.holding,
             controls_ready: self.controls.ready,
             state: self.vehicle.state,
+            pad: self.pad_gate(),
         });
         // The machine follows the vehicle, never the operator's intent, and
         // it only moves once the command has been acknowledged. A STATE frame
@@ -867,6 +1071,7 @@ impl AppState {
         json::field(&mut out, "countdown", &countdown);
 
         json::field(&mut out, "actions", &self.actions.to_json());
+        json::field(&mut out, "pad", &self.pad.to_json());
 
         match &self.pending {
             Some(p) => {
@@ -1212,6 +1417,40 @@ mod tests {
         st.refresh();
         assert_eq!(st.controls.state.fill.label(), "ON");
         assert!(st.controls.target.is_none());
+    }
+
+    #[test]
+    fn pad_verdict_follows_gse_simple_priority() {
+        use gse_proto::pad::{state_flags, PadState};
+        let mut ui = PadUi {
+            active: true,
+            ..PadUi::default()
+        };
+        assert_eq!(ui.verdict().1, "DISCONNECTED");
+        ui.connected = true;
+        assert_eq!(ui.verdict().1, "NO PAD TELEMETRY");
+        let mut rb = PadState {
+            flags: state_flags::LINK_OK,
+            ..PadState::default()
+        };
+        ui.view.readback = Some(rb);
+        ui.view.readback_age_ms = Some(2_000);
+        assert!(ui.verdict().1.starts_with("PAD SILENT"));
+        ui.view.readback_age_ms = Some(80);
+        assert_eq!(ui.verdict(), ("amber", "LINK OK - NOT ARMED".to_string()));
+        rb.flags |= state_flags::ARMED;
+        ui.view.readback = Some(rb);
+        assert_eq!(ui.verdict(), ("green", "LINK OK - ARMED".to_string()));
+        ui.view.latched_safe = true;
+        assert!(ui.verdict().1.starts_with("SAFE SET LATCHED"));
+        rb.flags = state_flags::COMMS_LOSS;
+        ui.view.readback = Some(rb);
+        assert_eq!(ui.verdict().1, "COMMS LOSS - PAD SAFE");
+        rb.flags = state_flags::LINK_OK | state_flags::IGN_ON;
+        ui.view.readback = Some(rb);
+        assert_eq!(ui.verdict(), ("purple", "IGNITER ENERGISED".to_string()));
+        let json = ui.to_json();
+        assert!(crate::json::parse(&json).is_ok(), "{json}");
     }
 
     #[test]

@@ -21,6 +21,7 @@ use gse_proto::{
 use crate::clock;
 use crate::config::OperationMode;
 use crate::logging::{Level, Source};
+use crate::pad_link::{PadLink, PadSettings, PadView};
 use crate::safety;
 use crate::serial;
 use crate::state::{
@@ -69,9 +70,31 @@ pub enum UserAction {
     ResetFill,
     ClearFaults,
     Estop,
+    /// ESP-NOW pad: attach the arm code to the stream (GSE-simple ARM).
+    Arm,
+    Disarm,
+    /// ESP-NOW pad: CO2 purge valve.
+    PurgeOpen,
+    PurgeClose,
+    /// ESP-NOW pad: per-session purge enable (ECR-01 hazard H8).
+    PurgeEnable,
+    PurgeDisable,
 }
 
 impl UserAction {
+    /// Pad-side operator state; never sent as a vehicle COMMAND.
+    pub fn is_pad_only(self) -> bool {
+        matches!(
+            self,
+            UserAction::Arm
+                | UserAction::Disarm
+                | UserAction::PurgeOpen
+                | UserAction::PurgeClose
+                | UserAction::PurgeEnable
+                | UserAction::PurgeDisable
+        )
+    }
+
     pub fn from_id(id: &str) -> Option<Self> {
         Some(match id {
             "fill_on" => UserAction::FillOn,
@@ -87,6 +110,12 @@ impl UserAction {
             "reset_fill" => UserAction::ResetFill,
             "clear_faults" => UserAction::ClearFaults,
             "estop" => UserAction::Estop,
+            "arm" => UserAction::Arm,
+            "disarm" => UserAction::Disarm,
+            "purge_open" => UserAction::PurgeOpen,
+            "purge_close" => UserAction::PurgeClose,
+            "purge_enable" => UserAction::PurgeEnable,
+            "purge_disable" => UserAction::PurgeDisable,
             _ => return None,
         })
     }
@@ -106,6 +135,12 @@ impl UserAction {
             UserAction::ResetFill => "reset_fill",
             UserAction::ClearFaults => "clear_faults",
             UserAction::Estop => "estop",
+            UserAction::Arm => "arm",
+            UserAction::Disarm => "disarm",
+            UserAction::PurgeOpen => "purge_open",
+            UserAction::PurgeClose => "purge_close",
+            UserAction::PurgeEnable => "purge_enable",
+            UserAction::PurgeDisable => "purge_disable",
         }
     }
 
@@ -124,11 +159,18 @@ impl UserAction {
             UserAction::ResetFill => "RESET FILL SEQ",
             UserAction::ClearFaults => "CLEAR FAULTS",
             UserAction::Estop => "EMERGENCY STOP",
+            UserAction::Arm => "ARM",
+            UserAction::Disarm => "DISARM",
+            UserAction::PurgeOpen => "PURGE OPEN",
+            UserAction::PurgeClose => "PURGE CLOSE",
+            UserAction::PurgeEnable => "PURGE ENABLE",
+            UserAction::PurgeDisable => "PURGE DISABLE",
         }
     }
 
-    fn command(self, cmd_id: u16, fill_seconds: u16, flags: u8) -> Command {
-        match self {
+    /// The vehicle COMMAND for this action (`None` for pad-only actions).
+    fn command(self, cmd_id: u16, fill_seconds: u16, flags: u8) -> Option<Command> {
+        Some(match self {
             UserAction::FillOn => Command {
                 cmd_id,
                 control: Control::Fill,
@@ -213,7 +255,13 @@ impl UserAction {
                 arg_s: 0,
                 flags: flags | cmd_flags::ESTOP,
             },
-        }
+            UserAction::Arm
+            | UserAction::Disarm
+            | UserAction::PurgeOpen
+            | UserAction::PurgeClose
+            | UserAction::PurgeEnable
+            | UserAction::PurgeDisable => return None,
+        })
     }
 
     /// Event this action pushes into the shared control-state machine.
@@ -234,6 +282,12 @@ impl UserAction {
             UserAction::ResetControls => Some(ControlEvent::Reset),
             UserAction::Estop => Some(ControlEvent::SafeAll),
             UserAction::AbortCountdown | UserAction::ResetFill | UserAction::ClearFaults => None,
+            UserAction::Arm
+            | UserAction::Disarm
+            | UserAction::PurgeOpen
+            | UserAction::PurgeClose
+            | UserAction::PurgeEnable
+            | UserAction::PurgeDisable => None,
         }
     }
 }
@@ -273,6 +327,11 @@ pub struct ConfigPatch {
     pub radio: Option<RadioModule>,
     pub confirm_ign: Option<bool>,
     pub sound: Option<bool>,
+    pub pad_wdg_ds: Option<u8>,
+    pub pad_ign_max_ds: Option<u8>,
+    pub pad_travel_fill: Option<u8>,
+    pub pad_travel_veh: Option<u8>,
+    pub pad_travel_prg: Option<u8>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,6 +423,11 @@ pub struct Engine {
     startup_safe_sent: bool,
     /// Operator pressed Disconnect: stay offline until Connect.
     manual_disconnect: bool,
+    /// ESP-NOW pad link (GSE-simple control set), present while connected in
+    /// ESP-NOW mode.
+    pad: Option<PadLink>,
+    /// Per-session purge enable (ECR-01 hazard H8: never persisted).
+    purge_enabled: bool,
 }
 
 impl Engine {
@@ -415,6 +479,8 @@ impl Engine {
             controls_ready: false,
             startup_safe_sent: false,
             manual_disconnect: false,
+            pad: None,
+            purge_enabled: false,
         }
     }
 
@@ -422,7 +488,7 @@ impl Engine {
         self.shared.log(
             Level::Info,
             Source::App,
-            "Ground station ready - scanning for the ground NUCLEO-H753ZI".to_string(),
+            "Ground station ready - scanning for the ground board".to_string(),
             Some("boot"),
         );
         loop {
@@ -446,6 +512,7 @@ impl Engine {
                 thread::sleep(Duration::from_millis(TICK_MS) - elapsed);
             }
         }
+        self.pad_safe_close();
         self.flush_link();
     }
 
@@ -616,12 +683,54 @@ impl Engine {
                     if sound { "enabled" } else { "disabled" }
                 ));
             }
+            let cfg = &mut st.config;
+            for (value, slot, label) in [
+                (patch.pad_wdg_ds, &mut cfg.pad_wdg_ds, "pad watchdog (ds)"),
+                (
+                    patch.pad_ign_max_ds,
+                    &mut cfg.pad_ign_max_ds,
+                    "igniter limit (ds)",
+                ),
+                (
+                    patch.pad_travel_fill,
+                    &mut cfg.pad_travel_fill,
+                    "FILL travel (deg)",
+                ),
+                (
+                    patch.pad_travel_veh,
+                    &mut cfg.pad_travel_veh,
+                    "VEH travel (deg)",
+                ),
+                (
+                    patch.pad_travel_prg,
+                    &mut cfg.pad_travel_prg,
+                    "PURGE travel (deg)",
+                ),
+            ] {
+                if let Some(v) = value {
+                    if v != *slot {
+                        *slot = v;
+                        notes.push(format!("{label} {v}"));
+                    }
+                }
+            }
             st.config.sanitize();
+            // ESP-NOW and LoRa are different board families: switching between
+            // them (or changing the ESP32's USB baud) needs a fresh connection,
+            // never a live LINK_CONFIG handover.
+            let family_changed = old.radio.is_esp_now() != st.config.radio.is_esp_now();
+            if family_changed || (st.config.radio.is_esp_now() && (usb_changed || rf_changed)) {
+                reconnect = true;
+            }
+            st.pad.active = st.config.radio.is_esp_now();
             if st.config != old {
                 st.revision = st.revision.wrapping_add(1);
             }
         }
         self.shared.save_config();
+        if let Some(pad) = self.pad.as_mut() {
+            pad.set_settings(PadSettings::from_config(&self.shared.lock().config));
+        }
         if !notes.is_empty() {
             self.shared.log(
                 Level::Ok,
@@ -763,6 +872,7 @@ impl Engine {
         let Some(target) = self.cancel_countdown(None) else {
             return;
         };
+        self.pad_make_safe("countdown abort");
         let srv_on = self.shared.lock().vehicle.state.srv_on();
         if srv_on {
             self.shared.log(
@@ -799,6 +909,10 @@ impl Engine {
             );
             return;
         }
+        if action.is_pad_only() {
+            self.pad_action(action);
+            return;
+        }
         let countdown_target = self.countdown.map(|(target, _)| target);
         let (gate, fill_seconds, countdown_seconds) = {
             let st = self.shared.lock();
@@ -812,6 +926,7 @@ impl Engine {
                 countdown_holding: self.countdown_holding,
                 controls_ready: st.controls.ready,
                 state: st.vehicle.state,
+                pad: st.pad_gate(),
             };
             let gates = safety::evaluate(&inputs);
             (
@@ -859,6 +974,7 @@ impl Engine {
             self.fill_deadline = None;
             self.fill_started = None;
             self.auto_off_sent = false;
+            self.pad_make_safe("E-STOP");
             self.send_action(action, fill_seconds, cmd_flags::ESTOP, Origin::Operator);
             return;
         }
@@ -870,6 +986,7 @@ impl Engine {
                     target.label()
                 )));
             }
+            self.pad_make_safe("RESET CONTROLS");
         }
 
         if !gate.enabled {
@@ -994,7 +1111,9 @@ impl Engine {
     ) -> bool {
         let cmd_id = self.next_cmd_id;
         self.next_cmd_id = self.next_cmd_id.wrapping_add(1);
-        let command = action.command(cmd_id, fill_seconds, flags);
+        let Some(command) = action.command(cmd_id, fill_seconds, flags) else {
+            return false;
+        };
         let now = Instant::now();
         let auto = origin == Origin::AutoFill;
         let label = match origin {
@@ -1222,8 +1341,19 @@ impl Engine {
         // must re-confirm OFF/SAFE before any control is enabled.
         self.controls_ready = false;
         self.startup_safe_sent = false;
+        let (pad_mode, pad_settings) = {
+            let st = self.shared.lock();
+            (
+                st.config.radio.is_esp_now(),
+                PadSettings::from_config(&st.config),
+            )
+        };
+        self.pad = pad_mode.then(|| PadLink::new(pad_settings, self.purge_enabled));
         {
             let mut st = self.shared.lock();
+            st.pad.active = pad_mode;
+            st.pad.connected = pad_mode;
+            st.pad.view = PadView::default();
             st.controls.ready = false;
             st.controls.target = None;
             st.controls.state = ControlState::SAFE;
@@ -1276,8 +1406,14 @@ impl Engine {
         self.controls_ready = false;
         self.startup_safe_sent = false;
         self.decoder.reset();
+        let pad_mode = self.pad.take().is_some();
         {
             let mut st = self.shared.lock();
+            st.pad.connected = false;
+            st.pad.view = PadView {
+                purge_enabled: self.purge_enabled,
+                ..PadView::default()
+            };
             st.controls.ready = false;
             st.controls.target = None;
             st.countdown = CountdownUi::default();
@@ -1302,7 +1438,11 @@ impl Engine {
                 self.shared.log(
                     Level::Error,
                     Source::App,
-                    "FILL was open when the link dropped. The vehicle firmware closes the valve 2 s after the fill deadline without hearing from the ground station.".to_string(),
+                    if pad_mode {
+                        "FILL was open when the link dropped. The ground board streams SAFE after 300 ms of silence and the pad's own watchdog closes FILL (and vents VEHICLE) within its watchdog period.".to_string()
+                    } else {
+                        "FILL was open when the link dropped. The vehicle firmware closes the valve 2 s after the fill deadline without hearing from the ground station.".to_string()
+                    },
                     Some("fill_link_lost"),
                 );
             }
@@ -1348,7 +1488,20 @@ impl Engine {
         }
 
         for frame in frames {
+            // ESP-NOW: everything from the vehicle side is the pad; route it
+            // through the pad link (readback, events, HELLO, PONG).
+            if frame.src == Endpoint::Vehicle && self.pad.is_some() {
+                let forwarded = self.pad.as_mut().and_then(|p| p.on_pad_frame(frame, now));
+                if let Some(f) = forwarded {
+                    self.handle_frame(f, now);
+                }
+                continue;
+            }
             self.handle_frame(frame, now);
+        }
+        self.service_pad(now);
+        if self.link.is_none() {
+            return;
         }
 
         let stats = self.decoder.stats();
@@ -1513,6 +1666,7 @@ impl Engine {
                     None,
                 );
             }
+            self.pad_make_safe("vehicle link loss");
             self.shared.log(
                 Level::Warn,
                 Source::Vehicle,
@@ -1534,7 +1688,7 @@ impl Engine {
                     Level::Warn,
                     Source::Ground,
                     format!(
-                        "Radio link quiet for {:.1} s - check the {} (SX1281) modules",
+                        "Radio link quiet for {:.1} s - check the {} link",
                         age as f64 / 1000.0,
                         link_stat.radio.part_number()
                     ),
@@ -1692,6 +1846,7 @@ impl Engine {
             && vehicle_online
             && self.controls_ready
             && !pending
+            && self.pad.as_ref().map_or(true, PadLink::armed)
             && ControlState::from_snapshot(&state)
                 .transition(event, Interlocks::from_snapshot(&state))
                 .is_allowed();
@@ -1762,7 +1917,23 @@ impl Engine {
         );
     }
 
+    /// Send to `dst`. In ESP-NOW mode everything the engine addresses to the
+    /// vehicle (COMMAND, HEARTBEAT, LINK_CONFIG) goes to the app-side GSE
+    /// supervisor instead; only PINGs travel to the pad for a real round trip.
     fn send(&mut self, message: Message, dst: Endpoint) -> bool {
+        if dst == Endpoint::Vehicle && !matches!(message, Message::Ping(_)) {
+            if let Some(pad) = self.pad.as_mut() {
+                if self.link.is_none() {
+                    return false;
+                }
+                pad.deliver_from_engine(&message, Instant::now());
+                return true;
+            }
+        }
+        self.send_wire(message, dst)
+    }
+
+    fn send_wire(&mut self, message: Message, dst: Endpoint) -> bool {
         let mut buf = [0u8; Frame::MAX_ENCODED];
         let seq = self.tx_seq;
         let n = match encode_message(&message, Endpoint::Host, dst, seq, &mut buf) {
@@ -1785,7 +1956,10 @@ impl Engine {
                 if self.verbose
                     && !matches!(
                         message,
-                        Message::State(_) | Message::Heartbeat(_) | Message::Ping(_)
+                        Message::State(_)
+                            | Message::Heartbeat(_)
+                            | Message::Ping(_)
+                            | Message::PadCmd(_)
                     )
                 {
                     self.shared.log(
@@ -1874,7 +2048,8 @@ impl Engine {
                     let first_stat = !st.ground.have_link_stat;
                     st.ground.link = stat;
                     st.ground.have_link_stat = true;
-                    if first_stat && self.link_handover.is_none() {
+                    // ESP-NOW boards cannot be live-reconfigured.
+                    if first_stat && self.link_handover.is_none() && !st.config.radio.is_esp_now() {
                         let mismatch_usb = stat.usb_baud.bps() != st.config.baud;
                         let mismatch_rf = stat.uart_baud.bps() != st.config.uart_baud
                             || stat.radio != st.config.radio;
@@ -1911,6 +2086,11 @@ impl Engine {
             Message::Heartbeat(_) => {}
             Message::Ping(_) => {}
             Message::Command(_) => {}
+            // Pad frames are consumed by the pad link before this point.
+            Message::PadCmd(_)
+            | Message::PadState(_)
+            | Message::PadEvent(_)
+            | Message::PadConfig(_) => {}
         }
     }
 
@@ -2827,6 +3007,156 @@ impl Engine {
         false
     }
 
+    // ---------------------------------------------------------------------
+    // ESP-NOW pad link
+    // ---------------------------------------------------------------------
+
+    /// Run the pad link: supervisor frames to the engine, the 20 Hz command
+    /// stream and configuration to the pad, and pad notes to the log.
+    fn service_pad(&mut self, now: Instant) {
+        let Some(pad) = self.pad.as_mut() else {
+            return;
+        };
+        let out = pad.poll(now);
+        let notes = pad.take_notes();
+        for note in notes {
+            let source = if note.from_pad {
+                Source::Vehicle
+            } else {
+                Source::App
+            };
+            self.shared
+                .log(note.level, source, note.text, Some(note.code));
+        }
+        for frame in out.to_engine {
+            self.handle_frame(frame, now);
+        }
+        for message in out.to_pad {
+            if !self.send_wire(message, Endpoint::Vehicle) {
+                return;
+            }
+        }
+    }
+
+    /// ARM / DISARM and the PURGE valve (ESP-NOW pad only).
+    fn pad_action(&mut self, action: UserAction) {
+        let gate = {
+            let mut st = self.shared.lock();
+            if let Some(pad) = self.pad.as_ref() {
+                st.pad.view = pad.view(Instant::now());
+            }
+            st.refresh();
+            st.actions.get(action.id()).cloned().unwrap_or_default()
+        };
+        if !gate.enabled {
+            self.shared.log(
+                Level::Warn,
+                Source::Operator,
+                format!("{} blocked: {}", action.label(), gate.reason),
+                Some("blocked"),
+            );
+            return;
+        }
+        match action {
+            UserAction::PurgeEnable | UserAction::PurgeDisable => {
+                self.purge_enabled = action == UserAction::PurgeEnable;
+                if let Some(pad) = self.pad.as_mut() {
+                    pad.set_purge_enabled(self.purge_enabled);
+                }
+            }
+            _ => {
+                let Some(pad) = self.pad.as_mut() else {
+                    self.shared.log(
+                        Level::Warn,
+                        Source::Operator,
+                        format!("{} blocked: no pad link", action.label()),
+                        Some("blocked"),
+                    );
+                    return;
+                };
+                match action {
+                    UserAction::Arm => pad.set_armed(true),
+                    UserAction::Disarm => pad.set_armed(false),
+                    UserAction::PurgeOpen => pad.set_purge_open(true),
+                    UserAction::PurgeClose => pad.set_purge_open(false),
+                    _ => {}
+                }
+            }
+        }
+        let (level, text) = match action {
+            UserAction::Arm => (
+                Level::Warn,
+                "ARMED - the arm code now rides on every pad command".to_string(),
+            ),
+            UserAction::Disarm => (Level::Ok, "Disarmed - igniter inhibited".to_string()),
+            UserAction::PurgeOpen => (Level::Warn, "PURGE OPEN requested".to_string()),
+            UserAction::PurgeClose => (Level::Info, "PURGE CLOSE requested".to_string()),
+            UserAction::PurgeEnable => (
+                Level::Warn,
+                "Purge valve ENABLED for this session - never open it with the vehicle connected"
+                    .to_string(),
+            ),
+            _ => (
+                Level::Ok,
+                "Purge valve disabled - forced closed on the pad".to_string(),
+            ),
+        };
+        self.shared
+            .log(level, Source::Operator, text, Some(action.id()));
+        if let Some(pad) = self.pad.as_ref() {
+            let mut st = self.shared.lock();
+            st.pad.view = pad.view(Instant::now());
+            st.refresh();
+            st.revision = st.revision.wrapping_add(1);
+        }
+        self.shared.publish();
+    }
+
+    /// Disarm and close PURGE (E-STOP, reset, countdown abort, link loss).
+    fn pad_make_safe(&mut self, why: &str) {
+        let Some(pad) = self.pad.as_mut() else {
+            return;
+        };
+        let was_armed = pad.armed();
+        let was_purging = pad.purge_open();
+        pad.set_armed(false);
+        pad.set_purge_open(false);
+        if was_armed || was_purging {
+            self.shared.log(
+                Level::Warn,
+                Source::App,
+                format!(
+                    "{why}: {}",
+                    match (was_armed, was_purging) {
+                        (true, true) => "igniter disarmed and PURGE closed",
+                        (true, false) => "igniter disarmed",
+                        _ => "PURGE closed",
+                    }
+                ),
+                Some("pad_safe"),
+            );
+        }
+    }
+
+    /// GSE-simple `safe_close`: three SAFE commands (VEHICLE open) on exit.
+    fn pad_safe_close(&mut self) {
+        let Some(command) = self.pad.as_ref().map(PadLink::safe_command) else {
+            return;
+        };
+        for _ in 0..3 {
+            if !self.send_wire(Message::PadCmd(command), Endpoint::Vehicle) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.shared.log(
+            Level::Info,
+            Source::App,
+            "Pad left in the SAFE set (FILL/PURGE closed, VEHICLE open, IGN off)".to_string(),
+            Some("pad_safe_close"),
+        );
+    }
+
     fn flush_link(&mut self) {
         if let Some(link) = self.link.as_mut() {
             let _ = link.write_all(&[]);
@@ -2841,6 +3171,17 @@ impl Engine {
         let now = Instant::now();
         {
             let mut st = self.shared.lock();
+            st.pad.active = st.config.radio.is_esp_now();
+            match self.pad.as_ref() {
+                Some(pad) => {
+                    st.pad.connected = true;
+                    st.pad.view = pad.view(now);
+                }
+                None => {
+                    st.pad.connected = false;
+                    st.pad.view.purge_enabled = self.purge_enabled;
+                }
+            }
             st.refresh();
             // Ground liveness is refreshed by matching PONG responses.
             if self.link.is_some() {
@@ -3171,25 +3512,36 @@ mod tests {
 
     #[test]
     fn reset_controls_sends_plain_safe_all() {
-        let cmd = UserAction::ResetControls.command(9, 0, 0);
+        let cmd = UserAction::ResetControls.command(9, 0, 0).unwrap();
         assert_eq!(cmd.control, Control::System);
         assert_eq!(cmd.action, gse_proto::SYSTEM_ACTION_SAFE_ALL);
         assert_eq!(cmd.flags & cmd_flags::ESTOP, 0);
 
-        let estop = UserAction::Estop.command(10, 0, 0);
+        let estop = UserAction::Estop.command(10, 0, 0).unwrap();
         assert_eq!(estop.control, Control::System);
         assert_eq!(estop.action, gse_proto::SYSTEM_ACTION_SAFE_ALL);
         assert_ne!(estop.flags & cmd_flags::ESTOP, 0);
 
-        let fill = UserAction::FillOn.command(11, 42, 0);
+        let fill = UserAction::FillOn.command(11, 42, 0).unwrap();
         assert_eq!(fill.control, Control::Fill);
         assert_eq!(fill.action, ACTION_ON);
         assert_eq!(fill.arg_s, 42);
 
-        let live_on = UserAction::SrvIgnOn.command(12, 0, 0);
+        let live_on = UserAction::SrvIgnOn.command(12, 0, 0).unwrap();
         assert_eq!(live_on.control, Control::SrvIgn);
         assert_eq!(live_on.action, ACTION_ON);
-        let live_off = UserAction::SrvIgnOff.command(13, 0, 0);
+        let live_off = UserAction::SrvIgnOff.command(13, 0, 0).unwrap();
+        for pad_only in [
+            UserAction::Arm,
+            UserAction::Disarm,
+            UserAction::PurgeOpen,
+            UserAction::PurgeClose,
+            UserAction::PurgeEnable,
+            UserAction::PurgeDisable,
+        ] {
+            assert!(pad_only.command(14, 0, 0).is_none());
+            assert_eq!(UserAction::from_id(pad_only.id()), Some(pad_only));
+        }
         assert_eq!(live_off.control, Control::SrvIgn);
         assert_eq!(live_off.action, ACTION_OFF);
     }

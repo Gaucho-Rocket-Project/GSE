@@ -28,6 +28,9 @@ pub const MODULE_PART: &str = "DX-LR42-24T12D";
 /// High-power 2.4 GHz SX1280/SX1281 + PA/LNA (`500 mW` / `+27 dBm`) SPI transceiver part number.
 pub const E28_MODULE_PART: &str = "E28-2G4M27S";
 
+/// ESP-NOW link on the ESP32's integrated Wi-Fi radio (no external module).
+pub const ESPNOW_PART: &str = "ESP-NOW";
+
 /// Minimum possible wire length of a valid GSE frame (`0x00` + COBS(header + crc) + `0x00`).
 pub const MIN_ENCODED_FRAME_LEN: usize = HEADER_LEN + CRC_LEN + 3;
 
@@ -59,10 +62,20 @@ pub enum RadioModule {
     DxLr42 = 0,
     /// CDEBYTE `E28-2G4M27S` (`SX1280`/`SX1281` + PA/LNA, `SPI1` `4 MHz`, `+27 dBm` / `500 mW`).
     E28_2G4M27S = 1,
+    /// ESP-NOW on the ESP32's own 2.4 GHz Wi-Fi radio (ESP32 ground + ESP32 pad boards).
+    ///
+    /// Selecting it switches the app to the GSE-simple pad control set
+    /// ([`crate::pad`]); it cannot be live-switched to or from a LoRa module
+    /// because it lives on a different board family.
+    EspNow = 2,
 }
 
 impl RadioModule {
-    pub const ALL: [RadioModule; 2] = [RadioModule::DxLr42, RadioModule::E28_2G4M27S];
+    pub const ALL: [RadioModule; 3] = [
+        RadioModule::DxLr42,
+        RadioModule::E28_2G4M27S,
+        RadioModule::EspNow,
+    ];
 
     pub const fn code(self) -> u8 {
         self as u8
@@ -72,6 +85,7 @@ impl RadioModule {
         match code {
             0 => Some(RadioModule::DxLr42),
             1 => Some(RadioModule::E28_2G4M27S),
+            2 => Some(RadioModule::EspNow),
             _ => None,
         }
     }
@@ -81,6 +95,7 @@ impl RadioModule {
         match self {
             RadioModule::DxLr42 => "dx-lr42-24t12d",
             RadioModule::E28_2G4M27S => "e28-2g4m27s",
+            RadioModule::EspNow => "esp-now",
         }
     }
 
@@ -104,6 +119,13 @@ impl RadioModule {
             || s == "1"
         {
             Some(RadioModule::E28_2G4M27S)
+        } else if s.eq_ignore_ascii_case("esp-now")
+            || s.eq_ignore_ascii_case("espnow")
+            || s.eq_ignore_ascii_case("esp_now")
+            || s.eq_ignore_ascii_case("esp32")
+            || s == "2"
+        {
+            Some(RadioModule::EspNow)
         } else {
             None
         }
@@ -114,6 +136,7 @@ impl RadioModule {
         match self {
             RadioModule::DxLr42 => MODULE_PART,
             RadioModule::E28_2G4M27S => E28_MODULE_PART,
+            RadioModule::EspNow => ESPNOW_PART,
         }
     }
 
@@ -122,6 +145,7 @@ impl RadioModule {
         match self {
             RadioModule::DxLr42 => "DX-LR42-24T12D (UART · SX1281 · 13 dBm)",
             RadioModule::E28_2G4M27S => "E28-2G4M27S (SPI1 · SX1281 · 27 dBm / 500 mW)",
+            RadioModule::EspNow => "ESP-NOW (ESP32 built-in 2.4 GHz Wi-Fi radio)",
         }
     }
 
@@ -130,6 +154,7 @@ impl RadioModule {
         match self {
             RadioModule::DxLr42 => "USART6",
             RadioModule::E28_2G4M27S => "SPI1",
+            RadioModule::EspNow => "WIFI",
         }
     }
 
@@ -138,11 +163,17 @@ impl RadioModule {
         matches!(self, RadioModule::DxLr42)
     }
 
+    /// True for the ESP32 + ESP-NOW board family (GSE-simple pad control set).
+    pub const fn is_esp_now(self) -> bool {
+        matches!(self, RadioModule::EspNow)
+    }
+
     /// Nominal maximum conducted RF output power in dBm.
     pub const fn max_power_dbm(self) -> u8 {
         match self {
             RadioModule::DxLr42 => MAX_POWER_DBM,
             RadioModule::E28_2G4M27S => e28::MAX_POWER_DBM,
+            RadioModule::EspNow => espnow::MAX_POWER_DBM,
         }
     }
 }
@@ -411,6 +442,31 @@ impl DxLr42Level {
 
 /// CDEBYTE `E28-2G4M27S` (`Semtech SX1280` / `SX1281` + PA/LNA `+27 dBm` / `500 mW`)
 /// register addresses, SPI opcodes, modulation constants, and timing helpers.
+/// ESP-NOW timing and limits (ESP32 integrated 2.4 GHz Wi-Fi radio).
+pub mod espnow {
+    use crate::frame::MAX_ENCODED_LEN;
+
+    /// Largest ESP-NOW (v1) payload; one GSE frame is sent per datagram.
+    pub const MAX_PAYLOAD_BYTES: usize = 250;
+
+    /// Nominal maximum conducted output power of the ESP32 Wi-Fi PA.
+    pub const MAX_POWER_DBM: u8 = 20;
+
+    /// Default Wi-Fi channel shared by both boards (matches GSE-simple).
+    pub const DEFAULT_CHANNEL: u8 = 1;
+
+    const _: () = assert!(MAX_ENCODED_LEN <= MAX_PAYLOAD_BYTES);
+
+    /// One-way latency estimate for a datagram of `bytes` (1 Mbps base rate,
+    /// MAC overhead, and a little scheduling jitter on each end).
+    pub const fn estimate_one_way_ms(bytes: usize) -> u32 {
+        // ~0.3 ms MAC/PHY overhead + 8 us per byte at 1 Mbps + ~2 ms of
+        // Wi-Fi task / callback scheduling across the two boards.
+        let air_us = 300 + (bytes as u32) * 8;
+        2 + air_us.div_ceil(1000)
+    }
+}
+
 pub mod e28 {
     use crate::frame::MAX_ENCODED_LEN;
 
@@ -663,7 +719,11 @@ mod tests {
             assert_eq!(RadioModule::parse(m.as_str()), Some(m));
             assert_eq!(RadioModule::parse(m.part_number()), Some(m));
         }
-        assert_eq!(RadioModule::from_code(2), None);
+        assert_eq!(RadioModule::from_code(3), None);
+        assert!(RadioModule::EspNow.is_esp_now());
+        assert!(!RadioModule::EspNow.uses_uart());
+        assert_eq!(RadioModule::parse("ESPNOW"), Some(RadioModule::EspNow));
+        assert!((2..=6).contains(&espnow::estimate_one_way_ms(62)));
         assert_eq!(RadioModule::parse("bogus"), None);
         assert!(RadioModule::DxLr42.uses_uart());
         assert!(!RadioModule::E28_2G4M27S.uses_uart());

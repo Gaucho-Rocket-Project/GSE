@@ -274,7 +274,7 @@ pub fn decode_flash_record(slot: &[u8]) -> Option<(LinkState, u32)> {
         LinkState {
             usb_baud: UsbBaud::from_code(slot[8])?,
             uart_baud: DxLr42Baud::from_code(slot[9])?,
-            radio: RadioModule::from_code(slot[10])?,
+            radio: RadioModule::from_code(slot[10]).filter(|r| !r.is_esp_now())?,
             flash_saved: true,
         },
         seq,
@@ -1166,6 +1166,8 @@ impl DualRadioPort {
     /// Non-destructively probe `radio` without dropping an active `DX-LR42` link.
     pub fn probe(&mut self, radio: RadioModule) -> bool {
         match radio {
+            // ESP-NOW is the ESP32 board family; a NUCLEO has no such radio.
+            RadioModule::EspNow => false,
             RadioModule::DxLr42 => true,
             RadioModule::E28_2G4M27S => {
                 if self.active == RadioModule::E28_2G4M27S && self.e28.is_present() {
@@ -1185,6 +1187,7 @@ impl DualRadioPort {
 
     pub fn select_radio(&mut self, radio: RadioModule) -> bool {
         match radio {
+            RadioModule::EspNow => false,
             RadioModule::DxLr42 => {
                 self.e28.shutdown();
                 self.e28.bus_mut().claim_rf_switch_pins(false);
@@ -1240,6 +1243,7 @@ impl DualRadioPort {
                 Ok(())
             }
             (RadioModule::E28_2G4M27S, RadioModule::E28_2G4M27S) => Ok(()),
+            (_, RadioModule::EspNow) | (RadioModule::EspNow, _) => Err(Reason::NotPermitted),
         }
     }
 
@@ -1251,35 +1255,35 @@ impl DualRadioPort {
 
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         match self.active {
-            RadioModule::DxLr42 => self.dx.read(buf),
+            RadioModule::DxLr42 | RadioModule::EspNow => self.dx.read(buf),
             RadioModule::E28_2G4M27S => self.e28.read(buf),
         }
     }
 
     pub fn write(&mut self, data: &[u8]) -> bool {
         match self.active {
-            RadioModule::DxLr42 => self.dx.write(data),
+            RadioModule::DxLr42 | RadioModule::EspNow => self.dx.write(data),
             RadioModule::E28_2G4M27S => self.e28.write(data),
         }
     }
 
     pub fn ready(&mut self, now_ms: u32) -> bool {
         match self.active {
-            RadioModule::DxLr42 => self.dx.ready(now_ms),
+            RadioModule::DxLr42 | RadioModule::EspNow => self.dx.ready(now_ms),
             RadioModule::E28_2G4M27S => self.e28.ready(),
         }
     }
 
     pub fn tx_busy(&self) -> bool {
         match self.active {
-            RadioModule::DxLr42 => self.dx.tx_busy(),
+            RadioModule::DxLr42 | RadioModule::EspNow => self.dx.tx_busy(),
             RadioModule::E28_2G4M27S => self.e28.tx_busy(),
         }
     }
 
     pub fn pump(&mut self, now_ms: u32) {
         match self.active {
-            RadioModule::DxLr42 => self.dx.pump(now_ms),
+            RadioModule::DxLr42 | RadioModule::EspNow => self.dx.pump(now_ms),
             RadioModule::E28_2G4M27S => self.e28.pump(now_ms),
         }
     }

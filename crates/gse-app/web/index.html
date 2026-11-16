@@ -7,7 +7,7 @@
 <meta name="color-scheme" content="dark">
 <title>GSE · Ground Support Terminal</title>
 <link rel="icon" href="/grp.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/app.css?v=8">
+<link rel="stylesheet" href="/app.css?v=9">
 </head>
 <body>
 <div class="crt">
@@ -18,7 +18,7 @@
   <header class="term-header">
     <div class="term-brand">
       <span class="prompt">GSE@Ground</span>
-      <span class="term-title" id="term-title">GROUND SUPPORT · NUCLEO-H753ZI · DX-LR42-24T12D</span>
+      <span class="term-title" id="term-title">GROUND SUPPORT · ESP32 · ESP-NOW</span>
     </div>
 
     <div class="term-clock" id="term-clock">--:--:--</div>
@@ -42,7 +42,7 @@
       <div class="pill clickable" id="pill-radio" data-state="idle" title="Click to configure radio module, USB CDC baud and UART baud in Settings">
         <span class="dot"></span>
         <span class="pill-label">RADIO</span>
-        <span class="pill-value" id="radio-text">DX-LR42 · 9600</span>
+        <span class="pill-value" id="radio-text">ESP-NOW</span>
       </div>
       <div class="pill clickable" id="pill-opmode" data-state="live" title="Click to switch LIVE / TEST in Settings">
         <span class="dot"></span>
@@ -83,7 +83,7 @@
       <div class="rail-block">
         <div class="rail-k">SAFETY INTERLOCKS</div>
         <div class="rail-line"><span class="rail-name">init safe</span><span class="rail-v" id="gate-init">WAIT</span></div>
-        <div class="rail-line"><span class="rail-name">fill ↔ srv</span><span class="rail-v" id="gate-interlock">CLEAR</span></div>
+        <div class="rail-line"><span class="rail-name" id="gate-interlock-name">fill ↔ srv</span><span class="rail-v" id="gate-interlock">CLEAR</span></div>
         <div class="rail-line"><span class="rail-name">fill seq</span><span class="rail-v" id="gate-fill">IDLE</span></div>
         <div class="rail-line"><span class="rail-name" id="gate-ign-name">srv+ign</span><span class="rail-v" id="gate-ign">LOCKED</span></div>
       </div>
@@ -92,7 +92,7 @@
         <div class="rail-k">BUS DISPATCH</div>
         <div class="rail-line"><span class="rail-name">usb cdc</span><span class="rail-v cyan" id="rail-usb">115200 Bd</span></div>
         <div class="rail-line"><span class="rail-name">radio bus</span><span class="rail-v cyan" id="rail-uart">UART 9600</span></div>
-        <div class="rail-line"><span class="rail-name">nvm flash</span><span class="rail-v dim" id="rail-flash">DEFAULT</span></div>
+        <div class="rail-line"><span class="rail-name" id="rail-flash-name">nvm flash</span><span class="rail-v dim" id="rail-flash">DEFAULT</span></div>
         <div class="rail-line"><span class="rail-name">in-flight</span><span class="rail-v" id="rail-pending">IDLE</span></div>
         <div class="rail-line"><span class="rail-name">framing</span><span class="rail-v dim" id="sys-proto">COBS/CRC16</span></div>
       </div>
@@ -132,7 +132,7 @@
               <span class="ctl-top">
                 <span class="ctl-head">
                   <span class="prompt">&gt;</span>
-                  <span class="ctl-label"><span class="ctl-name">SRV+IGN</span><span class="ctl-switch">[<span class="sw-opt sw-pwr" id="sw-srv-ign-on">ON</span>/<span class="sw-opt sw-safe active" id="sw-srv-ign-off">OFF</span>]</span></span>
+                  <span class="ctl-label"><span class="ctl-name" id="name-srv-ign">SRV+IGN</span><span class="ctl-switch">[<span class="sw-opt sw-pwr" id="sw-srv-ign-on">ON</span>/<span class="sw-opt sw-safe active" id="sw-srv-ign-off">OFF</span>]</span></span>
                 </span>
                 <span class="ctl-key" data-key-for="srv_ign_on">L</span>
               </span>
@@ -147,7 +147,7 @@
               <span class="ctl-top">
                 <span class="ctl-head">
                   <span class="prompt">&gt;</span>
-                  <span class="ctl-label"><span class="ctl-name">SRV</span><span class="ctl-switch">[<span class="sw-opt sw-on" id="sw-srv-on">ON</span>/<span class="sw-opt sw-off active" id="sw-srv-off">OFF</span>]</span></span>
+                  <span class="ctl-label"><span class="ctl-name" id="name-srv">SRV</span><span class="ctl-switch">[<span class="sw-opt sw-on" id="sw-srv-on">ON</span>/<span class="sw-opt sw-off active" id="sw-srv-off">OFF</span>]</span></span>
                 </span>
                 <span class="ctl-key" data-key-for="srv_on">S</span>
               </span>
@@ -171,6 +171,36 @@
                 <span class="ctl-desc" id="desc-ign">Igniter power · gated</span>
               </span>
               <span class="ctl-why" id="why-ign"></span>
+            </button>
+
+            <button class="control toggle-ctl danger" id="btn-arm" data-toggle="arm_toggle" type="button" hidden>
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">ARM</span><span class="ctl-switch">[<span class="sw-opt sw-pwr" id="sw-arm-on">ARMED</span>/<span class="sw-opt sw-safe active" id="sw-arm-off">SAFE</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="arm">A</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-arm">SAFE</span>
+                <span class="ctl-desc" id="desc-arm">Igniter arm interlock · click → ARM</span>
+              </span>
+              <span class="ctl-why" id="why-arm"></span>
+            </button>
+
+            <button class="control toggle-ctl" id="btn-purge" data-toggle="purge_toggle" type="button" hidden>
+              <span class="ctl-top">
+                <span class="ctl-head">
+                  <span class="prompt">&gt;</span>
+                  <span class="ctl-label"><span class="ctl-name">PURGE</span><span class="ctl-switch">[<span class="sw-opt sw-on" id="sw-purge-on">OPEN</span>/<span class="sw-opt sw-off active" id="sw-purge-off">CLOSED</span>]</span></span>
+                </span>
+                <span class="ctl-key" data-key-for="purge_open">P</span>
+              </span>
+              <span class="ctl-mid">
+                <span class="ctl-state" id="led-purge">CLOSED</span>
+                <span class="ctl-desc" id="desc-purge">CO2 purge valve (static fire only)</span>
+              </span>
+              <span class="ctl-why" id="why-purge"></span>
             </button>
           </div>
 
@@ -234,6 +264,30 @@
           </div>
           <div class="chips" id="chips-flags" aria-label="Vehicle flags"></div>
           <div class="faults" id="faults"></div>
+
+          <div class="pad-panel" id="pad-panel" hidden>
+            <div class="sub-divider pad-head">
+              <span class="pane-k">PAD READ-BACK // ESP-NOW</span>
+              <span class="pane-v" id="pad-age">–</span>
+            </div>
+            <div class="pad-verdict" id="pad-verdict" data-color="grey">DISCONNECTED</div>
+            <div class="pad-io" role="table" aria-label="Commanded versus pad-reported outputs">
+              <div class="pad-io-row head" role="row"><span>output</span><span>commanded</span><span>pad reports</span></div>
+              <div class="pad-io-row" role="row"><span>FILL</span><b id="pad-cmd-fill">–</b><b id="pad-rb-fill">–</b></div>
+              <div class="pad-io-row" role="row"><span>VEH (fuel+ox)</span><b id="pad-cmd-veh">–</b><b id="pad-rb-veh">–</b></div>
+              <div class="pad-io-row" role="row"><span>PURGE</span><b id="pad-cmd-prg">–</b><b id="pad-rb-prg">–</b></div>
+              <div class="pad-io-row" role="row"><span>IGNITER</span><b id="pad-cmd-ign">–</b><b id="pad-rb-ign">–</b></div>
+            </div>
+            <div class="fault" id="pad-mismatch" hidden></div>
+            <div class="tele-grid">
+              <div class="tele"><span class="tele-k">arm interlock</span><span class="tele-v" id="pad-armed">–</span></div>
+              <div class="tele"><span class="tele-k">link / pad state</span><span class="tele-v" id="pad-link">–</span></div>
+              <div class="tele"><span class="tele-k">cmd age · watchdog</span><span class="tele-v" id="pad-cmd-age">–</span></div>
+              <div class="tele"><span class="tele-k">rx cmds · bad · rssi</span><span class="tele-v" id="pad-counters">–</span></div>
+              <div class="tele"><span class="tele-k">travel fill/veh/prg</span><span class="tele-v" id="pad-travel">–</span></div>
+              <div class="tele"><span class="tele-k">purge · config</span><span class="tele-v" id="pad-config">–</span></div>
+            </div>
+          </div>
 
           <div class="sub-divider"><span class="pane-k">LINK STATISTICS</span></div>
           <div class="stat-grid" id="stat-grid">
@@ -312,18 +366,44 @@
           <label>usb cdc baud rate (host ↔ ground)
             <select id="cfg-baud"></select>
           </label>
-          <label>uart baud rate (mcu ↔ radio)
+          <label id="lbl-uart-baud">uart baud rate (mcu ↔ radio)
             <select id="cfg-uart-baud"></select>
           </label>
         </div>
 
-        <label>radio module (2.4 ghz transceiver)
+        <label>radio link (2.4 ghz)
           <select id="cfg-radio">
-            <option value="dx-lr42-24t12d">DX-LR42-24T12D — UART LoRa (+12 dBm · USART6 PG14/PG9)</option>
-            <option value="e28-2g4m27s">E28-2G4M27S — SPI LoRa + PA/LNA (500 mW / +27 dBm · SPI1)</option>
+            <option value="esp-now">ESP-NOW — ESP32 ground + ESP32 pad (GSE-simple control set)</option>
+            <option value="dx-lr42-24t12d">DX-LR42-24T12D — NUCLEO UART LoRa (+12 dBm · USART6 PG14/PG9)</option>
+            <option value="e28-2g4m27s">E28-2G4M27S — NUCLEO SPI LoRa + PA/LNA (500 mW / +27 dBm · SPI1)</option>
           </select>
         </label>
         <p class="hint" id="radio-hint"></p>
+      </fieldset>
+
+      <fieldset id="fs-pad">
+        <legend>esp-now pad (gse-simple)</legend>
+        <div class="settings-grid-2">
+          <label>link watchdog (seconds, 0.3–3.0)
+            <input type="number" id="cfg-pad-wdg" min="0.3" max="3" step="0.1">
+          </label>
+          <label>igniter on-time limit (seconds, 0.1–2.0)
+            <input type="number" id="cfg-pad-ign" min="0.1" max="2" step="0.1">
+          </label>
+        </div>
+        <div class="settings-grid-3">
+          <label>fill travel (°)
+            <input type="number" id="cfg-pad-travel-fill" min="5" max="90" step="1">
+          </label>
+          <label>vehicle travel (°)
+            <input type="number" id="cfg-pad-travel-veh" min="5" max="90" step="1">
+          </label>
+          <label>purge travel (°)
+            <input type="number" id="cfg-pad-travel-prg" min="5" max="90" step="1">
+          </label>
+        </div>
+        <label class="check"><input type="checkbox" id="cfg-purge-enable"> purge valve fitted &amp; enabled for this session (never with the vehicle connected)</label>
+        <p class="hint">Safe set on link loss or E-STOP: FILL &amp; PURGE closed, VEHICLE open (vented), IGN off. Travel is degrees each side of neutral (45° = 1.0/2.0 ms).</p>
       </fieldset>
 
       <fieldset>
@@ -369,6 +449,6 @@
   <div class="toast" id="toast" hidden></div>
 </div>
 
-<script src="/app.js?v=8"></script>
+<script src="/app.js?v=9"></script>
 </body>
 </html>

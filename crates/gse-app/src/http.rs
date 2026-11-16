@@ -20,6 +20,7 @@ use crate::json::{self, Value};
 use crate::serial;
 use crate::state::Shared;
 use crate::ui;
+use gse_proto::pad;
 use gse_proto::radio::RadioModule;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024;
@@ -644,13 +645,37 @@ fn parse_config_patch(request: &HttpRequest) -> Result<ConfigPatch, String> {
         patch.uart_baud = Some(uart_baud);
     }
     if let Some(v) = body.get("radio") {
-        let radio_str = v
-            .as_str()
-            .ok_or_else(|| "radio must be 'dx-lr42-24t12d' or 'e28-2g4m27s'".to_string())?;
+        let radio_str = v.as_str().ok_or_else(|| {
+            "radio must be 'esp-now', 'dx-lr42-24t12d' or 'e28-2g4m27s'".to_string()
+        })?;
         let radio = RadioModule::parse(radio_str).ok_or_else(|| {
-            format!("unsupported radio module '{radio_str}' (expected 'dx-lr42-24t12d' or 'e28-2g4m27s')")
+            format!("unsupported radio module '{radio_str}' (expected 'esp-now', 'dx-lr42-24t12d' or 'e28-2g4m27s')")
         })?;
         patch.radio = Some(radio);
+    }
+    for (key, lo, hi) in [
+        ("pad_wdg_ds", pad::MIN_WDG_DS, pad::MAX_WDG_DS),
+        ("pad_ign_max_ds", pad::MIN_IGN_MAX_DS, pad::MAX_IGN_MAX_DS),
+        ("pad_travel_fill", pad::MIN_TRAVEL_DEG, pad::MAX_TRAVEL_DEG),
+        ("pad_travel_veh", pad::MIN_TRAVEL_DEG, pad::MAX_TRAVEL_DEG),
+        ("pad_travel_prg", pad::MIN_TRAVEL_DEG, pad::MAX_TRAVEL_DEG),
+    ] {
+        if let Some(v) = body.get(key) {
+            let n = v
+                .as_i64()
+                .ok_or_else(|| format!("{key} must be a number"))?;
+            if n < lo as i64 || n > hi as i64 {
+                return Err(format!("{key} must be between {lo} and {hi}"));
+            }
+            let n = Some(n as u8);
+            match key {
+                "pad_wdg_ds" => patch.pad_wdg_ds = n,
+                "pad_ign_max_ds" => patch.pad_ign_max_ds = n,
+                "pad_travel_fill" => patch.pad_travel_fill = n,
+                "pad_travel_veh" => patch.pad_travel_veh = n,
+                _ => patch.pad_travel_prg = n,
+            }
+        }
     }
     if let Some(v) = body.get("confirm_ign") {
         patch.confirm_ign = Some(

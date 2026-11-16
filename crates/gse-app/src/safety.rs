@@ -27,6 +27,15 @@
 //!   only the matching explicit ON trigger is additionally enabled,
 //! * control actions stay locked until the startup handshake has confirmed
 //!   every output is OFF/SAFE ([`Inputs::controls_ready`]).
+//!
+//! ESP-NOW pad (GSE-simple control set, [`Inputs::pad`]):
+//!
+//! * `IGN PWR` / `SRV+IGN ON` (and so their countdowns) additionally require
+//!   the operator's ARM, which is what attaches the arm code to the stream,
+//! * ARM is refused while a safe state is latched (E-STOP / link loss /
+//!   INHIBITED); DISARM is always available,
+//! * PURGE needs the per-session purge enable (ECR-01 hazard H8) and is
+//!   otherwise a free channel, as in GSE-simple (no FILL interlock).
 
 use gse_proto::fsm::{ControlEvent, ControlState, Interlocks, Transition};
 use gse_proto::{Reason, StateSnapshot};
@@ -47,7 +56,21 @@ pub struct Inputs {
     /// The startup/reset handshake confirmed FILL OFF, SRV OFF, IGN SAFE.
     pub controls_ready: bool,
     pub state: StateSnapshot,
+    /// ESP-NOW pad operator state; `None` for the NUCLEO/LoRa boards.
+    pub pad: Option<PadGate>,
 }
+
+/// Operator-side state of the ESP-NOW pad link.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PadGate {
+    pub armed: bool,
+    pub purge_enabled: bool,
+    pub purge_open: bool,
+    /// E-STOP, link loss or INHIBITED latched: the pad is held SAFE.
+    pub latched: bool,
+}
+
+const PAD_ONLY: &str = "ESP-NOW pad only";
 
 fn blocked(reason: impl Into<String>) -> ActionState {
     ActionState {
@@ -210,6 +233,14 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         ),
     };
 
+    let (ign_pwr, srv_ign_on) = match inputs.pad {
+        Some(pad) if !pad.armed => (
+            require_arm(ign_pwr, "IGN PWR"),
+            require_arm(srv_ign_on, "SRV+IGN"),
+        ),
+        _ => (ign_pwr, srv_ign_on),
+    };
+
     let abort_countdown = match (&base, inputs.countdown_target) {
         (Some(b), _) => b.clone(),
         (None, Some(_)) => allowed(),
@@ -262,6 +293,8 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         allowed()
     };
 
+    let pad = pad_actions(inputs, base.as_ref(), channel_base);
+
     Actions {
         fill_on,
         fill_off,
@@ -276,7 +309,97 @@ pub fn evaluate(inputs: &Inputs) -> Actions {
         reset_fill,
         clear_faults,
         estop,
+        arm: pad.0,
+        disarm: pad.1,
+        purge_open: pad.2,
+        purge_close: pad.3,
+        purge_enable: pad.4,
+        purge_disable: pad.5,
     }
+}
+
+/// An otherwise-allowed ignition action still needs the operator's ARM.
+fn require_arm(gate: ActionState, what: &str) -> ActionState {
+    if gate.enabled {
+        blocked(format!("{what} requires ARM - arm the igniter first"))
+    } else {
+        gate
+    }
+}
+
+/// `(arm, disarm, purge_open, purge_close, purge_enable, purge_disable)`.
+fn pad_actions(
+    inputs: &Inputs,
+    base: Option<&ActionState>,
+    channel_base: Option<&ActionState>,
+) -> (
+    ActionState,
+    ActionState,
+    ActionState,
+    ActionState,
+    ActionState,
+    ActionState,
+) {
+    let Some(pad) = inputs.pad else {
+        return (
+            blocked(PAD_ONLY),
+            blocked(PAD_ONLY),
+            blocked(PAD_ONLY),
+            blocked(PAD_ONLY),
+            blocked(PAD_ONLY),
+            blocked(PAD_ONLY),
+        );
+    };
+    let latched_text = "Safe state latched - press RESET CONTROLS first";
+    let arm = if let Some(b) = base {
+        b.clone()
+    } else if pad.armed {
+        blocked("Already armed")
+    } else if pad.latched || inputs.state.estop() || inputs.state.inhibited() {
+        blocked(latched_text)
+    } else {
+        allowed()
+    };
+    let disarm = if pad.armed {
+        allowed()
+    } else {
+        blocked("Not armed")
+    };
+    let purge_open = if let Some(b) = channel_base {
+        b.clone()
+    } else if !pad.purge_enabled {
+        blocked("Purge valve not enabled for this session")
+    } else if pad.purge_open {
+        blocked("PURGE is already OPEN")
+    } else if pad.latched || inputs.state.estop() {
+        blocked(latched_text)
+    } else {
+        allowed()
+    };
+    // Closing purge is always a move toward safe.
+    let purge_close = if pad.purge_open {
+        allowed()
+    } else {
+        blocked("PURGE is already CLOSED")
+    };
+    let purge_enable = if pad.purge_enabled {
+        blocked("Purge valve already enabled")
+    } else {
+        allowed()
+    };
+    let purge_disable = if pad.purge_enabled {
+        allowed()
+    } else {
+        blocked("Purge valve already disabled")
+    };
+    (
+        arm,
+        disarm,
+        purge_open,
+        purge_close,
+        purge_enable,
+        purge_disable,
+    )
 }
 
 #[cfg(test)]
@@ -302,6 +425,7 @@ mod tests {
             countdown_holding: false,
             controls_ready: true,
             state,
+            pad: None,
         }
     }
 
@@ -324,6 +448,7 @@ mod tests {
             countdown_holding: false,
             controls_ready: false,
             state: state(flags::FILL_OPEN),
+            pad: None,
         });
         assert!(!actions.fill_on.enabled);
         assert!(!actions.fill_off.enabled);
@@ -346,6 +471,7 @@ mod tests {
             countdown_holding: false,
             controls_ready: false,
             state: StateSnapshot::default(),
+            pad: None,
         });
         assert!(!actions.fill_on.enabled);
         assert!(!actions.srv_ign_on.enabled);
@@ -549,6 +675,7 @@ mod tests {
             countdown_holding: false,
             controls_ready: true,
             state: StateSnapshot::default(),
+            pad: None,
         });
         assert!(actions.estop.enabled);
         assert!(!actions.fill_on.enabled);
@@ -579,6 +706,7 @@ mod tests {
             countdown_holding: false,
             controls_ready: true,
             state: state(flags::FILL_OPEN | flags::IGN_PWR),
+            pad: None,
         });
         for (name, action) in [
             ("fill_on", &actions.fill_on),
@@ -598,6 +726,102 @@ mod tests {
                     "{name} disabled without a reason"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pad_tests {
+    use super::*;
+    use gse_proto::flags;
+
+    fn pad_inputs(state: StateSnapshot, pad: PadGate) -> Inputs {
+        Inputs {
+            mode: OperationMode::Test,
+            countdown_seconds: gse_proto::DEFAULT_COUNTDOWN_SECONDS,
+            ground_online: true,
+            vehicle_online: true,
+            pending: false,
+            countdown_target: None,
+            countdown_holding: false,
+            controls_ready: true,
+            state,
+            pad: Some(pad),
+        }
+    }
+
+    fn ready_for_ign() -> StateSnapshot {
+        StateSnapshot {
+            flags: flags::SRV_ON | flags::FILL_SEQ_COMPLETE,
+            ..StateSnapshot::default()
+        }
+    }
+
+    #[test]
+    fn ignition_needs_arm_on_the_pad() {
+        let a = evaluate(&pad_inputs(ready_for_ign(), PadGate::default()));
+        assert!(!a.ign_pwr.enabled);
+        assert!(a.ign_pwr.reason.contains("ARM"));
+        assert!(a.arm.enabled && !a.disarm.enabled);
+        let a = evaluate(&pad_inputs(
+            ready_for_ign(),
+            PadGate {
+                armed: true,
+                ..PadGate::default()
+            },
+        ));
+        assert!(a.ign_pwr.enabled && a.disarm.enabled && !a.arm.enabled);
+    }
+
+    #[test]
+    fn arm_refused_while_latched() {
+        let a = evaluate(&pad_inputs(
+            StateSnapshot {
+                flags: flags::ESTOP,
+                ..StateSnapshot::default()
+            },
+            PadGate {
+                latched: true,
+                ..PadGate::default()
+            },
+        ));
+        assert!(!a.arm.enabled);
+        assert!(a.arm.reason.contains("RESET"));
+    }
+
+    #[test]
+    fn purge_needs_session_enable() {
+        let a = evaluate(&pad_inputs(StateSnapshot::default(), PadGate::default()));
+        assert!(!a.purge_open.enabled && a.purge_enable.enabled && !a.purge_disable.enabled);
+        let a = evaluate(&pad_inputs(
+            StateSnapshot::default(),
+            PadGate {
+                purge_enabled: true,
+                ..PadGate::default()
+            },
+        ));
+        assert!(a.purge_open.enabled && !a.purge_close.enabled && a.purge_disable.enabled);
+        let a = evaluate(&pad_inputs(
+            StateSnapshot {
+                flags: flags::FILL_OPEN | flags::FILL_TIMER_ACTIVE,
+                ..StateSnapshot::default()
+            },
+            PadGate {
+                purge_enabled: true,
+                purge_open: true,
+                ..PadGate::default()
+            },
+        ));
+        assert!(a.purge_close.enabled, "closing purge is always allowed");
+    }
+
+    #[test]
+    fn lora_boards_have_no_pad_actions() {
+        let mut inputs = pad_inputs(StateSnapshot::default(), PadGate::default());
+        inputs.pad = None;
+        let a = evaluate(&inputs);
+        for gate in [&a.arm, &a.disarm, &a.purge_open, &a.purge_enable] {
+            assert!(!gate.enabled && gate.reason == PAD_ONLY);
         }
     }
 }

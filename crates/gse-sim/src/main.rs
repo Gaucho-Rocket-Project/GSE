@@ -1,10 +1,14 @@
-//! Desktop simulator for the two NUCLEO-H753ZI boards.
+//! Desktop simulator for the two GSE boards.
 //!
 //! Runs the real `gse-fw-core` ground bridge and vehicle logic against mock
-//! hardware, connects them through a simulated 2.4 GHz radio (`DX-LR42-24T12D`
-//! UART LoRa or `E28-2G4M27S` SPI1 `500 mW` LoRa, enforcing active module
-//! agreement and realistic UART/SPI airtime latency) and exposes the ground
-//! board's USB serial port as a TCP socket.
+//! hardware, connects them through a simulated 2.4 GHz radio and exposes the
+//! ground board's USB serial port as a TCP socket:
+//!
+//! * NUCLEO-H753ZI + `DX-LR42-24T12D` UART LoRa or `E28-2G4M27S` SPI1
+//!   `500 mW` LoRa (GSE vehicle state machine, enforcing active module
+//!   agreement and realistic UART/SPI airtime latency), or
+//! * ESP32 + ESP-NOW (`--radio esp-now`): the GSE-simple pad node
+//!   ([`gse_fw_core::pad`]) with four servos and the one-shot igniter.
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -13,15 +17,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use gse_fw_core::ground::Ground;
-use gse_fw_core::mock::{MockGround, MockVehicle};
+use gse_fw_core::mock::{MockGround, MockPad, MockVehicle};
+use gse_fw_core::pad::Pad;
 use gse_fw_core::vehicle::Vehicle;
-use gse_proto::radio::{e28, DxLr42Baud, DxLr42Level, RadioModule};
+use gse_proto::radio::{e28, espnow, DxLr42Baud, DxLr42Level, RadioModule};
 
 const TICK_MS: u64 = 2;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const USAGE: &str = "\
-gse-sim - two-board simulator for NUCLEO-H753ZI + DX-LR42-24T12D / E28-2G4M27S
+gse-sim - two-board simulator: NUCLEO-H753ZI + DX-LR42-24T12D / E28-2G4M27S,
+          or ESP32 + ESP-NOW with the GSE-simple pad node
 
 USAGE:
     gse-sim [OPTIONS]
@@ -29,7 +35,8 @@ USAGE:
 OPTIONS:
     --listen <ADDR>        TCP address for the ground board's USB port
                            (default 127.0.0.1:8787)
-    --radio <MODULE>       Initial radio module: dx-lr42-24t12d (default) or e28-2g4m27s
+    --radio <MODULE>       Initial radio module: dx-lr42-24t12d (default), e28-2g4m27s,
+                           or esp-now (ESP32 pad: FILL, 2x VEH, PURGE, one-shot IGN)
     --uart-baud <BPS>      Initial MCU <-> UART radio baud rate (default 9600)
     --level <0..8>         Simulate DX-LR42-24T12D AT+LEVEL air-rate latency
     --latency <MS>         Fixed one-way radio latency override
@@ -75,6 +82,7 @@ impl RadioConfig {
                 .level
                 .estimate_one_way_ms(bytes.max(16), uart_baud.bps()),
             RadioModule::E28_2G4M27S => e28::estimate_one_way_ms(bytes.max(16)),
+            RadioModule::EspNow => espnow::estimate_one_way_ms(bytes),
         }
     }
 }
@@ -122,7 +130,7 @@ impl Options {
                     let text = value("--radio")?;
                     opts.radio.initial_radio = RadioModule::parse(&text).ok_or_else(|| {
                         format!(
-                            "invalid radio module '{text}' (expected dx-lr42-24t12d or e28-2g4m27s)"
+                            "invalid radio module '{text}' (expected dx-lr42-24t12d, e28-2g4m27s or esp-now)"
                         )
                     })?;
                 }
@@ -283,7 +291,7 @@ impl Radio {
         });
     }
 
-    fn deliver(&mut self, now: Instant, ground: &mut MockGround, vehicle: &mut MockVehicle) {
+    fn deliver(&mut self, now: Instant, ground: &mut MockGround, vehicle: &mut VehicleBoard) {
         let mut idx = 0usize;
         while idx < self.queue.len() {
             if self.queue[idx].due > now {
@@ -293,7 +301,7 @@ impl Radio {
             let packet = self.queue.remove(idx);
             match packet.dest {
                 Dest::ToVehicle => {
-                    if packet.radio == vehicle.link.radio {
+                    if packet.radio == vehicle.radio() {
                         vehicle.feed_bytes(&packet.bytes);
                         self.delivered += 1;
                     } else {
@@ -313,10 +321,61 @@ impl Radio {
     }
 }
 
+/// The vehicle-side board: the GSE NUCLEO vehicle state machine (LoRa) or the
+/// GSE-simple ESP32 pad node (ESP-NOW).
+enum VehicleBoard {
+    Gse(Box<Vehicle<MockVehicle>>),
+    Pad(Box<Pad<MockPad>>),
+}
+
+impl VehicleBoard {
+    fn advance(&mut self, ms: u32) {
+        match self {
+            VehicleBoard::Gse(v) => v.hal_mut().advance(ms),
+            VehicleBoard::Pad(p) => p.hal_mut().advance(ms),
+        }
+    }
+
+    fn poll(&mut self) {
+        match self {
+            VehicleBoard::Gse(v) => v.poll(),
+            VehicleBoard::Pad(p) => p.poll(),
+        }
+    }
+
+    fn radio(&self) -> RadioModule {
+        match self {
+            VehicleBoard::Gse(v) => v.hal().link.radio,
+            VehicleBoard::Pad(_) => RadioModule::EspNow,
+        }
+    }
+
+    fn uart_baud(&self) -> DxLr42Baud {
+        match self {
+            VehicleBoard::Gse(v) => v.hal().link.uart_baud,
+            VehicleBoard::Pad(_) => DxLr42Baud::Baud115200,
+        }
+    }
+
+    fn feed_bytes(&mut self, bytes: &[u8]) {
+        match self {
+            VehicleBoard::Gse(v) => v.hal_mut().feed_bytes(bytes),
+            VehicleBoard::Pad(p) => p.hal_mut().feed_bytes(bytes),
+        }
+    }
+
+    fn take_radio_out(&mut self) -> Vec<u8> {
+        match self {
+            VehicleBoard::Gse(v) => std::mem::take(&mut v.hal_mut().radio_out),
+            VehicleBoard::Pad(p) => std::mem::take(&mut p.hal_mut().radio_out),
+        }
+    }
+}
+
 /// The two boards and the radio between them.
 struct Boards {
     ground: Ground<MockGround>,
-    vehicle: Vehicle<MockVehicle>,
+    vehicle: VehicleBoard,
     radio: Radio,
 }
 
@@ -334,16 +393,23 @@ impl Boards {
                 .radio_in
                 .extend(b"Power On\r\n".iter().copied());
         }
+        let vehicle = if config.initial_radio.is_esp_now() {
+            // ESP-NOW boards talk to the host over a fixed 115200 Bd UART.
+            mock_ground.link.uart_baud = DxLr42Baud::Baud115200;
+            VehicleBoard::Pad(Box::new(Pad::new(MockPad::default())))
+        } else {
+            VehicleBoard::Gse(Box::new(Vehicle::new(mock_vehicle)))
+        };
         Boards {
             ground: Ground::new(mock_ground),
-            vehicle: Vehicle::new(mock_vehicle),
+            vehicle,
             radio: Radio::new(config, seed),
         }
     }
 
     fn advance(&mut self, ms: u32) {
         self.ground.hal_mut().advance(ms);
-        self.vehicle.hal_mut().advance(ms);
+        self.vehicle.advance(ms);
     }
 }
 
@@ -370,7 +436,7 @@ impl<'a> Sim<'a> {
     fn step(&mut self, elapsed_ms: u32) -> io::Result<()> {
         let ground_hal = self.boards.ground.hal_mut();
         ground_hal.advance(elapsed_ms);
-        self.boards.vehicle.hal_mut().advance(elapsed_ms);
+        self.boards.vehicle.advance(elapsed_ms);
 
         // USB serial: host -> ground board.
         let mut buf = [0u8; 512];
@@ -407,24 +473,20 @@ impl<'a> Sim<'a> {
         let ground_hal = self.boards.ground.hal_mut();
         self.boards
             .radio
-            .deliver(now, ground_hal, self.boards.vehicle.hal_mut());
+            .deliver(now, ground_hal, &mut self.boards.vehicle);
 
         // Vehicle logic: commands in, acks/state out (captured with Vehicle's active radio BEFORE switchover).
         self.boards.vehicle.poll();
-        let v_link = self.boards.vehicle.hal().link;
-        let radio_out = std::mem::take(&mut self.boards.vehicle.hal_mut().radio_out);
+        let (v_radio, v_uart) = (self.boards.vehicle.radio(), self.boards.vehicle.uart_baud());
+        let radio_out = self.boards.vehicle.take_radio_out();
         let now = Instant::now();
-        self.boards.radio.transmit(
-            Dest::ToGround,
-            v_link.radio,
-            v_link.uart_baud,
-            radio_out,
-            now,
-        );
+        self.boards
+            .radio
+            .transmit(Dest::ToGround, v_radio, v_uart, radio_out, now);
         let ground_hal = self.boards.ground.hal_mut();
         self.boards
             .radio
-            .deliver(now, ground_hal, self.boards.vehicle.hal_mut());
+            .deliver(now, ground_hal, &mut self.boards.vehicle);
 
         // Ground bridge again so the radio -> USB path sees what just arrived.
         self.boards.ground.poll();
@@ -494,13 +556,20 @@ fn run(opts: Options) -> Result<(), String> {
     let local = listener.local_addr().unwrap_or(addr);
     println!("gse-sim {VERSION} listening on {local}");
     if !opts.quiet {
-        println!(
-            "  radio {}, uart {} baud, drop {} ppm, corruption {} ppm",
-            opts.radio.initial_radio.part_number(),
-            opts.radio.initial_uart_baud.bps(),
-            opts.radio.drop_ppm,
-            opts.radio.corrupt_ppm
-        );
+        if opts.radio.initial_radio.is_esp_now() {
+            println!(
+                "  radio ESP-NOW (ESP32 pad node: FILL, 2x VEH, PURGE, one-shot IGN), drop {} ppm, corruption {} ppm",
+                opts.radio.drop_ppm, opts.radio.corrupt_ppm
+            );
+        } else {
+            println!(
+                "  radio {}, uart {} baud, drop {} ppm, corruption {} ppm",
+                opts.radio.initial_radio.part_number(),
+                opts.radio.initial_uart_baud.bps(),
+                opts.radio.drop_ppm,
+                opts.radio.corrupt_ppm
+            );
+        }
         println!("  connect with: gse-app --sim   (or --port tcp:{local})");
     }
 
@@ -688,13 +757,13 @@ mod tests {
         );
         {
             let g_hal = boards.ground.hal_mut();
-            boards.radio.deliver(now, g_hal, boards.vehicle.hal_mut());
+            boards.radio.deliver(now, g_hal, &mut boards.vehicle);
         }
 
         // Vehicle emits LinkConfigAck on DX-LR42 BEFORE switching to E28!
         boards.vehicle.poll();
-        assert_eq!(boards.vehicle.hal().link.radio, RadioModule::DxLr42);
-        let v_out = std::mem::take(&mut boards.vehicle.hal_mut().radio_out);
+        assert_eq!(boards.vehicle.radio(), RadioModule::DxLr42);
+        let v_out = boards.vehicle.take_radio_out();
         boards.radio.transmit(
             Dest::ToGround,
             RadioModule::DxLr42,
@@ -704,11 +773,11 @@ mod tests {
         );
         {
             let g_hal = boards.ground.hal_mut();
-            boards.radio.deliver(now, g_hal, boards.vehicle.hal_mut());
+            boards.radio.deliver(now, g_hal, &mut boards.vehicle);
         }
         // Vehicle now finishes switching to E28, and Ground forwards Vehicle's ACK to USB!
         boards.vehicle.poll();
-        assert_eq!(boards.vehicle.hal().link.radio, RadioModule::E28_2G4M27S);
+        assert_eq!(boards.vehicle.radio(), RadioModule::E28_2G4M27S);
         boards.ground.poll();
         let usb_frames = boards.ground.hal_mut().drain_usb_frames();
         assert!(usb_frames
@@ -752,26 +821,115 @@ mod tests {
         );
         {
             let g_hal = boards.ground.hal_mut();
-            boards.radio.deliver(now, g_hal, boards.vehicle.hal_mut());
+            boards.radio.deliver(now, g_hal, &mut boards.vehicle);
         }
         boards.vehicle.poll();
-        let v_out = std::mem::take(&mut boards.vehicle.hal_mut().radio_out);
+        let v_out = boards.vehicle.take_radio_out();
         boards.radio.transmit(
             Dest::ToGround,
-            boards.vehicle.hal().link.radio,
-            boards.vehicle.hal().link.uart_baud,
+            boards.vehicle.radio(),
+            boards.vehicle.uart_baud(),
             v_out,
             now,
         );
         {
             let g_hal = boards.ground.hal_mut();
-            boards.radio.deliver(now, g_hal, boards.vehicle.hal_mut());
+            boards.radio.deliver(now, g_hal, &mut boards.vehicle);
         }
         boards.ground.poll();
         let pong_frames = boards.ground.hal_mut().drain_usb_frames();
         assert!(pong_frames
             .iter()
             .any(|f| matches!(f.message(), Some(Message::Pong(p)) if p.nonce == 0x1234)));
+    }
+
+    /// Run both boards for `ms` with zero-latency radio, feeding `host` frames
+    /// to the ground USB port every 50 ms (the app's pad command stream).
+    fn run_pad(boards: &mut Boards, host: Option<Message>, ms: u32) -> Vec<gse_proto::Frame> {
+        let mut usb = Vec::new();
+        let mut t = 0;
+        while t < ms {
+            if t % 50 == 0 {
+                if let Some(msg) = host {
+                    boards.ground.hal_mut().feed_usb_frame(
+                        &msg,
+                        Endpoint::Host,
+                        Endpoint::Vehicle,
+                        1,
+                    );
+                }
+            }
+            boards.advance(10);
+            let now = Instant::now();
+            boards.ground.poll();
+            let g_out = std::mem::take(&mut boards.ground.hal_mut().radio_out);
+            boards.radio.transmit(
+                Dest::ToVehicle,
+                RadioModule::EspNow,
+                DxLr42Baud::Baud115200,
+                g_out,
+                now,
+            );
+            boards
+                .radio
+                .deliver(now, boards.ground.hal_mut(), &mut boards.vehicle);
+            boards.vehicle.poll();
+            let v_out = boards.vehicle.take_radio_out();
+            boards.radio.transmit(
+                Dest::ToGround,
+                RadioModule::EspNow,
+                DxLr42Baud::Baud115200,
+                v_out,
+                now,
+            );
+            boards
+                .radio
+                .deliver(now, boards.ground.hal_mut(), &mut boards.vehicle);
+            boards.ground.poll();
+            usb.extend(boards.ground.hal_mut().drain_usb_frames());
+            t += 10;
+        }
+        usb
+    }
+
+    fn pad_servo(boards: &Boards, servo: gse_fw_core::PadServo) -> u16 {
+        match &boards.vehicle {
+            VehicleBoard::Pad(p) => p.hal().servo(servo),
+            VehicleBoard::Gse(_) => panic!("not a pad"),
+        }
+    }
+
+    #[test]
+    fn esp_now_pad_follows_stream_and_safes_on_host_silence() {
+        use gse_fw_core::PadServo;
+        use gse_proto::PadCommand;
+        let opts = parse(&["--radio", "esp-now", "--latency", "0"]);
+        assert_eq!(opts.radio.initial_radio, RadioModule::EspNow);
+        let mut boards = Boards::new(opts.radio, 5);
+        let fill = Message::PadCmd(PadCommand {
+            fill: true,
+            veh: false,
+            ..PadCommand::safe(10, 5)
+        });
+        let usb = run_pad(&mut boards, Some(fill), 400);
+        assert_eq!(pad_servo(&boards, PadServo::Fill), 2_000);
+        assert_eq!(pad_servo(&boards, PadServo::Veh), 1_000);
+        assert_eq!(pad_servo(&boards, PadServo::Veh2), 1_000);
+        // Pad telemetry and HELLO reach the host through the ground bridge.
+        assert!(usb.iter().any(|f| matches!(
+            f.message(),
+            Some(Message::PadState(s)) if s.out_fill && !s.out_veh && s.link_ok()
+        )));
+        assert!(usb.iter().any(
+            |f| matches!(f.message(), Some(Message::Hello(h)) if h.role == Endpoint::Vehicle)
+        ));
+
+        // Host goes silent: the ground streams SAFE after 300 ms, well before
+        // the pad's own 1 s watchdog would.
+        run_pad(&mut boards, None, 450);
+        assert_eq!(pad_servo(&boards, PadServo::Fill), 1_000);
+        assert_eq!(pad_servo(&boards, PadServo::Veh), 2_000);
+        assert!(boards.ground.pad_safe_frames() > 0);
     }
 
     #[test]

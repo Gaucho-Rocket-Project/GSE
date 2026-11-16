@@ -6,6 +6,7 @@
 //! the protocol version in the frame header gates incompatible changes.
 
 use crate::control::{AckResult, Control, Endpoint, EventCode, MsgType, Reason};
+use crate::pad::{PadCommand, PadConfig, PadEvent, PadState};
 use crate::radio::{DxLr42Baud, RadioModule, UsbBaud};
 use crate::state::StateSnapshot;
 
@@ -21,6 +22,13 @@ pub mod capabilities {
     pub const LINK_CONFIG: u16 = 1 << 6;
     /// CDEBYTE `E28-2G4M27S` (`SPI1` + PA/LNA `+27 dBm`) driver compiled in.
     pub const RADIO_E28_2G4M27S: u16 = 1 << 7;
+    /// GSE-simple pad control set ([`crate::pad`]): 20 Hz command stream,
+    /// one-shot armed igniter, VEHICLE-open failsafe.
+    pub const PAD_STREAM: u16 = 1 << 8;
+    /// CO2 purge valve servo output.
+    pub const PURGE: u16 = 1 << 9;
+    /// ESP-NOW radio link.
+    pub const RADIO_ESPNOW: u16 = 1 << 10;
 }
 
 /// Bit flags carried in [`LinkConfig::flags`], [`LinkConfigAck::flags`], and [`LinkStat::link_flags`].
@@ -492,6 +500,10 @@ pub enum Message {
     Heartbeat(Heartbeat),
     LinkConfig(LinkConfig),
     LinkConfigAck(LinkConfigAck),
+    PadCmd(PadCommand),
+    PadState(PadState),
+    PadEvent(PadEvent),
+    PadConfig(PadConfig),
 }
 
 impl Message {
@@ -508,6 +520,10 @@ impl Message {
             Message::Heartbeat(_) => MsgType::Heartbeat,
             Message::LinkConfig(_) => MsgType::LinkConfig,
             Message::LinkConfigAck(_) => MsgType::LinkConfigAck,
+            Message::PadCmd(_) => MsgType::PadCmd,
+            Message::PadState(_) => MsgType::PadState,
+            Message::PadEvent(_) => MsgType::PadEvent,
+            Message::PadConfig(_) => MsgType::PadConfig,
         }
     }
 
@@ -524,6 +540,10 @@ impl Message {
             Message::Heartbeat(_) => Heartbeat::WIRE_LEN,
             Message::LinkConfig(_) => LinkConfig::WIRE_LEN,
             Message::LinkConfigAck(_) => LinkConfigAck::WIRE_LEN,
+            Message::PadCmd(_) => PadCommand::WIRE_LEN,
+            Message::PadState(_) => PadState::WIRE_LEN,
+            Message::PadEvent(_) => PadEvent::WIRE_LEN,
+            Message::PadConfig(_) => PadConfig::WIRE_LEN,
         }
     }
 
@@ -540,6 +560,10 @@ impl Message {
             Message::Heartbeat(m) => m.encode(out),
             Message::LinkConfig(m) => m.encode(out),
             Message::LinkConfigAck(m) => m.encode(out),
+            Message::PadCmd(m) => m.encode(out),
+            Message::PadState(m) => m.encode(out),
+            Message::PadEvent(m) => m.encode(out),
+            Message::PadConfig(m) => m.encode(out),
         }
     }
 
@@ -556,6 +580,10 @@ impl Message {
             MsgType::Heartbeat => Some(Message::Heartbeat(Heartbeat::decode(body)?)),
             MsgType::LinkConfig => Some(Message::LinkConfig(LinkConfig::decode(body)?)),
             MsgType::LinkConfigAck => Some(Message::LinkConfigAck(LinkConfigAck::decode(body)?)),
+            MsgType::PadCmd => Some(Message::PadCmd(PadCommand::decode(body)?)),
+            MsgType::PadState => Some(Message::PadState(PadState::decode(body)?)),
+            MsgType::PadEvent => Some(Message::PadEvent(PadEvent::decode(body)?)),
+            MsgType::PadConfig => Some(Message::PadConfig(PadConfig::decode(body)?)),
         }
     }
 
@@ -609,6 +637,28 @@ impl Message {
                 req_id: a.req_id,
                 result: a.result,
                 radio: a.radio,
+            },
+            Message::PadCmd(c) => MessageDescription::PadCmd {
+                armed: c.armed(),
+                fill: c.fill,
+                veh: c.veh,
+                prg: c.prg,
+                ign: c.ign,
+            },
+            Message::PadState(s) => MessageDescription::PadState {
+                flags: s.flags,
+                fill: s.out_fill,
+                veh: s.out_veh,
+                prg: s.out_prg,
+                ign: s.out_ign,
+            },
+            Message::PadEvent(e) => MessageDescription::PadEvent {
+                code: e.code,
+                arg: e.arg,
+            },
+            Message::PadConfig(c) => MessageDescription::PadConfig {
+                cfg_seq: c.cfg_seq,
+                allow_purge: c.allow_purge,
             },
         }
     }
@@ -668,6 +718,28 @@ pub enum MessageDescription {
         req_id: u16,
         result: AckResult,
         radio: RadioModule,
+    },
+    PadCmd {
+        armed: bool,
+        fill: bool,
+        veh: bool,
+        prg: bool,
+        ign: bool,
+    },
+    PadState {
+        flags: u8,
+        fill: bool,
+        veh: bool,
+        prg: bool,
+        ign: bool,
+    },
+    PadEvent {
+        code: u8,
+        arg: u8,
+    },
+    PadConfig {
+        cfg_seq: u8,
+        allow_purge: bool,
     },
 }
 

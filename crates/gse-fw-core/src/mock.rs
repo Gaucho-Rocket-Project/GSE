@@ -8,6 +8,16 @@ use std::collections::VecDeque;
 use gse_proto::{Endpoint, Frame, FrameDecoder, LinkConfig, Message, RadioModule, Reason};
 
 use crate::hal::{GroundHal, Leds, LinkState, VehicleHal};
+use crate::pad::{PadHal, PadServo};
+
+/// An ESP-NOW board cannot switch to a LoRa module (or back) at run time.
+fn probe_radio(active: RadioModule, wanted: RadioModule, e28_present: bool) -> bool {
+    match wanted {
+        RadioModule::DxLr42 => !active.is_esp_now(),
+        RadioModule::E28_2G4M27S => e28_present && !active.is_esp_now(),
+        RadioModule::EspNow => active.is_esp_now(),
+    }
+}
 
 /// Fake vehicle board: captures servo/igniter outputs, radio traffic, and link settings.
 pub struct MockVehicle {
@@ -123,15 +133,15 @@ impl VehicleHal for MockVehicle {
     }
 
     fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
-        match radio {
-            RadioModule::DxLr42 => true,
-            RadioModule::E28_2G4M27S => self.e28_present,
-        }
+        probe_radio(self.link.radio, radio, self.e28_present)
     }
 
     fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
         if cfg.radio == RadioModule::E28_2G4M27S && !self.e28_present {
             return Err(Reason::HardwareFault);
+        }
+        if cfg.radio.is_esp_now() != self.link.radio.is_esp_now() {
+            return Err(Reason::NotPermitted);
         }
         self.link.uart_baud = cfg.uart_baud;
         self.link.radio = cfg.radio;
@@ -299,15 +309,15 @@ impl GroundHal for MockGround {
     }
 
     fn probe_radio_module(&mut self, radio: RadioModule) -> bool {
-        match radio {
-            RadioModule::DxLr42 => true,
-            RadioModule::E28_2G4M27S => self.e28_present,
-        }
+        probe_radio(self.link.radio, radio, self.e28_present)
     }
 
     fn apply_link_config(&mut self, cfg: LinkConfig) -> Result<bool, Reason> {
         if cfg.radio == RadioModule::E28_2G4M27S && !self.e28_present {
             return Err(Reason::HardwareFault);
+        }
+        if cfg.radio.is_esp_now() != self.link.radio.is_esp_now() {
+            return Err(Reason::NotPermitted);
         }
         self.link.usb_baud = cfg.usb_baud;
         self.link.uart_baud = cfg.uart_baud;
@@ -328,5 +338,136 @@ impl GroundHal for MockGround {
 
     fn device_id(&self) -> u32 {
         self.device_id
+    }
+}
+
+/// Fake ESP32 pad board (GSE-simple pad node): records servo pulses, the
+/// igniter relay, the heartbeat pin and radio traffic.
+pub struct MockPad {
+    pub now_ms: u32,
+    /// Last pulse width per [`PadServo`] (0 = never driven).
+    pub servo_us: [u16; 4],
+    pub ign: bool,
+    pub heartbeat: bool,
+    pub heartbeat_toggles: u32,
+    pub radio_in: VecDeque<u8>,
+    pub radio_out: Vec<u8>,
+    pub leds: Leds,
+    pub watchdog_kicks: u32,
+    pub device_id: u32,
+    pub radio_ready: bool,
+    pub rssi_dbm: Option<i8>,
+}
+
+impl Default for MockPad {
+    fn default() -> Self {
+        MockPad {
+            now_ms: 0,
+            servo_us: [0; 4],
+            ign: false,
+            heartbeat: false,
+            heartbeat_toggles: 0,
+            radio_in: VecDeque::new(),
+            radio_out: Vec::new(),
+            leds: Leds::default(),
+            watchdog_kicks: 0,
+            device_id: 0x5041_4431, // "PAD1"
+            radio_ready: true,
+            rssi_dbm: Some(-48),
+        }
+    }
+}
+
+impl MockPad {
+    pub fn advance(&mut self, ms: u32) {
+        self.now_ms = self.now_ms.wrapping_add(ms);
+    }
+
+    pub fn servo(&self, servo: PadServo) -> u16 {
+        self.servo_us[servo as usize]
+    }
+
+    pub fn feed_bytes(&mut self, bytes: &[u8]) {
+        self.radio_in.extend(bytes.iter().copied());
+    }
+
+    pub fn feed_frame(&mut self, message: &Message, src: Endpoint, dst: Endpoint, seq: u8) {
+        let mut buf = [0u8; Frame::MAX_ENCODED];
+        let n = gse_proto::encode_message(message, src, dst, seq, &mut buf).expect("encode");
+        self.radio_in.extend(buf[..n].iter().copied());
+    }
+
+    /// Parse every complete frame the board has transmitted and clear the buffer.
+    pub fn drain_frames(&mut self) -> Vec<Frame> {
+        let mut decoder = FrameDecoder::new();
+        let mut frames = Vec::new();
+        for &byte in &self.radio_out {
+            if let Some(frame) = decoder.push(byte) {
+                frames.push(frame);
+            }
+        }
+        self.radio_out.clear();
+        frames
+    }
+}
+
+impl PadHal for MockPad {
+    fn now_ms(&self) -> u32 {
+        self.now_ms
+    }
+
+    fn set_servo_us(&mut self, servo: PadServo, pulse_us: u16) {
+        self.servo_us[servo as usize] = pulse_us;
+    }
+
+    fn set_ign(&mut self, on: bool) {
+        self.ign = on;
+    }
+
+    fn set_heartbeat(&mut self, level: bool) {
+        if level != self.heartbeat {
+            self.heartbeat_toggles = self.heartbeat_toggles.wrapping_add(1);
+        }
+        self.heartbeat = level;
+    }
+
+    fn read_radio(&mut self, buf: &mut [u8]) -> usize {
+        let mut n = 0;
+        while n < buf.len() {
+            match self.radio_in.pop_front() {
+                Some(b) => {
+                    buf[n] = b;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        n
+    }
+
+    fn write_radio(&mut self, data: &[u8]) {
+        if self.radio_ready {
+            self.radio_out.extend_from_slice(data);
+        }
+    }
+
+    fn radio_ready(&mut self) -> bool {
+        self.radio_ready
+    }
+
+    fn set_leds(&mut self, leds: Leds) {
+        self.leds = leds;
+    }
+
+    fn kick_watchdog(&mut self) {
+        self.watchdog_kicks = self.watchdog_kicks.wrapping_add(1);
+    }
+
+    fn device_id(&self) -> u32 {
+        self.device_id
+    }
+
+    fn rssi_dbm(&self) -> Option<i8> {
+        self.rssi_dbm
     }
 }

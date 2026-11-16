@@ -1,4 +1,6 @@
-//! Platform independent firmware logic for the two NUCLEO-H753ZI boards.
+//! Platform independent firmware logic for the GSE boards: the NUCLEO-H753ZI
+//! ground bridge and vehicle (LoRa), and the ESP32 pad node (ESP-NOW,
+//! GSE-simple control set, [`pad`]).
 //!
 //! The crate is `no_std` (it is linked into the flight firmware) but all of its
 //! logic is exercised on the host by unit tests and by the `gse-sim` desktop
@@ -10,6 +12,7 @@
 pub mod e28;
 pub mod ground;
 pub mod hal;
+pub mod pad;
 pub mod radio;
 pub mod vehicle;
 
@@ -19,5 +22,6 @@ pub mod mock;
 pub use e28::{E28Driver, E28Stats, Sx128xBus};
 pub use ground::Ground;
 pub use hal::{GroundHal, Leds, LinkState, VehicleHal};
+pub use pad::{Pad, PadBoard, PadHal, PadServo, ServoSetup};
 pub use radio::{DxLr42Receiver, DxLr42Stats};
 pub use vehicle::{Vehicle, VehicleState};

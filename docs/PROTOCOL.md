@@ -82,6 +82,13 @@ decoding and automatically exits accidental local AT command mode (`"Entry AT"`,
 | `0x09` | `HEARTBEAT` | host → vehicle | 5 B |
 | `0x0A` | `LINK_CONFIG` | host → vehicle / ground | 6 B |
 | `0x0B` | `LINK_CONFIG_ACK` | vehicle / ground → host | 8 B |
+| `0x10` | `PAD_CMD` | host / ground → ESP32 pad | 12 B |
+| `0x11` | `PAD_STATE` | ESP32 pad → host | 24 B |
+| `0x12` | `PAD_EVENT` | ESP32 pad → host | 3 B |
+| `0x13` | `PAD_CFG` | host → ESP32 pad | 8 B |
+
+Types `0x10..=0x13` are the ESP32 + ESP-NOW pad control set; see
+[ESP-NOW pad control set](#esp-now-pad-control-set-gse-simple).
 
 All multi-byte integers are little-endian.
 
@@ -283,6 +290,93 @@ every `event: state` frame on `/api/events`:
 - `actions`: per-action `{enabled, reason}` map for `fill_on`, `fill_off`,
   `srv_on`, `srv_off`, `ign_pwr`, `ign_safe`, `srv_ign_on`, `srv_ign_off`,
   `abort_countdown`, `reset_controls`, `reset_fill`, `clear_faults`, and `estop`.
+
+## ESP-NOW pad control set (GSE-simple)
+
+The ESP32 + ESP-NOW variant (`radio = esp-now`, `RadioModule::EspNow` = `2`)
+keeps the control algorithm of the GSE-simple pad node and carries its
+messages inside the normal GSE frame above. One frame is sent per ESP-NOW
+datagram (frames are at most 62 B; a datagram holds 250 B). Payload layouts
+are byte-identical to GSE-simple's `gse_cmd_t`, `gse_state_t`, `gse_cfgs_t`
+and `gse_event_t`, and the type numbers match its frame types. Reference
+implementation: `crates/gse-proto/src/pad.rs` (wire + pure failsafe) and
+`crates/gse-fw-core/src/pad.rs` (pad node).
+
+### Algorithm
+
+| Rule | Behaviour |
+|---|---|
+| Command model | The host streams the **complete desired output state** in `PAD_CMD` at 20 Hz; there is no per-command ACK |
+| Output pass | Every 20 ms the pad recomputes its outputs from the last valid `PAD_CMD` and its age (`failsafe()`) |
+| Link watchdog | No valid `PAD_CMD` for `wdg_ds` (1.0 s default, 0.3–3.0 s) → **FILL closed, PURGE closed, VEHICLE open, IGN off** |
+| Boot | Same SAFE set until the first valid command (`LATCHED`) |
+| Valves | FILL, VEHICLE (fuel + oxidizer servos, one command, own pin/direction/trim each) and PURGE pass straight through — no interlocks on the pad |
+| Purge | Forced closed unless `PAD_CFG.allow_purge` (per-session operator enable, off at every start) |
+| Igniter | Requires `arm_code = 0xA5` in *every* command and a fresh link; one shot per press, cut after `ign_max_ds` (0.5 s default, 0.1–2.0 s); must be released before it fires again |
+| Telemetry | `PAD_STATE` at 10 Hz reports the outputs actually driven plus counters and the config in force |
+| Ground bridge | Drops a `PAD_CMD` arriving more than 200 ms after the previous host frame; after 300 ms of host silence streams SAFE `PAD_CMD`s itself at 20 Hz |
+| Host | Holds the arm code back unless the operator armed **and** pad telemetry is < 1.5 s old; sends three SAFE commands on exit |
+
+Servo pulse (50 Hz): `1500 µs + trim ± 500 µs × travel° / 45°`, clamped to
+`500..=2500 µs`; travel defaults to 45° (1.0 / 2.0 ms), range 5–90°.
+
+### PAD_CMD (12 B)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | `arm_code` (`0xA5` while arming, else `0`) |
+| 1 | 1 | `fill` (`1` = OPEN) |
+| 2 | 1 | `veh` (`1` = OPEN; fuel + oxidizer) |
+| 3 | 1 | `prg` (`1` = OPEN) |
+| 4 | 1 | `ign` (request) |
+| 5 | 1 | `wdg_ds` (`0` = keep current) |
+| 6 | 1 | `ign_max_ds` (`0` = keep current) |
+| 7 | 1 | `flags` (`REQ_ACK` 1, unused) |
+| 8 | 2 | `tx_ms` (sender ms, wraps) |
+| 10 | 1 | `ign_wdg` (never set) |
+| 11 | 1 | reserved |
+
+### PAD_STATE (24 B)
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 1 | `flags`: `LINK_OK` 1, `LATCHED` 2, `ARMED` 4, `IGN_ON` 8, `COMMS_LOSS` 16, `HELLO_OK` 32, `IGN_SPENT` 64 *(GSE extension)* |
+| 1–4 | 4 | `out_fill`, `out_veh`, `out_prg`, `out_ign` (physical outputs) |
+| 5 | 1 | `ign_src` (`CMD` 1, `WDG` 2) |
+| 6 | 2 | `age_ms` since last valid command (`0xFFFF` = never) |
+| 8 | 2 | `rx_count` (valid commands) |
+| 10 | 2 | `crc_err` (bad frames) |
+| 12 | 1 | `rssi_dbm` (`i8`, `0x7F` = unknown) |
+| 13 | 1 | `pad_state` (`BOOT` 0, `WAIT` 1, `RUN` 2, `LATCHED` 3) |
+| 14 | 2 | `uptime_s` |
+| 16–19 | 4 | `wdg_ds`, `ign_max_ds`, `fw_major`, `fw_minor` |
+| 20–23 | 4 | `travel_fill`, `travel_veh`, `travel_prg`, `allow_purge` |
+
+### PAD_CFG (8 B) & PAD_EVENT (3 B)
+
+`PAD_CFG`: `travel_fill`, `travel_veh`, `travel_prg`, `wdg_ds`, `ign_max_ds`,
+`allow_purge`, `cfg_seq`, reserved. The host resends it (at most 1 Hz) until
+the values in `PAD_STATE` match.
+
+`PAD_EVENT`: `code`, `arg`, pad. Codes: `BOOT` 1, `HELLO_OK` 2,
+`COMMS_LOSS` 3, `ARM` 4, `DISARM` 5, `IGN_ON` 6, `IGN_OFF` 7 (`arg` 1 = cut by
+the on-time limit), `CFG_CHANGED` 8 (`arg` = `cfg_seq`), `BAD_CMD` 9.
+
+The pad also sends a GSE `HELLO` (role `Vehicle`, capabilities `PAD_STREAM`
+256, `PURGE` 512, `RADIO_ESPNOW` 1024) every 5 s and answers a host `PING`
+with a `PONG` for round-trip timing.
+
+### App-only extras
+
+`gse-app` keeps every GSE feature (LIVE/TEST modes, fill timer with
+pause/resume, FILL ↔ VEH interlocks, countdown with T-0 HOLD, E-STOP and
+link-loss latches) by running the GSE vehicle state machine
+(`gse_fw_core::vehicle`) in-process as a supervisor
+(`crates/gse-app/src/pad_link.rs`). Its outputs become the `PAD_CMD` stream
+(`FILL → fill`, `SRV → veh`, `IGN → ign` with ARM); an ACK is released to the
+console only once a fresh `PAD_STATE` shows the pad driving those outputs.
+While E-STOP, link loss or INHIBITED is latched the stream is the SAFE set
+(VEHICLE open) until RESET CONTROLS.
 
 ## Versioning
 

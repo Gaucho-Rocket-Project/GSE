@@ -10,10 +10,21 @@
 //!
 //! * USB -> radio: everything except frames addressed to GROUND
 //! * radio -> USB: frames addressed to HOST or BROADCAST, plus local ones
+//!
+//! With the ESP-NOW pad (GSE-simple control set, [`gse_proto::pad`]) the
+//! bridge also applies GSE-simple's laptop-bridge rules once the host has
+//! started the `PAD_CMD` stream:
+//!
+//! * a pad command arriving more than [`pad::HOST_STALE_MS`] after the
+//!   previous host frame is stale and dropped,
+//! * after [`pad::HOST_SILENT_MS`] of host silence the bridge itself streams
+//!   SAFE pad commands at 20 Hz, so a crashed app or a pulled cable cannot
+//!   hold a valve open.
 
+use gse_proto::pad::{self, PadCommand};
 use gse_proto::{
     encode_message, link_cfg_flags, AckResult, Endpoint, Event, EventCode, Frame, FrameDecoder,
-    Heartbeat, LinkConfig, LinkConfigAck, LinkStat, Message, Pong, Reason, StateSnapshot,
+    Heartbeat, LinkConfig, LinkConfigAck, LinkStat, Message, MsgType, Pong, Reason, StateSnapshot,
 };
 
 use crate::hal::{deadline_passed, elapsed_ms, GroundHal, Leds};
@@ -46,6 +57,13 @@ pub struct Ground<H: GroundHal> {
     uart_errors: u16,
     drops: u16,
     pending_link_cfg: Option<LinkConfig>,
+    /// Time of the last frame decoded from the host (any type).
+    last_host_frame: Option<u32>,
+    /// Last pad command relayed from the host; `Some` once the pad stream ran.
+    pad_stream: Option<PadCommand>,
+    last_safe_tx: u32,
+    pad_stale_drops: u32,
+    pad_safe_frames: u32,
 }
 
 impl<H: GroundHal> Ground<H> {
@@ -69,7 +87,22 @@ impl<H: GroundHal> Ground<H> {
             uart_errors: 0,
             drops: 0,
             pending_link_cfg: None,
+            last_host_frame: None,
+            pad_stream: None,
+            last_safe_tx: now,
+            pad_stale_drops: 0,
+            pad_safe_frames: 0,
         }
+    }
+
+    /// Pad commands dropped as stale (host gap > [`pad::HOST_STALE_MS`]).
+    pub fn pad_stale_drops(&self) -> u32 {
+        self.pad_stale_drops
+    }
+
+    /// SAFE pad commands the bridge generated during host silence.
+    pub fn pad_safe_frames(&self) -> u32 {
+        self.pad_safe_frames
     }
 
     pub fn hal(&self) -> &H {
@@ -152,6 +185,8 @@ impl<H: GroundHal> Ground<H> {
             }
         }
 
+        self.service_pad_safe_stream(now);
+
         if self.saw_host && elapsed_ms(now, self.last_linkstat_tx) >= LINKSTAT_PERIOD_MS {
             self.send_linkstat(now);
         }
@@ -175,6 +210,23 @@ impl<H: GroundHal> Ground<H> {
     }
 
     fn handle_usb_frame(&mut self, frame: Frame, now: u32) {
+        let host_gap_ok = self
+            .last_host_frame
+            .is_some_and(|t| elapsed_ms(now, t) <= pad::HOST_STALE_MS);
+        if frame.src == Endpoint::Host {
+            self.last_host_frame = Some(now);
+        }
+        if frame.msg_type == MsgType::PadCmd && frame.src == Endpoint::Host {
+            if let Some(Message::PadCmd(cmd)) = frame.message() {
+                self.pad_stream = Some(cmd);
+            }
+            // GSE-simple: the first command after a longer host gap is stale.
+            if !host_gap_ok {
+                self.pad_stale_drops = self.pad_stale_drops.wrapping_add(1);
+                self.drops = self.drops.wrapping_add(1);
+                return;
+            }
+        }
         if frame.dst == Endpoint::Ground {
             self.handle_local(frame, now, true);
             return;
@@ -267,6 +319,26 @@ impl<H: GroundHal> Ground<H> {
             }
             Some(Message::Heartbeat(Heartbeat { .. })) => {}
             _ => {}
+        }
+    }
+
+    /// GSE-simple laptop watchdog: host silent -> synthetic SAFE at 20 Hz.
+    fn service_pad_safe_stream(&mut self, now: u32) {
+        let Some(last) = self.pad_stream else {
+            return;
+        };
+        let silent = match self.last_host_frame {
+            Some(t) => elapsed_ms(now, t) >= pad::HOST_SILENT_MS,
+            None => true,
+        };
+        if !silent || elapsed_ms(now, self.last_safe_tx) < pad::CMD_PERIOD_MS {
+            return;
+        }
+        self.last_safe_tx = now;
+        let safe = PadCommand::safe(last.wdg_ds, last.ign_max_ds);
+        if self.send_radio(&Message::PadCmd(safe), Endpoint::Vehicle) {
+            self.pad_safe_frames = self.pad_safe_frames.wrapping_add(1);
+            self.frames_to_radio = self.frames_to_radio.wrapping_add(1);
         }
     }
 
@@ -395,6 +467,89 @@ mod tests {
         assert_eq!(frames[0].message(), Some(Message::Command(cmd)));
         assert_eq!(frames[0].src, Endpoint::Host);
         assert_eq!(frames[0].dst, Endpoint::Vehicle);
+    }
+
+    fn pad_cmd(fill: bool) -> Message {
+        Message::PadCmd(PadCommand {
+            fill,
+            veh: false,
+            ..PadCommand::safe(12, 6)
+        })
+    }
+
+    fn feed_host(ground: &mut Ground<MockGround>, msg: &Message) {
+        ground
+            .hal_mut()
+            .feed_usb_frame(msg, Endpoint::Host, Endpoint::Vehicle, 1);
+        ground.poll();
+    }
+
+    #[test]
+    fn pad_stream_drops_stale_first_command_then_forwards() {
+        let mut ground = new_ground();
+        ground.poll();
+        // First command of a session: no previous host frame -> stale.
+        feed_host(&mut ground, &pad_cmd(true));
+        assert!(ground.hal_mut().drain_radio_frames().is_empty());
+        assert_eq!(ground.pad_stale_drops(), 1);
+        ground.hal_mut().advance(50);
+        feed_host(&mut ground, &pad_cmd(true));
+        let frames = ground.hal_mut().drain_radio_frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].message(), Some(pad_cmd(true)));
+        // A 250 ms gap makes the next one stale again.
+        ground.hal_mut().advance(250);
+        feed_host(&mut ground, &pad_cmd(true));
+        assert!(ground
+            .hal_mut()
+            .drain_radio_frames()
+            .iter()
+            .all(|f| f.src != Endpoint::Host));
+    }
+
+    #[test]
+    fn host_silence_streams_safe_pad_commands() {
+        let mut ground = new_ground();
+        ground.poll();
+        feed_host(&mut ground, &pad_cmd(true));
+        ground.hal_mut().advance(20);
+        feed_host(&mut ground, &pad_cmd(true));
+        ground.hal_mut().drain_radio_frames();
+        let mut safe = Vec::new();
+        for _ in 0..60 {
+            ground.hal_mut().advance(10);
+            ground.poll();
+            safe.extend(ground.hal_mut().drain_radio_frames());
+        }
+        // 600 ms of silence: SAFE starts at 300 ms, then every 50 ms.
+        assert!((5..=8).contains(&safe.len()), "got {} frames", safe.len());
+        for f in &safe {
+            assert_eq!(f.src, Endpoint::Ground);
+            assert_eq!(f.dst, Endpoint::Vehicle);
+            // SAFE keeps the operator's watchdog and igniter limits.
+            assert_eq!(f.message(), Some(Message::PadCmd(PadCommand::safe(12, 6))));
+        }
+        // Host returns: the SAFE stream stops.
+        for _ in 0..10 {
+            ground.hal_mut().advance(10);
+            feed_host(&mut ground, &pad_cmd(false));
+        }
+        assert!(ground
+            .hal_mut()
+            .drain_radio_frames()
+            .iter()
+            .all(|f| f.src == Endpoint::Host));
+    }
+
+    #[test]
+    fn lora_sessions_never_see_the_pad_safe_stream() {
+        let mut ground = new_ground();
+        ground.poll();
+        for _ in 0..100 {
+            ground.hal_mut().advance(10);
+            ground.poll();
+        }
+        assert!(ground.hal_mut().drain_radio_frames().is_empty());
     }
 
     #[test]

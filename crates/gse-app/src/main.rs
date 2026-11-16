@@ -12,6 +12,7 @@ mod engine;
 mod http;
 mod json;
 mod logging;
+mod pad_link;
 mod paths;
 #[cfg(feature = "pingpong-regression")]
 mod pingpong_test;
@@ -38,7 +39,8 @@ const SIM_ADDR: &str = "127.0.0.1:8787";
 const SIM_SPEC: &str = "tcp:127.0.0.1:8787";
 
 const USAGE: &str = "\
-GSE - ground support equipment for NUCLEO-H753ZI + DX-LR42-24T12D / E28-2G4M27S
+GSE - ground support equipment: ESP32 + ESP-NOW (GSE-simple pad, default)
+      or NUCLEO-H753ZI + DX-LR42-24T12D / E28-2G4M27S
 
 USAGE:
     gse-app [OPTIONS]
@@ -49,7 +51,8 @@ OPTIONS:
                           tcp:host:port, or 'auto' (default)
     --baud <RATE>         USB CDC serial baud rate (default 115200)
     --uart-baud <RATE>    MCU <-> UART radio baud rate (default 9600)
-    --radio <MODULE>      Radio module: dx-lr42-24t12d (default) or e28-2g4m27s
+    --radio <MODULE>      Link: esp-now (default; ESP32 pad, GSE-simple control set),
+                          dx-lr42-24t12d or e28-2g4m27s (NUCLEO + LoRa)
     --config <PATH>       Configuration file
     --host <ADDR>         Console bind address (default 127.0.0.1)
     --http-port <PORT>    Console HTTP port (default 8765)
@@ -137,7 +140,7 @@ impl Options {
                     opts.radio = Some(gse_proto::radio::RadioModule::parse(&text).ok_or_else(
                         || {
                             format!(
-                                "invalid radio module '{text}' (expected dx-lr42-24t12d or e28-2g4m27s)"
+                                "invalid radio module '{text}' (expected esp-now, dx-lr42-24t12d or e28-2g4m27s)"
                             )
                         },
                     )?);
@@ -283,7 +286,7 @@ fn run(opts: Options) -> Result<(), String> {
     let mut port_override = None;
     if opts.sim {
         port_override = Some(SIM_SPEC.to_string());
-        spawn_simulator(&opts);
+        spawn_simulator(&opts, config.radio);
     } else if config.port != "auto" {
         port_override = Some(config.port.clone());
     }
@@ -446,7 +449,7 @@ fn open_browser(url: &str) -> std::io::Result<()> {
 }
 
 /// Start `gse-sim` from next to the executable when running in simulation mode.
-fn spawn_simulator(opts: &Options) {
+fn spawn_simulator(opts: &Options, radio: gse_proto::radio::RadioModule) {
     if std::net::TcpStream::connect(SIM_ADDR).is_ok() {
         return;
     }
@@ -467,7 +470,7 @@ fn spawn_simulator(opts: &Options) {
         return;
     }
     match Command::new(&candidate)
-        .args(["--listen", SIM_ADDR])
+        .args(["--listen", SIM_ADDR, "--radio", radio.id()])
         .spawn()
     {
         Ok(mut child) => {

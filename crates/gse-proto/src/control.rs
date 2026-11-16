@@ -67,6 +67,14 @@ pub enum MsgType {
     Heartbeat = 0x09,
     LinkConfig = 0x0A,
     LinkConfigAck = 0x0B,
+    /// GSE-simple pad command stream (host -> pad, 20 Hz). See [`crate::pad`].
+    PadCmd = 0x10,
+    /// GSE-simple pad telemetry (pad -> host, 10 Hz).
+    PadState = 0x11,
+    /// GSE-simple pad event (pad -> host, on change).
+    PadEvent = 0x12,
+    /// GSE-simple pad configuration (host -> pad, on change).
+    PadConfig = 0x13,
 }
 
 impl MsgType {
@@ -87,6 +95,10 @@ impl MsgType {
             0x09 => Some(MsgType::Heartbeat),
             0x0A => Some(MsgType::LinkConfig),
             0x0B => Some(MsgType::LinkConfigAck),
+            0x10 => Some(MsgType::PadCmd),
+            0x11 => Some(MsgType::PadState),
+            0x12 => Some(MsgType::PadEvent),
+            0x13 => Some(MsgType::PadConfig),
             _ => None,
         }
     }
@@ -104,6 +116,10 @@ impl MsgType {
             MsgType::Heartbeat => "HEARTBEAT",
             MsgType::LinkConfig => "LINKCFG",
             MsgType::LinkConfigAck => "LINKCFG_ACK",
+            MsgType::PadCmd => "PAD_CMD",
+            MsgType::PadState => "PAD_STATE",
+            MsgType::PadEvent => "PAD_EVENT",
+            MsgType::PadConfig => "PAD_CFG",
         }
     }
 }

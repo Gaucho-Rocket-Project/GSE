@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use gse_proto::pad;
 use gse_proto::radio::RadioModule;
 use gse_proto::{MAX_COUNTDOWN_SECONDS, MAX_FILL_SECONDS, MIN_COUNTDOWN_SECONDS, MIN_FILL_SECONDS};
 
@@ -47,6 +48,8 @@ pub const SHORTCUT_ACTIONS: &[(&str, &str)] = &[
     ("reset_controls", "Reset all controls to OFF/SAFE"),
     ("reset_fill", "Reset fill sequence"),
     ("clear_faults", "Clear latched faults"),
+    ("arm_toggle", "ARM / DISARM igniter (ESP-NOW pad)"),
+    ("purge_toggle", "PURGE OPEN / CLOSE (ESP-NOW pad)"),
 ];
 
 pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
@@ -58,6 +61,8 @@ pub const DEFAULT_SHORTCUTS: &[(&str, &str)] = &[
     ("reset_controls", "Shift+R"),
     ("reset_fill", "R"),
     ("clear_faults", "Shift+C"),
+    ("arm_toggle", "A"),
+    ("purge_toggle", "P"),
 ];
 
 /// Supported USB CDC (`USART3` host <-> ground board) baud rates.
@@ -77,8 +82,17 @@ pub struct Config {
     pub baud: u32,
     /// Board UART (`USART6`) baud rate between MCU and UART radio module.
     pub uart_baud: u32,
-    /// Active 2.4 GHz radio transceiver module (`DX-LR42-24T12D` or `E28-2G4M27S`).
+    /// Active 2.4 GHz link: `DX-LR42-24T12D` / `E28-2G4M27S` on the NUCLEO
+    /// boards, or ESP-NOW on the ESP32 boards (GSE-simple pad control set).
     pub radio: RadioModule,
+    /// ESP-NOW pad: link watchdog in deciseconds (`3..=30`, default 1.0 s).
+    pub pad_wdg_ds: u8,
+    /// ESP-NOW pad: igniter on-time limit per press, deciseconds (`1..=20`).
+    pub pad_ign_max_ds: u8,
+    /// ESP-NOW pad: servo travel, degrees each side of neutral (`5..=90`).
+    pub pad_travel_fill: u8,
+    pub pad_travel_veh: u8,
+    pub pad_travel_prg: u8,
     pub confirm_ign: bool,
     pub sound: bool,
     pub host: String,
@@ -95,7 +109,13 @@ impl Default for Config {
             port: "auto".to_string(),
             baud: gse_proto::USB_BAUD,
             uart_baud: gse_proto::RADIO_BAUD,
-            radio: RadioModule::DxLr42,
+            // This branch is the ESP32 + ESP-NOW version of GSE.
+            radio: RadioModule::EspNow,
+            pad_wdg_ds: pad::DEFAULT_WDG_DS,
+            pad_ign_max_ds: pad::DEFAULT_IGN_MAX_DS,
+            pad_travel_fill: pad::DEFAULT_TRAVEL_DEG,
+            pad_travel_veh: pad::DEFAULT_TRAVEL_DEG,
+            pad_travel_prg: pad::DEFAULT_TRAVEL_DEG,
             confirm_ign: true,
             sound: true,
             host: "127.0.0.1".to_string(),
@@ -163,6 +183,11 @@ impl Config {
         if !UART_BAUDS.contains(&self.uart_baud) {
             self.uart_baud = gse_proto::RADIO_BAUD;
         }
+        self.pad_wdg_ds = pad::clamp_wdg_ds(self.pad_wdg_ds);
+        self.pad_ign_max_ds = pad::clamp_ign_max_ds(self.pad_ign_max_ds);
+        self.pad_travel_fill = pad::clamp_travel(self.pad_travel_fill);
+        self.pad_travel_veh = pad::clamp_travel(self.pad_travel_veh);
+        self.pad_travel_prg = pad::clamp_travel(self.pad_travel_prg);
         self.port = self.port.trim().to_string();
         if self.port.is_empty() {
             self.port = "auto".to_string();
@@ -206,6 +231,15 @@ impl Config {
         json::field(&mut out, "baud", &self.baud.to_string());
         json::field(&mut out, "uart_baud", &self.uart_baud.to_string());
         json::field(&mut out, "radio", &json::quoted(self.radio.id()));
+        json::field(&mut out, "pad_wdg_ds", &self.pad_wdg_ds.to_string());
+        json::field(&mut out, "pad_ign_max_ds", &self.pad_ign_max_ds.to_string());
+        json::field(
+            &mut out,
+            "pad_travel_fill",
+            &self.pad_travel_fill.to_string(),
+        );
+        json::field(&mut out, "pad_travel_veh", &self.pad_travel_veh.to_string());
+        json::field(&mut out, "pad_travel_prg", &self.pad_travel_prg.to_string());
         json::field(&mut out, "confirm_ign", json::bool_json(self.confirm_ign));
         json::field(&mut out, "sound", json::bool_json(self.sound));
         json::field(&mut out, "host", &json::quoted(&self.host));
@@ -246,6 +280,17 @@ impl Config {
         if let Some(v) = value.get("radio").and_then(Value::as_str) {
             if let Some(radio) = RadioModule::parse(v) {
                 cfg.radio = radio;
+            }
+        }
+        for (key, slot) in [
+            ("pad_wdg_ds", &mut cfg.pad_wdg_ds),
+            ("pad_ign_max_ds", &mut cfg.pad_ign_max_ds),
+            ("pad_travel_fill", &mut cfg.pad_travel_fill),
+            ("pad_travel_veh", &mut cfg.pad_travel_veh),
+            ("pad_travel_prg", &mut cfg.pad_travel_prg),
+        ] {
+            if let Some(v) = value.get(key).and_then(Value::as_i64) {
+                *slot = v.clamp(0, u8::MAX as i64) as u8;
             }
         }
         if let Some(v) = value.get("confirm_ign").and_then(Value::as_bool) {
@@ -322,6 +367,14 @@ impl Config {
             "  \"radio\": {},\n",
             json::quoted(self.radio.id())
         ));
+        out.push_str(&format!("  \"pad_wdg_ds\": {},\n", self.pad_wdg_ds));
+        out.push_str(&format!("  \"pad_ign_max_ds\": {},\n", self.pad_ign_max_ds));
+        out.push_str(&format!(
+            "  \"pad_travel_fill\": {},\n",
+            self.pad_travel_fill
+        ));
+        out.push_str(&format!("  \"pad_travel_veh\": {},\n", self.pad_travel_veh));
+        out.push_str(&format!("  \"pad_travel_prg\": {},\n", self.pad_travel_prg));
         out.push_str(&format!("  \"confirm_ign\": {},\n", self.confirm_ign));
         out.push_str(&format!("  \"sound\": {},\n", self.sound));
         out.push_str(&format!("  \"host\": {},\n", json::quoted(&self.host)));
@@ -358,6 +411,11 @@ mod tests {
             baud: 230_400,
             uart_baud: 57_600,
             radio: RadioModule::E28_2G4M27S,
+            pad_wdg_ds: 15,
+            pad_ign_max_ds: 8,
+            pad_travel_fill: 90,
+            pad_travel_veh: 60,
+            pad_travel_prg: 30,
             confirm_ign: false,
             ..Config::default()
         };
@@ -370,7 +428,7 @@ mod tests {
     #[test]
     fn clamping_and_repair() {
         let value = json::parse(
-            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"uart_baud":777,"port":"  ","host":"","http_port":80,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
+            r#"{"op_mode":"test","fill_seconds":9999,"countdown_seconds":0,"baud":1234,"uart_baud":777,"port":"  ","host":"","http_port":80,"pad_wdg_ds":1,"pad_ign_max_ds":250,"pad_travel_fill":2,"shortcuts":{"fill_toggle":"","srv_toggle":"G"}}"#,
         )
         .unwrap();
         let cfg = Config::from_json(&value).unwrap();
@@ -379,7 +437,11 @@ mod tests {
         assert_eq!(cfg.countdown_seconds, MIN_COUNTDOWN_SECONDS);
         assert_eq!(cfg.baud, 115_200);
         assert_eq!(cfg.uart_baud, 9_600);
-        assert_eq!(cfg.radio, RadioModule::DxLr42);
+        assert_eq!(cfg.radio, RadioModule::EspNow);
+        assert_eq!(cfg.pad_wdg_ds, pad::MIN_WDG_DS);
+        assert_eq!(cfg.pad_ign_max_ds, pad::MAX_IGN_MAX_DS);
+        assert_eq!(cfg.pad_travel_fill, pad::MIN_TRAVEL_DEG);
+        assert_eq!(cfg.pad_travel_veh, pad::DEFAULT_TRAVEL_DEG);
         assert_eq!(cfg.port, "auto");
         assert_eq!(cfg.host, "127.0.0.1");
         assert_eq!(cfg.http_port, 8765);
@@ -412,9 +474,8 @@ mod tests {
         assert_eq!(parsed.get("op_mode").unwrap().as_str(), Some("live"));
         assert_eq!(parsed.get("fill_seconds").unwrap().as_u64(), Some(60));
         assert_eq!(parsed.get("uart_baud").unwrap().as_u64(), Some(9_600));
-        assert_eq!(
-            parsed.get("radio").unwrap().as_str(),
-            Some("dx-lr42-24t12d")
-        );
+        assert_eq!(parsed.get("radio").unwrap().as_str(), Some("esp-now"));
+        assert_eq!(parsed.get("pad_wdg_ds").unwrap().as_u64(), Some(10));
+        assert_eq!(parsed.get("pad_travel_prg").unwrap().as_u64(), Some(45));
     }
 }
