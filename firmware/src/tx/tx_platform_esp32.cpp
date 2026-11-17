@@ -168,10 +168,13 @@ void loop()
         static uint32_t lastRx;
         uint32_t rx = st->rx_state + st->rx_event;
         if (rx != lastRx || millis() < 12000) {
-            gse_log("tx fwd=%lu state=%lu safe=%lu dropped=%lu radio=%s",
+            gse_log("tx fwd=%lu state=%lu safe=%lu dropped=%lu ping=%lu pong=%lu rtt=%lums radio=%s",
                     (unsigned long)st->forwarded_cmd,
                     (unsigned long)st->rx_state, (unsigned long)st->safe_frames,
                     (unsigned long)st->dropped_stale,
+                    (unsigned long)st->ping_sent,
+                    (unsigned long)st->pong_received,
+                    (unsigned long)st->last_pong_rtt_ms,
                     st->radio_present ? "ok" : "FAULT");
             lastRx = rx;
         }

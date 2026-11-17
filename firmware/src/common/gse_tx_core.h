@@ -36,6 +36,11 @@ typedef struct {
     uint32_t dropped_stale;
     uint32_t rx_state;
     uint32_t rx_event;
+    uint32_t ping_sent;
+    uint32_t pong_received;
+    uint32_t pong_unmatched;
+    uint32_t last_pong_rtt_ms;
+    uint32_t last_pad_uptime_ms;
     uint32_t rx_frames;      /* every frame off the air, any type            */
     uint32_t bad_host_frames;
     bool     radio_present;

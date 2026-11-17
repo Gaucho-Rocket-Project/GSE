@@ -61,6 +61,8 @@ extern "C" {
 
 /* frame types */
 #define GSE_T_HELLO           0x01u   /* tx -> pad, also pad -> tx on boot      */
+#define GSE_T_PING            0x02u   /* tx -> pad, application-level link test */
+#define GSE_T_PONG            0x03u   /* pad -> tx, matching PING response       */
 #define GSE_T_CMD             0x10u   /* tx -> pad, 20 Hz                       */
 #define GSE_T_STATE           0x11u   /* pad -> tx, 10 Hz                       */
 #define GSE_T_EVENT           0x12u   /* pad -> tx, on change / fault           */
@@ -75,6 +77,10 @@ extern "C" {
 
 /* command flag bits */
 #define GSE_CF_REQ_ACK        0x01u
+#define GSE_CF_ESTOP          0x02u   /* latched operator emergency stop        */
+#define GSE_CF_SEQ_READY      0x04u   /* fill completed or deliberately paused  */
+#define GSE_CF_TEST_MODE      0x08u   /* independent SRV/IGN checkout mode      */
+#define GSE_CF_CLEAR_FAULTS   0x10u   /* operator requested a safe-state reset  */
 
 /* state flag bits */
 #define GSE_ST_LINK_OK        0x01u
@@ -83,6 +89,8 @@ extern "C" {
 #define GSE_ST_IGN_ON         0x08u   /* relay actually energised               */
 #define GSE_ST_COMMS_LOSS     0x10u   /* watchdog has expired                   */
 #define GSE_ST_HELLO_OK       0x20u   /* handshake complete                     */
+#define GSE_ST_ESTOP          0x40u   /* pad is holding the emergency safe set  */
+#define GSE_ST_SEQ_READY      0x80u   /* downstream launch channels are unlocked */
 
 /* igniter inhibit-source bits, packed into gse_state_t.ign_src */
 #define GSE_IGN_SRC_CMD       0x01u   /* operator commanded ignition            */
@@ -110,6 +118,16 @@ static inline uint16_t gse_crc16(const uint8_t *d, size_t n)
 /* --------------------------------------------------------------- structures */
 #pragma pack(push, 1)
 
+typedef struct {                    /* 8 bytes, GSE_T_PING                    */
+    uint32_t nonce;                 /* chosen by TX, returned unchanged       */
+    uint32_t host_ms;               /* TX uptime when the PING was sent       */
+} gse_ping_t;
+
+typedef struct {                    /* 8 bytes, GSE_T_PONG                    */
+    uint32_t nonce;                 /* matching PING nonce                    */
+    uint32_t uptime_ms;             /* pad uptime when the PONG was sent      */
+} gse_pong_t;
+
 typedef struct {                    /* 12 bytes, GSE_T_CMD                    */
     uint8_t arm_code;               /* GSE_ARM_CODE while arming, else 0      */
     uint8_t fill;                   /* 0/1                                    */
@@ -120,8 +138,7 @@ typedef struct {                    /* 12 bytes, GSE_T_CMD                    */
     uint8_t ign_max_ds;             /* 0 = default                            */
     uint8_t flags;                  /* GSE_CF_*                               */
     uint16_t tx_ms;                 /* sender millis, wraps, for staleness    */
-    uint8_t ign_wdg;                /* 1 = allow watchdog to fire igniter     */
-    uint8_t reserved;
+    uint16_t fill_limit_ds;         /* local fill auto-off, deciseconds; 0=off */
 } gse_cmd_t;
 
 typedef struct {                    /* 24 bytes, GSE_T_STATE                  */
@@ -176,6 +193,10 @@ typedef struct {                    /* 3 bytes, GSE_T_EVENT                   */
 #define GSE_EV_IGN_OFF        7u
 #define GSE_EV_CFG_CHANGED    8u
 #define GSE_EV_BAD_CMD        9u
+#define GSE_EV_FILL_AUTO_OFF  10u
+#define GSE_EV_ESTOP          11u
+#define GSE_EV_RESET          12u
+#define GSE_EV_SAFETY_REJECT  13u
 
 /* ------------------------------------------------------------ encode/decode */
 static inline size_t gse_encode(uint8_t type, uint8_t seq,
@@ -261,6 +282,12 @@ static inline int gse_parser_push(gse_parser_t *p, uint8_t b,
 static inline size_t gse_encode_cmd(uint8_t seq, const gse_cmd_t *c, uint8_t *out)
 { return gse_encode(GSE_T_CMD, seq, c, (uint8_t)sizeof(*c), out); }
 
+static inline size_t gse_encode_ping(uint8_t seq, const gse_ping_t *p, uint8_t *out)
+{ return gse_encode(GSE_T_PING, seq, p, (uint8_t)sizeof(*p), out); }
+
+static inline size_t gse_encode_pong(uint8_t seq, const gse_pong_t *p, uint8_t *out)
+{ return gse_encode(GSE_T_PONG, seq, p, (uint8_t)sizeof(*p), out); }
+
 static inline size_t gse_encode_state(uint8_t seq, const gse_state_t *s, uint8_t *out)
 { return gse_encode(GSE_T_STATE, seq, s, (uint8_t)sizeof(*s), out); }
 
@@ -317,17 +344,30 @@ static inline void gse_failsafe(const gse_cmd_t *last, uint16_t age_ms,
         return;
     }
 
-    /* normal pass-through, igniter gated by the arm interlock and the
-       optional watchdog-triggered ignition feature                     */
-    o->fill = last->fill ? 1u : 0u;
-    o->veh  = last->veh  ? 1u : 0u;
-    o->prg  = last->prg  ? 1u : 0u;
+    /* E-STOP is evaluated by the pad, not merely trusted to the GUI. */
+    if (last->flags & GSE_CF_ESTOP) {
+        o->fill = 0; o->prg = 0; o->veh = 1; o->ign = 0;
+        o->armed = 0; o->ign_src = 0;
+        return;
+    }
 
-    uint8_t wdg_ign = (uint8_t)(last->ign_wdg && o->comms_loss); /* never */
-    uint8_t cmd_ign = (uint8_t)(last->ign && armed && fresh);
-    o->ign     = (uint8_t)((cmd_ign || wdg_ign) ? 1u : 0u);
-    o->ign_src = (uint8_t)((cmd_ign ? GSE_IGN_SRC_CMD : 0u) |
-                           (wdg_ign ? GSE_IGN_SRC_WDG : 0u));
+    /* Main-GSE launch interlocks, adapted to gse-simple's output names:
+       FILL is exclusive with VEHICLE; VEHICLE/IGN stay locked until a timed
+       fill has completed or the operator deliberately paused it; IGN also
+       requires ARM, a fresh link, VEHICLE open and FILL closed. */
+    uint8_t seq_ready = (uint8_t)((last->flags & GSE_CF_SEQ_READY) != 0u);
+    if (last->fill) {
+        o->fill = 1; o->veh = 0; o->prg = 0; o->ign = 0; o->ign_src = 0;
+        return;
+    }
+
+    o->fill = 0;
+    o->veh  = (uint8_t)((last->veh && seq_ready) ? 1u : 0u);
+    o->prg  = last->prg ? 1u : 0u;
+
+    uint8_t cmd_ign = (uint8_t)(last->ign && armed && fresh && seq_ready && o->veh);
+    o->ign     = cmd_ign;
+    o->ign_src = cmd_ign ? GSE_IGN_SRC_CMD : 0u;
 }
 
 #ifdef __cplusplus

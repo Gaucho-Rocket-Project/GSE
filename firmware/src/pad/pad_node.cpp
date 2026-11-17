@@ -83,6 +83,10 @@ static uint32_t  ignOnSince = 0;
 static bool      ignOn      = false;
 static bool      ignSpent   = false;   /* set by the on-time limit, cleared
                                           only when the request is released */
+static uint32_t  fillDeadlineMs = 0;
+static bool      fillTimedOut = false;
+static bool      estopSeen = false, clearFaultSeen = false;
+static uint8_t   lastRejectReason = 0;
 static uint32_t  lastPulseMs = 0, lastStateMs = 0, t0Ms = 0;
 static uint8_t   seqOut = 0;
 static char      cfgFault[40] = {0};
@@ -125,26 +129,42 @@ static void led_show(uint8_t mode, bool ph)
 /* 50 Hz, 12-bit LEDC: period 20 000 us == 4096 counts -> 0.2048 counts/us  */
 #define US_TO_DUTY(us) ((uint32_t)(((uint32_t)(us) * 4096u) / 20000u))
 
-static inline void servoUs(int idx, int state01, uint8_t travelDeg)
+/* One row per servo output.  The two vehicle-valve servos (fuel and oxidizer)
+ * both follow the VEHICLE command and share its travel; each has its own pin,
+ * direction and trim (config.h).  A pin of -1 means "not fitted" -- VEH2 is -1
+ * when both vehicle servos hang off one pin through a Y-harness.  The row
+ * index is also the LEDC channel on the 2.x core. */
+enum { SRV_FILL, SRV_VEH, SRV_VEH2, SRV_PRG, SRV_COUNT };
+struct ServoOut { int pin; uint8_t travelIdx; bool reversed; int trimUs; };
+static const ServoOut kServos[SRV_COUNT] = {
+    { PIN_SERVO_FILL, 0, GSE_SERVO_FILL_REV != 0, GSE_SERVO_FILL_TRIM_US },
+    { PIN_SERVO_VEH,  1, GSE_SERVO_VEH_REV  != 0, GSE_SERVO_VEH_TRIM_US  },
+    { PIN_SERVO_VEH2, 1, GSE_SERVO_VEH2_REV != 0, GSE_SERVO_VEH2_TRIM_US },
+    { PIN_SERVO_PRG,  2, GSE_SERVO_PRG_REV  != 0, GSE_SERVO_PRG_TRIM_US  },
+};
+
+static inline void servoUs(int ch, int state01)
 {
-    static const uint8_t pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
-    int deg  = constrain((int)travelDeg, SERVO_MIN_TRAVEL, SERVO_MAX_TRAVEL);
-    int span = (SERVO_MAX_US - SERVO_MIN_US) / 2;               /* 500us / 45deg */
-    int us   = SERVO_NEUTRAL_US + (state01 ? span * deg / 45 : -span * deg / 45);
+    const ServoOut &s = kServos[ch];
+    if (s.pin < 0) return;                         /* not fitted            */
+    int deg  = constrain((int)travel[s.travelIdx], SERVO_MIN_TRAVEL, SERVO_MAX_TRAVEL);
+    int off  = SERVO_US_PER_45DEG * deg / 45;      /* scale, not the clamp  */
+    bool open = (state01 != 0) != s.reversed;      /* mirrored servo        */
+    int us   = SERVO_NEUTRAL_US + s.trimUs + (open ? off : -off);
     us = constrain(us, SERVO_MIN_US, SERVO_MAX_US);
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    ledcWrite(pins[idx], US_TO_DUTY(us));          /* core 3.x: pin-keyed   */
+    ledcWrite(s.pin, US_TO_DUTY(us));              /* core 3.x: pin-keyed   */
 #else
-    (void)pins;
-    ledcWrite(idx, US_TO_DUTY(us));                /* core 2.x: channel     */
+    ledcWrite(ch, US_TO_DUTY(us));                 /* core 2.x: channel     */
 #endif
 }
 
 static void driveOutputs(const gse_outputs_t &o)
 {
-    servoUs(0, o.fill, travel[0]);
-    servoUs(1, o.veh,  travel[1]);
-    servoUs(2, allowPurge ? o.prg : 0, travel[2]);              /* never purge */
+    servoUs(SRV_FILL, o.fill);
+    servoUs(SRV_VEH,  o.veh);
+    servoUs(SRV_VEH2, o.veh);                      /* same command, own pin */
+    servoUs(SRV_PRG,  allowPurge ? o.prg : 0);                  /* never purge */
 }
 
 /* Outgoing frames are bare 7E packets.  On LoRa the link adds the fixed-point
@@ -171,8 +191,20 @@ static void onFrame(uint8_t type, uint8_t, const uint8_t *pl, uint8_t len, void 
      * partial initialization must never revive outputs after a link fault. */
     if (cfgFault[0]) return;
     switch (type) {
+    case GSE_T_PING: {
+        if (len != sizeof(gse_ping_t)) { crcErr++; return; }
+        gse_ping_t ping; memcpy(&ping, pl, sizeof ping);
+        gse_pong_t pong = { ping.nonce, millis() - t0Ms };
+        sendFrame(GSE_T_PONG, &pong, sizeof pong);
+        /* Deliberately do not touch haveCmd, lastCmdMs or rxCount.  A working
+         * radio path is not permission to keep actuator commands alive. */
+        break;
+    }
+
     case GSE_T_CMD:
         if (len != sizeof(gse_cmd_t)) { crcErr++; return; }
+        {
+        bool wasFill = haveCmd && lastCmd.fill && !(lastCmd.flags & GSE_CF_ESTOP);
         memcpy(&lastCmd, pl, sizeof lastCmd);
         haveCmd   = true;
         lastCmdMs = millis();
@@ -183,7 +215,38 @@ static void onFrame(uint8_t type, uint8_t, const uint8_t *pl, uint8_t len, void 
         if (lastCmd.ign_max_ds)
             cfg.ign_max_ds = constrain(lastCmd.ign_max_ds, GSE_IGN_MAX_DS_MIN,
                                        GSE_IGN_MAX_DS_MAX);
+
+        bool wantsFill = lastCmd.fill && !(lastCmd.flags & GSE_CF_ESTOP);
+        if (wantsFill && !wasFill) {
+            fillTimedOut = false;
+            fillDeadlineMs = lastCmd.fill_limit_ds
+                ? millis() + (uint32_t)lastCmd.fill_limit_ds * 100u : 0u;
+        } else if (!wantsFill) {
+            fillDeadlineMs = 0;
+            fillTimedOut = false;
+        }
+
+        bool estop = (lastCmd.flags & GSE_CF_ESTOP) != 0;
+        if (estop && !estopSeen) sendEvent(GSE_EV_ESTOP, 0);
+        estopSeen = estop;
+        bool clear = (lastCmd.flags & GSE_CF_CLEAR_FAULTS) != 0;
+        if (clear && !clearFaultSeen && !estop) {
+            ignSpent = false;
+            fillTimedOut = false;
+            sendEvent(GSE_EV_RESET, 0);
+        }
+        clearFaultSeen = clear;
+
+        uint8_t reject = 0;
+        if (!estop && lastCmd.fill && (lastCmd.veh || lastCmd.ign)) reject = 1;
+        else if (!estop && lastCmd.veh && !(lastCmd.flags & GSE_CF_SEQ_READY)) reject = 2;
+        else if (!estop && lastCmd.ign &&
+                 (!(lastCmd.flags & GSE_CF_SEQ_READY) || !lastCmd.veh || lastCmd.fill)) reject = 3;
+        if (reject && reject != lastRejectReason)
+            sendEvent(GSE_EV_SAFETY_REJECT, reject);
+        lastRejectReason = reject;
         break;
+        }
 
     case GSE_T_CFG: {
         if (len != sizeof(gse_cfgs_t)) { crcErr++; return; }
@@ -221,7 +284,9 @@ static void sendState(uint16_t age, const gse_outputs_t &o)
                              (o.armed ? GSE_ST_ARMED : 0) |
                              (ignOn ? GSE_ST_IGN_ON : 0) |
                              (o.comms_loss ? GSE_ST_COMMS_LOSS : 0) |
-                             (padState == GSE_PAD_RUN ? GSE_ST_HELLO_OK : 0));
+                             (padState == GSE_PAD_RUN ? GSE_ST_HELLO_OK : 0) |
+                             (haveCmd && (lastCmd.flags & GSE_CF_ESTOP) ? GSE_ST_ESTOP : 0) |
+                             (haveCmd && (lastCmd.flags & GSE_CF_SEQ_READY) ? GSE_ST_SEQ_READY : 0));
     s.out_fill   = o.fill;  s.out_veh = o.veh; s.out_prg = allowPurge ? o.prg : 0; s.out_ign = ignOn ? 1 : 0;
     s.ign_src    = o.ign_src;
     s.age_ms     = age;
@@ -280,12 +345,15 @@ void setup()
     pinMode(PIN_HB, OUTPUT);
     diag::led_pin_begin();                    /* plain LED board only      */
 
-    const int pins[3] = { PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG };
+    for (int ch = 0; ch < SRV_COUNT; ++ch) {
+        if (kServos[ch].pin < 0) continue;             /* not fitted          */
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
-    for (int i = 0; i < 3; ++i) ledcAttach(pins[i], 50, 12);
+        ledcAttach(kServos[ch].pin, 50, 12);
 #else
-    for (int ch = 0; ch < 3; ++ch) { ledcSetup(ch, 50, 12); ledcAttachPin(pins[ch], ch); }
+        ledcSetup(ch, 50, 12);
+        ledcAttachPin(kServos[ch].pin, ch);
 #endif
+    }
 
     gse_outputs_t safe;
     gse_cfg_t bootCfg = cfg;
@@ -293,9 +361,15 @@ void setup()
     driveOutputs(safe);                                /* safe before radio  */
 
     diag::begin();
-    diag::line("PAD boot fw %u.%u board=%s pins FILL=%d VEH=%d PRG=%d IGN=%d HB=%d",
+    diag::line("PAD boot fw %u.%u board=%s pins FILL=%d VEH=%d VEH2=%d PRG=%d IGN=%d HB=%d",
                GSE_FW_MAJOR, GSE_FW_MINOR, GSE_BOARD_NAME,
-               PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_PRG, PIN_RELAY_IGN, PIN_HB);
+               PIN_SERVO_FILL, PIN_SERVO_VEH, PIN_SERVO_VEH2, PIN_SERVO_PRG,
+               PIN_RELAY_IGN, PIN_HB);
+    diag::line("PAD servo rev/trim(us) FILL=%d/%d VEH=%d/%d VEH2=%d/%d PRG=%d/%d",
+               GSE_SERVO_FILL_REV, GSE_SERVO_FILL_TRIM_US,
+               GSE_SERVO_VEH_REV,  GSE_SERVO_VEH_TRIM_US,
+               GSE_SERVO_VEH2_REV, GSE_SERVO_VEH2_TRIM_US,
+               GSE_SERVO_PRG_REV,  GSE_SERVO_PRG_TRIM_US);
     led_show(LED_BOOT, false);                 /* blue / solid: booting    */
 
     /* The transport, named in the log before anything can fail.  A pad and a
@@ -386,6 +460,18 @@ void loop()
     uint16_t age = validCmd ? (uint16_t)min<uint32_t>(now - lastCmdMs, 0xFFFE) : 0xFFFF;
     gse_outputs_t o;
     gse_failsafe(validCmd ? &lastCmd : nullptr, age, &cfg, &o);
+
+    /* The host owns the visible timer, but the pad owns this independent
+     * backstop.  A frozen GUI that keeps sending the same fresh FILL command
+     * cannot hold the valve open past the duration carried on its rising edge. */
+    if (o.fill && fillDeadlineMs &&
+        (int32_t)(now - fillDeadlineMs) >= 0) {
+        o.fill = 0;
+        if (!fillTimedOut) {
+            fillTimedOut = true;
+            sendEvent(GSE_EV_FILL_AUTO_OFF, 0);
+        }
+    }
 
     /* 3. 50 Hz output refresh + hardware keep-alive ----------------------- */
     if (now - lastPulseMs >= SERVO_REFRESH_MS) {

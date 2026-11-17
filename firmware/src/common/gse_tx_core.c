@@ -37,7 +37,7 @@
 #define GSE_FW_MAJOR   1u
 #endif
 #ifndef GSE_FW_MINOR
-#define GSE_FW_MINOR   0u
+#define GSE_FW_MINOR   1u
 #endif
 #ifndef GSE_PLATFORM_NAME
 #define GSE_PLATFORM_NAME "esp32"
@@ -61,6 +61,9 @@ static gse_parser_t s_air, s_host;
 static gse_cmd_t    s_last_cmd;
 static uint32_t     s_last_host_ms;
 static uint32_t     s_last_safe_ms;
+static uint32_t     s_ping_nonce;
+static uint32_t     s_pending_ping_nonce;
+static uint32_t     s_pending_ping_ms;
 static uint8_t      s_seq_air, s_seq_host;
 static uint32_t     s_dropped_stale, s_forwarded, s_rx_frames;
 static uint8_t      s_level = GSE_TX_LEVEL_DEFAULT;
@@ -91,6 +94,7 @@ static void air_safe_command(void)
     gse_cmd_t c;
     memset(&c, 0, sizeof c);
     c.veh        = 1;                                   /* VEHICLE OPEN   */
+    c.flags      = GSE_CF_ESTOP;                        /* pad enforces it */
     c.wdg_ds     = s_last_cmd.wdg_ds ? s_last_cmd.wdg_ds : GSE_DEF_WDG_DS;
     c.ign_max_ds = s_last_cmd.ign_max_ds ? s_last_cmd.ign_max_ds
                                          : GSE_DEF_IGN_MAX_DS;
@@ -110,6 +114,31 @@ static void on_air(uint8_t type, uint8_t seq, const uint8_t *pl, uint8_t len, vo
 {
     (void)seq; (void)ctx;
     s_rx_frames++;
+
+    if (type == GSE_T_PONG) {
+        if (len != sizeof(gse_pong_t)) {
+            s_stats.pong_unmatched++;
+            gse_log("PONG malformed len=%u", (unsigned)len);
+            return;
+        }
+        gse_pong_t pong;
+        memcpy(&pong, pl, sizeof pong);
+        if (!s_pending_ping_nonce || pong.nonce != s_pending_ping_nonce) {
+            s_stats.pong_unmatched++;
+            gse_log("PONG unmatched nonce=%lu", (unsigned long)pong.nonce);
+            return;
+        }
+        s_stats.pong_received++;
+        s_stats.last_pong_rtt_ms = gse_millis() - s_pending_ping_ms;
+        s_stats.last_pad_uptime_ms = pong.uptime_ms;
+        s_pending_ping_nonce = 0;
+        gse_log("PONG nonce=%lu rtt=%lums pad_uptime=%lums",
+                (unsigned long)pong.nonce,
+                (unsigned long)s_stats.last_pong_rtt_ms,
+                (unsigned long)pong.uptime_ms);
+        return;                              /* console result, not GUI data */
+    }
+
     host_send(type, pl, len);                 /* pad -> laptop, verbatim   */
     if (type == GSE_T_STATE) s_stats.rx_state++;
     if (type == GSE_T_EVENT) s_stats.rx_event++;
@@ -152,7 +181,15 @@ static void handle_line(char *line)
 {
     upcase(line);
     if (!strcmp(line, "PING")) {
-        gse_log("PONG %lu", (unsigned long)gse_millis());
+        gse_ping_t ping;
+        ping.nonce = ++s_ping_nonce;
+        if (!ping.nonce) ping.nonce = ++s_ping_nonce;  /* zero means none pending */
+        ping.host_ms = gse_millis();
+        s_pending_ping_nonce = ping.nonce;
+        s_pending_ping_ms = ping.host_ms;
+        air_send(GSE_T_PING, &ping, sizeof ping);
+        s_stats.ping_sent++;
+        gse_log("PING nonce=%lu sent to pad", (unsigned long)ping.nonce);
     } else if (!strcmp(line, "INFO")) {
         gse_log("TX %s fw %u.%u level=%u key=%u fwd=%lu stale=%lu uptime=%lus",
                 GSE_PLATFORM_NAME, GSE_FW_MAJOR, GSE_FW_MINOR, s_level, s_key,
@@ -188,6 +225,7 @@ void gse_tx_init(void)
     s_last_cmd.ign_max_ds = GSE_DEF_IGN_MAX_DS;
     gse_parser_init(&s_air);
     gse_parser_init(&s_host);
+    s_pending_ping_nonce = 0;
 
     s_radio_ok = gse_radio_provision(s_level, TX_CH_SELF, s_key, TX_ADDR);
     gse_log("TX %s fw %u.%u %s", GSE_PLATFORM_NAME, GSE_FW_MAJOR, GSE_FW_MINOR,
