@@ -128,6 +128,22 @@ class Controller:
                   f"{self.cfg.travel_prg}, wdg {self.cfg.wdg_ds} ds, "
                   f"ign {self.cfg.ign_max_ds} ds, purge {self.cfg.allow_purge}")
 
+    def serial_send(self, text: str) -> bool:
+        """Serial monitor: send one line to the ground board's text console
+        (PING, INFO, SAFE, HELP, SET LEVEL n, SET KEY n, RADIO CONFIG).  The
+        reply shows up in the serial monitor like any other line."""
+        cmd = " ".join(text.strip().split())
+        if not cmd:
+            return False
+        if not self.link:
+            self.note(f"serial monitor: not connected - '{cmd}' not sent")
+            return False
+        if not all(0x20 <= ord(ch) < 0x7F for ch in cmd) or len(cmd) > 60:
+            self.note("serial monitor: printable ASCII only, at most 60 characters")
+            return False
+        self.link.text_command(cmd)
+        return True
+
     # ---------------------------------------------------------------- the loop
     def arm_code(self) -> int:
         if not self.ui.armed:

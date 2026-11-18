@@ -29,6 +29,7 @@ import csv
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 from . import protocol as P
@@ -101,6 +102,9 @@ class Link:
         self.events: list[tuple[float, P.Event]] = []
         self.seq = 0
         self.node_log: list[str] = []      # "LOG ..." lines from a real node
+        # Serial monitor: every text line seen on the port, plus the lines we
+        # typed, as (time.time(), "rx" | "tx", text).  The GUI drains it.
+        self.monitor: deque = deque(maxlen=2000)
         self._lock = threading.Lock()
 
     # -- to be implemented ------------------------------------------------
@@ -159,7 +163,12 @@ class Link:
             return new_events
 
     def text_command(self, line: str) -> None:
-        self._write((line.strip().upper() + "\n").encode())
+        cmd = line.strip().upper()
+        # Leading newline: the TX node switches back to text after the last
+        # byte of each binary frame unless that byte happens to be 0x7E; then it
+        # eats the next byte.  Losing a newline is harmless, losing "P" is not.
+        self._write(("\n" + cmd + "\n").encode())
+        self.monitor.append((time.time(), "tx", cmd))
 
 
 # ----------------------------------------------------------------- serial link
@@ -172,6 +181,8 @@ class SerialLink(Link):
         self.baud = baud
         self._ser = None
         self._text = bytearray()
+        self._frame: bytearray | None = None   # bytes of a binary frame in progress
+        self._frame_len = 0
         self.node_log: list[str] = []
 
     def open(self):
@@ -194,29 +205,58 @@ class SerialLink(Link):
     def _read(self) -> bytes:
         if not self._ser:
             return b""
-        return self._ser.read(max(1, self._ser.in_waiting))
+        data = self._ser.read(max(1, self._ser.in_waiting))
+        if data:
+            self._split_text(data)
+        return data
 
-    def poll(self) -> list[P.Event]:
-        evs = super().poll()
-        # collect "LOG ..." text lines from the node.  These carry the pad's
-        # own boot banner, RADIO OK / RADIO FAULT verdict and 1 Hz counters --
-        # the only way to tell a dead radio from a dead link.  Keep them.
-        while self._ser and self._ser.in_waiting:
-            b = self._ser.read(1)
-            if b == b"\n":
-                line = self._text.decode("ascii", "replace").strip()
+    # The TX node's port carries two things: binary frames (the pad's STATE /
+    # EVENT / HELLO) and whole text lines ("LOG ..." from the firmware, plus the
+    # ESP32's own boot messages).  Every byte still goes to the frame parser;
+    # this copy separates out the text, Arduino-serial-monitor style, so it can
+    # be shown.  (The old code looked for text only *after* the parser had
+    # already taken every waiting byte, so PONG and the counters were lost.)
+    def _split_text(self, data: bytes) -> None:
+        for b in data:
+            f = self._frame
+            if f is not None:                      # inside a binary frame
+                f.append(b)
+                n = len(f)
+                if n == 2 and b != P.PROTO_VERSION:
+                    self._text += f                # a '~' in text, not a frame
+                    self._frame = None
+                elif n == 5:
+                    if f[4] > P.MAX_PAYLOAD:
+                        self._text += f
+                        self._frame = None
+                    else:
+                        self._frame_len = 7 + f[4]
+                elif n > 5 and n >= self._frame_len:
+                    self._frame = None             # complete: not shown as text
+                continue
+            if b == P.SOF:
+                self._frame = bytearray([b])
+            elif b == 0x0A:
+                self._text_line(bytes(self._text))
                 self._text.clear()
-                if line.startswith("LOG "):
-                    text = line[4:]
-                    self.log.row("rx", "LOG", note=text)
-                    self.last_text = text
-                    self.node_log.append(text)
-                    del self.node_log[:-40]        # keep the last 40 lines
-            elif b != b"\r":
-                self._text += b
-                if len(self._text) > 400:
+            elif b != 0x0D:
+                self._text.append(b)
+                if len(self._text) > 400:          # runaway line: show and reset
+                    self._text_line(bytes(self._text))
                     self._text.clear()
-        return evs
+
+    def _text_line(self, raw: bytes) -> None:
+        text = raw.decode("utf-8", "replace").rstrip()
+        if not text.strip():
+            return
+        self.monitor.append((time.time(), "rx", text))
+        # "LOG ..." lines also feed the banner / event log, as before
+        if text.startswith("LOG "):
+            body = text[4:].strip()
+            self.log.row("rx", "LOG", note=body)
+            self.last_text = body
+            self.node_log.append(body)
+            del self.node_log[:-40]                # keep the last 40 lines
 
 
 def list_ports() -> list[str]:
@@ -264,7 +304,26 @@ class SimLink(Link):
         return self.pad.tick()
 
     def text_command(self, line: str) -> None:
-        self.last_text = line.strip().upper()
+        """Answer like the TX node's console (gse_tx_core.c handle_line), so
+        the serial monitor can be tried with --sim."""
+        cmd = line.strip().upper()
+        self.last_text = cmd
+        self.monitor.append((time.time(), "tx", cmd))
+        ms = int((time.monotonic() - self.pad.t0) * 1000)
+        if cmd == "PING":
+            reply = f"PONG {ms}"
+        elif cmd == "INFO":
+            reply = (f"TX sim fw 1.0 level=3 key=0 fwd={self.pad.rx_count} stale=0 "
+                     f"uptime={ms // 1000}s")
+        elif cmd == "SAFE":
+            reply = "SAFE forced"
+        elif cmd == "HELP":
+            reply = "cmds: PING INFO SAFE SET LEVEL n SET KEY n RADIO CONFIG HELP"
+        else:
+            reply = "ERR unknown command"
+        self.monitor.append((time.time(), "rx", "LOG " + reply))
+        self.node_log.append(reply)
+        del self.node_log[:-40]
 
 
 # --------------------------------------------------------------- pad simulator

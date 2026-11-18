@@ -88,7 +88,7 @@ class App(tk.Tk):
         self.ctl = controller
         self.sim = sim
         self.title("HCR-5100 GSE - LoRa control" + ("  [SIMULATION]" if sim else ""))
-        self.geometry("1080x680")
+        self.geometry("1180x820")
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self._build()
@@ -211,14 +211,75 @@ class App(tk.Tk):
                                                 pady=(6, 8))
 
         # --- log -------------------------------------------------------------
-        logf = self._card(self, "EVENT LOG")
-        logf.pack(fill="both", expand=False, padx=8, pady=8)
-        self.txt = tk.Text(logf, height=8, bg="#0d1116", fg="#cfe0ea", relief="flat",
-                           font=("DejaVu Sans Mono", 9))
+        bottom = tk.Frame(self, bg=BG)
+        bottom.pack(fill="both", expand=True, padx=8, pady=8)
+        logf = self._card(bottom, "EVENT LOG")
+        logf.pack(side="left", fill="both", expand=True)
+        self.txt = tk.Text(logf, height=12, width=60, bg="#0d1116", fg="#cfe0ea",
+                           relief="flat", font=("DejaVu Sans Mono", 9))
         self.txt.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self._build_monitor(bottom)
 
         # keyboard: ESC = release igniter + disarm
         self.bind("<Escape>", lambda e: self._panic())
+
+    def _build_monitor(self, parent):
+        """Serial monitor, Arduino-IDE style: every text line from the ground
+        board's USB port (its "LOG ..." lines, PONG replies, boot messages),
+        and a box to send a line to its console.  Binary command / telemetry
+        frames are not shown -- they are decoded into the panels above."""
+        mon = self._card(parent, "SERIAL MONITOR  (ground board · 115200 baud · "
+                                 "> = sent by this laptop)")
+        mon.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        row = tk.Frame(mon, bg=CARD); row.pack(side="bottom", fill="x", padx=8, pady=(0, 8))
+        self.v_mon_send = tk.StringVar(value="")
+        ent = tk.Entry(row, textvariable=self.v_mon_send, bg="#0d1116", fg=FG,
+                       insertbackground=FG, relief="flat", width=24)
+        ent.pack(side="left", fill="x", expand=True)
+        ent.bind("<Return>", lambda e: self._monitor_send())
+        tk.Button(row, text="Send", bg=ACC, fg="white", relief="flat",
+                  command=self._monitor_send).pack(side="left", padx=(6, 0))
+        for cmd in ("PING", "INFO"):
+            tk.Button(row, text=cmd, bg=GREY, fg=FG, relief="flat", width=5,
+                      command=lambda c=cmd: self.ctl.serial_send(c)).pack(side="left",
+                                                                         padx=(6, 0))
+        opts = tk.Frame(mon, bg=CARD); opts.pack(side="bottom", fill="x", padx=8)
+        self.v_mon_scroll = tk.BooleanVar(value=True)
+        self.v_mon_time = tk.BooleanVar(value=True)
+        for text, var in (("Autoscroll", self.v_mon_scroll),
+                          ("Show timestamp", self.v_mon_time)):
+            tk.Checkbutton(opts, text=text, variable=var, bg=CARD, fg=DIM,
+                           selectcolor=CARD, activebackground=CARD,
+                           activeforeground=FG).pack(side="left")
+        tk.Button(opts, text="Clear output", bg=GREY, fg=FG, relief="flat",
+                  command=self._monitor_clear).pack(side="right")
+        self.mon = tk.Text(mon, height=12, width=60, bg="#05080a", fg="#9fe0a8",
+                           relief="flat", font=("DejaVu Sans Mono", 9))
+        self.mon.pack(fill="both", expand=True, padx=8, pady=(0, 4))
+
+    def _monitor_send(self):
+        if self.ctl.serial_send(self.v_mon_send.get()):
+            self.v_mon_send.set("")
+
+    def _monitor_clear(self):
+        self.mon.delete("1.0", "end")
+
+    def _paint_monitor(self):
+        link = self.ctl.link
+        if link is None or not link.monitor:
+            return
+        stamp = bool(self.v_mon_time.get())
+        lines = []
+        while link.monitor:
+            t, direction, text = link.monitor.popleft()
+            prefix = (time.strftime("%H:%M:%S", time.localtime(t))
+                      + f".{int((t % 1) * 1000):03d} -> ") if stamp else ""
+            lines.append(prefix + ("> " if direction == "tx" else "") + text)
+        self.mon.insert("end", "\n".join(lines) + "\n")
+        if int(self.mon.index("end-1c").split(".")[0]) > 2000:
+            self.mon.delete("1.0", "500.0")
+        if self.v_mon_scroll.get():
+            self.mon.see("end")
 
     def _toggle(self, parent, label, cb):
         var = tk.BooleanVar(value=False)
@@ -378,6 +439,7 @@ class App(tk.Tk):
         self._sync_toggles()
         while self.ctl.ui.log_lines:
             self._log(self.ctl.ui.log_lines.pop(0))
+        self._paint_monitor()
         for e in self.ctl.events[-4:]:
             pass
 

@@ -338,6 +338,77 @@ def test_tx_transport_is_named_in_the_banner():
     assert text == "NO PAD TELEMETRY", text
     ctl.disconnect()
 
+# ------------------------------------------------------------ serial monitor
+class _FakeSerial:
+    """Byte-stream stand-in for pyserial (in_waiting / read / write)."""
+
+    def __init__(self, data: bytes = b""):
+        self.rx = bytearray(data)
+        self.written: list[bytes] = []
+
+    @property
+    def in_waiting(self):
+        return len(self.rx)
+
+    def read(self, n):
+        out = bytes(self.rx[:n])
+        del self.rx[:n]
+        return out
+
+    def write(self, data):
+        self.written.append(bytes(data))
+
+    def close(self):
+        pass
+
+
+def test_serial_monitor_shows_text_and_keeps_frames():
+    """Text lines go to the monitor (and LOG lines to node_log); binary frames
+    still reach the parser and never show up as text."""
+    from gse_control.link import SerialLink
+    from gse_control.sim import PadModel
+    frame = PadModel().tick()                       # one real STATE frame
+    stream = (b"rst:0x1 (POWERON_RESET),boot:0x13\r\n"
+              + frame + b"LOG PONG 1234\n"
+              + frame + frame + b"LOG tx fwd=5 state=0 safe=12 dropped=0 radio=ok\r\n"
+              + b"a ~ tilde in text\n")
+    link = SerialLink("COM_TEST")
+    link._ser = _FakeSerial(stream)
+    while link._ser.in_waiting:
+        link.poll()
+    assert link.stats.rx_state == 3 and link.state is not None, "frames lost"
+    shown = [t for _, d, t in link.monitor if d == "rx"]
+    assert shown == ["rst:0x1 (POWERON_RESET),boot:0x13", "LOG PONG 1234",
+                     "LOG tx fwd=5 state=0 safe=12 dropped=0 radio=ok",
+                     "a ~ tilde in text"], shown
+    assert link.node_log == ["PONG 1234", "tx fwd=5 state=0 safe=12 dropped=0 radio=ok"]
+
+
+def test_serial_monitor_send_line():
+    from gse_control.link import SerialLink
+    link = SerialLink("COM_TEST")
+    link._ser = _FakeSerial()
+    ctl = Controller(port="SIM")
+    ctl.link = link
+    assert ctl.serial_send(" ping ")
+    assert link._ser.written[-1] == b"\nPING\n"
+    assert list(link.monitor)[-1][1:] == ("tx", "PING")
+    assert not ctl.serial_send("   ")
+    ctl.link = None
+    assert not ctl.serial_send("PING"), "must refuse when not connected"
+
+
+def test_serial_monitor_in_sim_and_gui_paint():
+    ctl, app = _app()
+    ctl.connect("SIM")
+    ctl.serial_send("PING")
+    lines = [t for _, _, t in ctl.link.monitor]
+    assert lines[0] == "PING" and lines[1].startswith("LOG PONG "), lines
+    app._paint_monitor()
+    assert not ctl.link.monitor, "the GUI did not drain the monitor"
+    ctl.disconnect()
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
