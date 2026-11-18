@@ -26,7 +26,7 @@
 // ---------------------------------------------------------------------------
 // MAC address printed by the sender sketch at boot (STA MAC).
 // With ENFORCE_SENDER_MAC = true, packets from any other board are ignored.
-static uint8_t SENDER_MAC[6] = {0x7C, 0x9E, 0xBD, 0x12, 0x34, 0x56};
+static uint8_t SENDER_MAC[6] = {0xA4, 0xF0, 0x0F, 0x62, 0x0C, 0xB8}; //A4:F0:0F:62:0C:B8
 static constexpr bool ENFORCE_SENDER_MAC = true;  // false only for bench testing
 
 static constexpr uint8_t  SERVO0_PIN = 18;
