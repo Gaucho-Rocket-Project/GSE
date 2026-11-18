@@ -19,6 +19,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_wifi.h>     // esp_wifi_get_mac()
+#include <esp_mac.h>      // esp_read_mac(), ESP_MAC_WIFI_STA
 #include <esp_system.h>   // esp_random()
 #include <stddef.h>
 #include <string.h>
@@ -30,9 +32,9 @@
 static uint8_t RECEIVER_MAC[6] = {0xA4, 0xF0, 0x0F, 0x61, 0x84, 0x3C}; // A4:F0:0F:61:84:3C
 
 // PWM pulse widths sent to the receiver. DS3225 range is 500-2500 us.
-static constexpr uint16_t SERVO0_TARGET_US = 2000;  // fired/target position
-static constexpr uint16_t SERVO1_TARGET_US = 2000;
-static constexpr uint16_t SERVO_HOLD_MS    = 500;   // time at target before return
+static constexpr uint16_t SERVO0_TARGET_US = 500;  // fired/target position
+static constexpr uint16_t SERVO1_TARGET_US = 500;
+static constexpr uint16_t SERVO_HOLD_MS    = 5000;   // time at target before return
 
 static constexpr uint16_t IGN_ON_MS        = 1000;  // receiver clamps to 2000 ms max
 
@@ -92,6 +94,40 @@ static bool macConfigured(const uint8_t *mac)
   return anyNonZero && !allOnes;
 }
 
+// WiFi.macAddress() can print 00:00:00:00:00:00 on Arduino-ESP32 3.x when the
+// STA interface has not started yet. Read the driver directly instead, with
+// the eFuse-derived station MAC as a fallback.
+static bool allZeroMac(const uint8_t *mac)
+{
+  for (uint8_t i = 0; i < 6; ++i)
+  {
+    if (mac[i] != 0) return false;
+  }
+  return true;
+}
+
+static bool readStaMac(uint8_t mac[6])
+{
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  unsigned long startWait = millis();
+  while (!WiFi.STA.started() && (millis() - startWait) < 2000) delay(20);
+#endif
+  if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK && !allZeroMac(mac)) return true;
+  return esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK && !allZeroMac(mac);
+}
+
+static void printMac(const char *label, const uint8_t mac[6])
+{
+  Serial.print(label);
+  for (uint8_t i = 0; i < 6; ++i)
+  {
+    if (i > 0) Serial.print(':');
+    if (mac[i] < 0x10) Serial.print('0');
+    Serial.print(mac[i], HEX);
+  }
+  Serial.println();
+}
+
 static void sendCommand(uint8_t cmd)
 {
   CommandPacket packet{};
@@ -145,8 +181,9 @@ void setup()
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
 
-  Serial.print("Sender MAC (copy into receiver sketch): ");
-  Serial.println(WiFi.macAddress());
+  uint8_t myMac[6] = {};
+  if (readStaMac(myMac)) printMac("Sender MAC (copy into receiver sketch): ", myMac);
+  else Serial.println("Could not read sender MAC");
 
   if (esp_now_init() != ESP_OK)
   {
