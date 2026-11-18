@@ -1,18 +1,22 @@
 """
 controller.py  --  all GUI logic, no widgets.  Headless-testable.
 
-The controller owns the "what does the operator want" state and pushes a CMD
-frame to the link at 20 Hz.  It never assumes the pad obeyed: everything the
-operator sees comes from the pad's STATE frames.
+The operator never drives a valve directly any more: every button and key goes
+through `act()`, i.e. through the Supervisor (supervisor.py), which holds the
+GSE `main` control rules -- LIVE/TEST modes, the fill timer, FILL/VEHICLE
+interlocks, the ignition countdown with its T-0 HOLD, E-STOP and link-loss
+latches.  The controller's job is plumbing:
 
-Safety rules enforced here (defence in depth -- the pad enforces them again):
-    * the CMD stream is always sent, even when "nothing is happening", so the
-      pad watchdog stays fed only while this program is alive;
-    * arm_code is only attached while the ARM toggle is on AND the GUI is able
-      to see a fresh pad state (no blind arming over a dead link);
-    * the igniter is a hold-to-fire control with a release that is sent
-      immediately, not on the next 20 Hz tick;
-    * on close, three safe frames are pushed before the port is closed.
+    * feed the supervisor the pad's read-back and the link state every tick;
+    * stream the supervisor's command to the pad at 20 Hz, and immediately on
+      any change, so the pad watchdog stays fed only while this program runs;
+    * keep the pad's configuration (travel, watchdog, igniter limit, purge
+      allowed) re-sent until the pad reports it in force;
+    * on close, command ALL SAFE, then push three SAFE-set frames (FILL/PURGE
+      closed, VEHICLE open, IGN off) before the port is closed.
+
+The pad still enforces its own failsafes underneath (1 s watchdog, igniter
+needs the arm code in every frame, one shot per press, hard on-time limit).
 """
 from __future__ import annotations
 
@@ -22,26 +26,25 @@ from dataclasses import dataclass, field
 
 from . import protocol as P
 from .link import Link, make_link
+from .supervisor import Settings, Supervisor, PURGE_ENABLE, PURGE_DISABLE
 
 CMD_HZ = 20
 STATE_STALE_MS = 1500       # GUI declares the pad "unknown" after this
+CFG_RESEND_S = 1.0          # pad_link.rs:57
+
+LEVEL_PREFIX = {"info": "", "ok": "", "warn": "WARN  ", "error": "ERROR "}
 
 
 @dataclass
 class UiState:
-    fill: bool = False
-    veh: bool = False           # False == CLOSED; pad safe state is OPEN
-    prg: bool = False
-    ign_held: bool = False
-    armed: bool = False
-    purge_enabled: bool = False
     link_name: str = "disconnected"
     connected: bool = False
     log_lines: list = field(default_factory=list)
 
 
 class Controller:
-    def __init__(self, port: str | None = None, log_dir: str | None = None):
+    def __init__(self, port: str | None = None, log_dir: str | None = None,
+                 settings_path: str | None = None):
         self.ui = UiState()
         path = None
         if log_dir:
@@ -50,12 +53,17 @@ class Controller:
         self.link: Link | None = None
         self.port = port
         self.log_path = path
+        self.settings_path = settings_path
+        self.sup = Supervisor(Settings.load(settings_path), log=self._sup_log)
         self.cfg = P.Cfg()
+        self.cfg.allow_purge = 0            # purge is enabled per session only
         self.cfg_seq = 0
         self.last_tick = 0.0
         self.last_cmd_sent = 0.0
+        self.last_cfg_sent = 0.0
+        self._last_sent_cmd = None
         self.events: list[str] = []
-        self._ign_release_pending = False
+        self._ping_at: float | None = None   # when the last PING went out
         # Index into link.node_log: the node's own "LOG ..." lines are the only
         # place the pad's boot banner, its link/transport and its counters
         # appear.  They used to be collected and never shown.
@@ -71,15 +79,26 @@ class Controller:
         self.ui.connected = True
         self.ui.link_name = self.link.name
         self._log_seen = 0
+        self.sup.reset_session()
+        self.sup.connected = True
         self.note(f"connected: {self.link.name} (log {self.log_path or 'off'})")
+        # SerialLink.open() just sent PING; time it so the PONG shows a round trip
+        self._ping_at = time.monotonic() if self.link.name == "serial" else None
         self.link.send_hello()
+        self.link.send_cfg(self._next_cfg())
+        self.last_cfg_sent = time.monotonic()
         self.push_cmd(force=True)
 
     def disconnect(self) -> None:
         if self.link:
+            self.sup.shutdown()
+            self.push_cmd(force=True)       # ALL SAFE, then the SAFE set
             self.safe_close()
             self.link.close()
             self.link = None
+            self.note("Pad left in the SAFE set (FILL/PURGE closed, VEHICLE open, IGN off)")
+        self.sup.connected = False
+        self.sup.reset_session()
         self.ui.connected = False
         self.ui.link_name = "disconnected"
 
@@ -94,91 +113,136 @@ class Controller:
             time.sleep(0.02)
 
     # ------------------------------------------------------------- operator
-    def set_fill(self, on: bool):  self.ui.fill = bool(on);  self.push_cmd(force=True)
-    def set_veh(self, on: bool):   self.ui.veh = bool(on);   self.push_cmd(force=True)
-    def set_prg(self, on: bool):
-        if on and not self.ui.purge_enabled:
-            self.note("PURGE blocked: purge valve not enabled in configuration")
-            return
-        self.ui.prg = bool(on); self.push_cmd(force=True)
-
-    def set_arm(self, on: bool):
-        self.ui.armed = bool(on)
-        if not on:
-            self.ui.ign_held = False
-        self.note("ARM on" if on else "ARM off")
+    def act(self, action: str) -> bool:
+        """Every operator button / key ends here (see supervisor.ALL_ACTIONS)."""
+        done = self.sup.act(action)
+        if done and action in (PURGE_ENABLE, PURGE_DISABLE):
+            self.cfg.allow_purge = 1 if self.sup.purge_enabled else 0
+            self.last_cfg_sent = 0.0        # resend now (pad_link.rs:289-292)
         self.push_cmd(force=True)
+        return done
 
-    def press_ign(self):
-        self.ui.ign_held = True
-        self.push_cmd(force=True)
+    def console(self, text: str) -> bool:
+        """Send one text line to the ground board's console (gse_tx_core.c:
+        PING, INFO, SAFE, HELP, SET LEVEL n, SET KEY n, RADIO CONFIG).  The
+        reply comes back as a "NODE ..." line in the event log."""
+        cmd = " ".join(text.strip().upper().split())
+        if not cmd:
+            return False
+        if not self.link:
+            self.note(f"console: not connected - '{cmd}' not sent")
+            return False
+        if not all(0x20 <= ord(ch) < 0x7F for ch in cmd) or len(cmd) > 60:
+            self.note("console: printable ASCII only, at most 60 characters")
+            return False
+        self.link.text_command(cmd)
+        self.note(f"> {cmd}")
+        if cmd == "PING":
+            self._ping_at = time.monotonic()
+        return True
 
-    def release_ign(self):
-        self.ui.ign_held = False
-        self.push_cmd(force=True)          # immediate, not next tick
+    def gates(self):
+        return self.sup.gates()
+
+    def set_mode(self, mode: str) -> bool:
+        ok = self.sup.set_mode(mode)
+        if ok:
+            self.sup.settings.save(self.settings_path)
+        return ok
+
+    def apply_settings(self, fill_seconds: int, countdown_seconds: int,
+                       confirm_ign: bool) -> None:
+        s = self.sup.settings
+        s.fill_seconds, s.countdown_seconds, s.confirm_ign = (
+            fill_seconds, countdown_seconds, confirm_ign)
+        s.sanitize()
+        s.save(self.settings_path)
+        self.note(f"Settings updated: fill time set to {s.fill_seconds} s, countdown time "
+                  f"set to {s.countdown_seconds} s, ignition confirmation "
+                  f"{'enabled' if s.confirm_ign else 'disabled'}")
 
     def apply_cfg(self, **kw):
         for k, v in kw.items():
-            if hasattr(self.cfg, k):
+            if hasattr(self.cfg, k) and k != "allow_purge":
                 setattr(self.cfg, k, v)
-        self.cfg.cfg_seq = (self.cfg_seq + 1) & 0xFF
         if self.link:
-            self.link.send_cfg(self.cfg)
+            self.link.send_cfg(self._next_cfg())
+            self.last_cfg_sent = time.monotonic()
         self.note(f"CFG applied: travel {self.cfg.travel_fill}/{self.cfg.travel_veh}/"
                   f"{self.cfg.travel_prg}, wdg {self.cfg.wdg_ds} ds, "
                   f"ign {self.cfg.ign_max_ds} ds, purge {self.cfg.allow_purge}")
 
+    def _next_cfg(self) -> P.Cfg:
+        self.cfg_seq = (self.cfg_seq + 1) & 0xFF
+        self.cfg.cfg_seq = self.cfg_seq
+        return self.cfg
+
+    def cfg_synced(self) -> bool:
+        """The pad reports the configuration we want (cfg_seq aside)."""
+        st = self.pad
+        if st is None:
+            return False
+        c = self.cfg
+        return (st.travel_fill, st.travel_veh, st.travel_prg, st.wdg_ds,
+                st.ign_max_ds, int(bool(st.allow_purge))) == (
+                c.travel_fill, c.travel_veh, c.travel_prg, c.wdg_ds,
+                c.ign_max_ds, int(bool(c.allow_purge)))
+
     # ---------------------------------------------------------------- the loop
     def arm_code(self) -> int:
-        if not self.ui.armed:
-            return 0
-        if not self.link or not self.link.state:
-            return 0                        # never arm blind
-        if self.link.age_ms() > STATE_STALE_MS:
-            return 0
-        return P.ARM_CODE
+        return P.ARM_CODE if self.sup.command().arm else 0
 
     def push_cmd(self, force: bool = False) -> None:
         if not self.link:
             return
         now = time.monotonic()
+        c = self.sup.command()
+        if c != self._last_sent_cmd:
+            force = True                    # a change goes out immediately
         if not force and (now - self.last_cmd_sent) < (1.0 / CMD_HZ):
             return
         self.last_cmd_sent = now
-        cmd = P.Cmd(
-            arm_code=self.arm_code(),
-            fill=1 if self.ui.fill else 0,
-            veh=1 if self.ui.veh else 0,
-            prg=1 if self.ui.prg else 0,
-            ign=1 if (self.ui.ign_held and self.ui.armed) else 0,
-            wdg_ds=self.cfg.wdg_ds,
-            ign_max_ds=self.cfg.ign_max_ds,
-            tx_ms=0, ign_wdg=0)
-        self.link.send_cmd(cmd)
+        self._last_sent_cmd = c
+        self.link.send_cmd(P.Cmd(
+            arm_code=P.ARM_CODE if c.arm else 0,
+            fill=int(c.fill), veh=int(c.veh), prg=int(c.prg), ign=int(c.ign),
+            wdg_ds=self.cfg.wdg_ds, ign_max_ds=self.cfg.ign_max_ds,
+            tx_ms=0, ign_wdg=0))
 
     def tick(self) -> list[str]:
-        """Call at 20 Hz from the GUI event loop."""
+        """Call at >= 20 Hz from the GUI event loop."""
         msgs: list[str] = []
         if not self.link:
+            self.sup.tick(None, 0, float("inf"), connected=False)
             return msgs
-        now = time.monotonic()
-        if now - self.last_tick >= 1.0 / CMD_HZ:
-            self.last_tick = now
-            self.push_cmd()
         for ev in self.link.poll():
             self.events.append(f"{time.strftime('%H:%M:%S')} {ev.name}"
                                + (f" arg={ev.arg}" if ev.arg else ""))
             msgs.append(self.events[-1])
-        # The nodes' own text lines: "TX ... ready", "link: ble -- ...",
-        # "PAD LINK OK", "RADIO FAULT: ...", the AT+HELP banner, the 1 Hz
-        # counters and the pad's "nothing is arriving" hint.  Show them, do not
-        # just keep them for the verdict string.
+        # The nodes' own text lines: "TX ... ready", "link: espnow -- ...",
+        # "PAD LINK OK", "RADIO FAULT: ...", the 1 Hz counters and the pad's
+        # "nothing is arriving" hint.  Show them, do not just keep them.
         for line in self.drain_node_log():
             self.note(f"NODE {line}")
-        st = self.link.state
-        if st:
-            if st.flags & P.ST_COMMS_LOSS:
-                pass                        # pad already safe; banner shows it
+            if line.startswith("PONG") and self._ping_at is not None:
+                rtt = (time.monotonic() - self._ping_at) * 1000
+                self._ping_at = None
+                parts = line.split()
+                up = (f", board up {int(parts[1]) / 1000:.1f} s"
+                      if len(parts) > 1 and parts[1].isdigit() else "")
+                self.note(f"Ground board answered PING in {rtt:.0f} ms{up}")
+        self.sup.tick(self.link.state, self.link.stats.rx_state,
+                      self.link.age_ms() / 1000.0, connected=True)
+        now = time.monotonic()
+        if now - self.last_tick >= 1.0 / CMD_HZ:
+            self.last_tick = now
+            self.push_cmd()
+        else:
+            self.push_cmd()                 # sends only if the command changed
+        if (self.pad is not None and not self.cfg_synced()
+                and now - self.last_cfg_sent >= CFG_RESEND_S):
+            self.last_cfg_sent = now
+            self.link.send_cfg(self._next_cfg())
         return msgs
 
     def drain_node_log(self) -> list[str]:
@@ -202,6 +266,12 @@ class Controller:
         line = f"{time.strftime('%H:%M:%S')} {text}"
         self.events.append(line)
         self.ui.log_lines.append(line)
+        csv = getattr(self.link, "log", None)
+        if csv is not None:
+            csv.row("app", "LOG", note=text)
+
+    def _sup_log(self, level: str, text: str) -> None:
+        self.note(LEVEL_PREFIX.get(level, "") + text)
 
     # -------------------------------------------------------------- readback
     @property
@@ -263,6 +333,10 @@ class Controller:
             return "purple", "IGNITER ENERGISED"
         if st.flags & P.ST_COMMS_LOSS:
             return "red", "COMMS LOSS - PAD SAFE"
+        if self.sup.mismatch:
+            return "red", "PAD READBACK MISMATCH"
+        if self.sup.latched_safe():
+            return "amber", "SAFE SET LATCHED - VEHICLE VENTED - RESET CONTROLS TO CLEAR"
         if st.armed:
             return "green", "LINK OK - ARMED"
         return "amber", "LINK OK - NOT ARMED"

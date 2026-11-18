@@ -159,7 +159,10 @@ class Link:
             return new_events
 
     def text_command(self, line: str) -> None:
-        self._write((line.strip().upper() + "\n").encode())
+        # Leading newline: the TX node goes back to text mode on the last byte
+        # of each binary frame, unless that CRC byte happens to equal 0x7E; then
+        # the next byte is eaten.  A newline is a harmless byte to lose.
+        self._write(("\n" + line.strip().upper() + "\n").encode())
 
 
 # ----------------------------------------------------------------- serial link
@@ -194,29 +197,41 @@ class SerialLink(Link):
     def _read(self) -> bytes:
         if not self._ser:
             return b""
-        return self._ser.read(max(1, self._ser.in_waiting))
+        data = self._ser.read(max(1, self._ser.in_waiting))
+        if data:
+            self._scan_text(data)
+        return data
 
-    def poll(self) -> list[P.Event]:
-        evs = super().poll()
-        # collect "LOG ..." text lines from the node.  These carry the pad's
-        # own boot banner, RADIO OK / RADIO FAULT verdict and 1 Hz counters --
-        # the only way to tell a dead radio from a dead link.  Keep them.
-        while self._ser and self._ser.in_waiting:
-            b = self._ser.read(1)
-            if b == b"\n":
-                line = self._text.decode("ascii", "replace").strip()
+    # The TX node's port carries two things: binary frames (the pad's STATE /
+    # EVENT / HELLO, re-encoded) and whole text lines "LOG ...\n" (its boot
+    # banner, link verdict, 1 Hz counters, console replies such as PONG).  Every
+    # byte goes to the frame parser, which skips text; a copy goes through here,
+    # which keeps the LOG lines.  (The old code only looked for text *after*
+    # the parser had already taken every waiting byte, so it almost never saw
+    # any -- that is why PONG never appeared in the GUI.)
+    def _scan_text(self, data: bytes) -> None:
+        for b in data:
+            if b == 0x0A:
+                self._text_line(bytes(self._text))
                 self._text.clear()
-                if line.startswith("LOG "):
-                    text = line[4:]
-                    self.log.row("rx", "LOG", note=text)
-                    self.last_text = text
-                    self.node_log.append(text)
-                    del self.node_log[:-40]        # keep the last 40 lines
-            elif b != b"\r":
-                self._text += b
+            elif b != 0x0D:
+                self._text.append(b)
                 if len(self._text) > 400:
                     self._text.clear()
-        return evs
+
+    def _text_line(self, raw: bytes) -> None:
+        # A frame can sit in front of a text line with no newline between, so
+        # look for the marker anywhere in the line, not only at its start.
+        i = raw.find(b"LOG ")
+        if i < 0:
+            return
+        text = raw[i + 4:].decode("ascii", "replace").strip()
+        if not text:
+            return
+        self.log.row("rx", "LOG", note=text)
+        self.last_text = text
+        self.node_log.append(text)
+        del self.node_log[:-40]                # keep the last 40 lines
 
 
 def list_ports() -> list[str]:
@@ -264,7 +279,24 @@ class SimLink(Link):
         return self.pad.tick()
 
     def text_command(self, line: str) -> None:
-        self.last_text = line.strip().upper()
+        """Answer like the TX node's console (gse_tx_core.c handle_line), so
+        the GUI's console can be rehearsed with --sim."""
+        cmd = line.strip().upper()
+        self.last_text = cmd
+        ms = int((time.monotonic() - self.pad.t0) * 1000)
+        if cmd == "PING":
+            reply = f"PONG {ms}"
+        elif cmd == "INFO":
+            reply = (f"TX sim fw 1.0 level=3 key=0 fwd={self.pad.rx_count} stale=0 "
+                     f"uptime={ms // 1000}s")
+        elif cmd == "SAFE":
+            reply = "SAFE forced"
+        elif cmd == "HELP":
+            reply = "cmds: PING INFO SAFE SET LEVEL n SET KEY n RADIO CONFIG HELP"
+        else:
+            reply = "ERR unknown command"
+        self.node_log.append(reply)
+        del self.node_log[:-40]
 
 
 # --------------------------------------------------------------- pad simulator
