@@ -190,6 +190,10 @@ class Controller:
         # counters and the pad's "nothing is arriving" hint.  Show them, do not
         # just keep them for the verdict string.
         for line in self.drain_node_log():
+            # The once-a-second ping/pong lines of the simple ground firmware
+            # stay in the serial monitor only; a missed PONG still shows here.
+            if line.startswith("PONG seq="):
+                continue
             self.note(f"NODE {line}")
         st = self.link.state
         if st:

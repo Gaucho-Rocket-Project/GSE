@@ -239,7 +239,9 @@
  * Note that ESP-IDF derives the effective key from the *peer's* LMK and the
  * PMK, so both ends must use the same values; that is handled here.
  */
-#define GSE_NOW_CHANNEL        1
+#ifndef GSE_NOW_CHANNEL                /* the "simple" sketches build with 6 */
+#  define GSE_NOW_CHANNEL      1
+#endif
 
 /* The pad's station MAC: the ESP32-S3 vehicle board, A4:F0:0F:61:84:3C
  * (read with esptool read_mac).  Placeholder was 02:00:00:00:00:02. */

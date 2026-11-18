@@ -56,7 +56,41 @@ SKETCHES = {
                   "Tools > USB CDC On Boot: Disabled  -> sweep log on the same port",
                   "Afterwards, flash gse_pad_esp32s3 back onto the S3"],
     },
+    # The GSE ground / vehicle firmware over the ESP-NOW settings proven by the
+    # ping/pong test sketches (firmware/espnow_ping): channel 6, no encryption,
+    # fixed MACs, ping/pong built in.  link_simple.h is copied in as link.h.
+    "gse_ground_simple_esp32s": {
+        "what": "GSE ground board (ESP32S) over the ping/pong ESP-NOW settings",
+        "files": ["config.h", ("simple/link_simple.h", "link.h"),
+                  "common/gse_protocol.h", "common/gse_hal.h",
+                  "common/gse_tx_core.h", "common/gse_tx_core.c",
+                  "tx/tx_platform_esp32.cpp"],
+        "flags": ["-DGSE_ROLE_TX", "-DGSE_BOARD_ESP32S",
+                  '"-DGSE_PLATFORM_NAME=\\"esp32s\\""', "-DGSE_NOW_CHANNEL=6"],
+        "board": ["Tools > Board: esp32 > ESP32 Dev Module",
+                  "Tools > Port: the ground board",
+                  "Pairs with gse_vehicle_simple_esp32s (same channel, no encryption)",
+                  "Prints 'LOG PONG seq=.. rtt=.. ms' once a second (GUI serial monitor)"],
+    },
+    "gse_vehicle_simple_esp32s": {
+        "what": "GSE vehicle (ESP32S) over the ping/pong ESP-NOW settings",
+        "files": ["config.h", ("simple/link_simple.h", "link.h"),
+                  "common/gse_protocol.h", "pad/pad_diag.h", "pad/pad_node.cpp"],
+        "flags": ["-DGSE_ROLE_PAD", "-DGSE_BOARD_ESP32S", "-DGSE_NOW_CHANNEL=6"],
+        "board": ["Tools > Board: esp32 > ESP32 Dev Module",
+                  "Tools > Port: the vehicle board",
+                  "Pins: the ESP32S block of config.h (FILL 4, VEH 5, PURGE 15,",
+                  "    igniter 13, heartbeat 33, status LED 2)",
+                  "Answers the ground board's PINGs; log on the same USB port, 115200"],
+    },
 }
+
+
+def _src_dst(entry) -> tuple[str, str]:
+    """A files entry is "path" (copied under its own name) or (path, name)."""
+    if isinstance(entry, tuple):
+        return entry
+    return entry, os.path.basename(entry)
 
 
 def make(out_root: str) -> None:
@@ -65,12 +99,15 @@ def make(out_root: str) -> None:
         if os.path.isdir(d):
             shutil.rmtree(d)
         os.makedirs(d)
-        for rel in s["files"]:
-            shutil.copy2(os.path.join(SRC, rel), os.path.join(d, os.path.basename(rel)))
+        for entry in s["files"]:
+            src, dst = _src_dst(entry)
+            shutil.copy2(os.path.join(SRC, src), os.path.join(d, dst))
         with open(os.path.join(d, "build_opt.h"), "w", newline="\n") as fh:
             fh.write("\n".join(s["flags"]) + "\n")
         board = "\n".join(f" *   {b}" for b in s["board"])
-        files = ", ".join(os.path.basename(f) for f in s["files"])
+        files = ", ".join(
+            dst if src.endswith(dst) else f"{dst} (from {src})"
+            for src, dst in map(_src_dst, s["files"]))
         with open(os.path.join(d, name + ".ino"), "w", newline="\n") as fh:
             fh.write(f"""/*
  * {name}.ino -- {s['what']}
