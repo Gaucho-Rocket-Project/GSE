@@ -1,170 +1,103 @@
-# Mojave Sphinx GSE — laptop-driven radio link (ECR-01)
+# ESP-NOW servo / ignition actuator link
 
-Replacement for the FS-i6X transmitter + FS-iA10B receiver in Section VI of the Half Cat Rocketry
-*Mojave Sphinx* guidebook (HCR-5100).
+Two Arduino sketches (`.ino`, Arduino IDE compatible) that turn commands from a
+controller ESP32 into servo and ignition actions on a second ESP32:
 
-```
-laptop (Python GUI) --USB--> ESP32 TX node ))) ESP-NOW ((( ESP32 pad node --> servos + igniter relay
-```
+| Command | Action on receiver |
+| --- | --- |
+| `1` | Actuate **servo0** (GPIO 18): move to target pulse, hold, return home |
+| `2` | Actuate **servo1** (GPIO 5): move to target pulse, hold, return home |
+| `3` | Actuate **servo0 + servo1** together |
+| `4` | **IGN** (GPIO 32, active HIGH): drive HIGH for the on-time, then LOW |
 
-ESP-NOW is the default between ESP32 nodes; a DX-LR42/LR41 LoRa link is available
-with `-D GSE_LINK_LORA` on both ends. ESP-NOW requires provisioning both station
-MACs and replacing the published default keys before use. The older ECR and insert
-PDFs describe the original LoRa architecture, not approval of this new default.
-See [`docs/LINK_OPTIONS.md`](docs/LINK_OPTIONS.md) and complete the hardware test gates.
+## Files
 
-The nodes are ESP32 devkits. **ESP32-S3-DevKitC-1 (or N16R8 "SuperMini") is the default**, and the classic
-**"ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth"** (ESP32-WROOM-32, 30/38-pin, CP2102/CH340
-USB) is supported as an *optional* board variant for either node — see
-[Board variants](#board-variants-esp32-s3-or-esp-32s).
+- `espnow_sender/espnow_sender.ino` - controller; type `1`, `2`, `3`, or `4` in the Serial Monitor.
+- `espnow_receiver/espnow_receiver.ino` - actuator board; owns the servo and IGN pins.
 
-## Read these in this order
+Both sketches are self-contained: no third-party libraries are required (only
+the Arduino-ESP32 core and its bundled `WiFi`/`esp_now`/LEDC APIs). Folder names
+match sketch names so Arduino IDE can open them directly.
 
-| File | What it is |
-|---|---|
-| `ECR-01_GSE_radio_replacement.pdf` | The engineering change report: rationale, architecture, safety analysis, BOM delta, risks, and the exact handbook text to replace. Original LoRa design; ESP-NOW still needs its own validation. |
-| `docs/INSERT_SECTION_VI.pdf` | Insert-ready replacement pages 236–255, laid out to match HCR-5100. |
-| `docs/TEST_PLAN.md` | Bench and range test gates. Nothing flies until G1–G4 are signed. |
-| `docs/LINK_OPTIONS.md` | Default ESP-NOW vs optional LoRa: what changes, what does not, range, security, MAC provisioning. |
-| `docs/OPERATOR_CARD.md` | One page for the toolbox lid. |
-| `hardware/wiring.md` | Pinouts, keep-alive circuit, bench bring-up checklist. |
+## Servo specifications used
 
-## The one design point to understand
+The servo is the DS3225 (52Pi D-0001),
+[datasheet](https://wiki.52pi.com/index.php?title=D-0001):
 
-The FS-iA10B only listens on FlySky **AFHDS 2A**, a closed proprietary protocol. A DX-LR41 (Semtech SX1281,
-LoRa/FLRC) cannot transmit it, so **the receiver cannot be kept** unless a second transmitter is added (a 4-in-1
-multiprotocol module). The chosen architecture therefore drops the receiver and puts the pad node directly on the
-servos — which means the pad node inherits responsibility for the receiver's failsafes. That responsibility is the
-core of the ECR.
+- Operating voltage: 4.8-6.8 V (5 V / 6 V nominal)
+- Control: PWM, 500-2500 us pulse width, 50-330 Hz (sketches use 50 Hz / 20 ms)
+- Stall current: 2.1 A @ 5 V, 2.9 A @ 6.8 V **per servo**
+- 180 deg or 270 deg variant exists: verify the mechanical endpoints on your unit
 
-Channel numbers are unchanged from the handbook: **FILL Ch5, VEHICLE Ch6, PURGE Ch8, IGNITER Ch3.**
+Consequences for the build:
 
-## Quick start
+- **Do not power servos from the ESP32 5 V / VIN pin.** Use a separate 5-6 V BEC
+  rated for at least 6 A peak (two servos can stall simultaneously), with a
+  wide-enough bulk capacitor near the servo connector.
+- **Connect the BEC ground, both servos, the IGN driver, and the ESP32 ground
+  together.**
+- ESP32 outputs 3.3 V logic; the servo signal pin is usually tolerant of this,
+  but verify on your specific servo or use a level shifter if it misbehaves.
+- `SERVO_HOME_US` (1000) and the `*_TARGET_US` values (2000) are starting points,
+  not calibrated endpoints. Set them with the servo horn detached so a wrong
+  value cannot jam the mechanism.
 
-```bash
-# firmware (needs PlatformIO), example: ESP-32S TX, ESP32-S3 pad
-cd firmware
-# First flash each, read each local MAC from its USB banner, set both MACs and
-# private keys in src/config.h, then rebuild and reflash BOTH boards.
-pio run -e tx-node-esp32s -t upload
-pio run -e pad-node -t upload
-# Optional LoRa on BOTH ends instead:
-# pio run -e tx-node-lora-esp32s -t upload
-# pio run -e pad-node-lora -t upload
-cd ..
+## Wiring
 
-# laptop app (tkinter + pyserial)
-python software/run_gui.py --sim               # no hardware: simulated pad
-python software/run_gui.py --port /dev/ttyACM0 # real TX node
-python software/run_gui.py --port COM7
-```
+| Signal | ESP32 (receiver) | Notes |
+| --- | --- | --- |
+| servo0 PWM | GPIO 18 | 50 Hz, 500-2500 us, via 220 ohm series resistor optional |
+| servo1 PWM | GPIO 5 | same |
+| IGN | GPIO 32 | active HIGH, drives a logic-level MOSFET / relay driver, never an igniter directly |
+| GND | any ESP32 GND | common with BEC and igniter driver |
 
-## Board variants: ESP32-S3 or ESP-32S
+IGN output is forced LOW at boot and is only HIGH during a validated,
+time-limited command (clamped to 2000 ms). Add a 10 kohm pulldown at GPIO 32 so
+the igniter stays off during ESP32 reset/boot, plus a physical arming switch
+and a series safety interlock in the igniter wiring.
 
-Two ESP32 board families are supported, and the choice is a build flag rather than a code fork. The
-protocol, the failsafes, the watchdog, the GUI and every procedure are identical; only the pin map and
-the USB/LED plumbing differ. **A pad node on either board talks to a TX node on either board.**
+## Setup
 
-| | ESP32-S3 (default) | ESP-32S (optional) |
-|---|---|---|
-| Board | ESP32-S3-DevKitC-1, N16R8 "SuperMini" | "ESP-32S Development Board 2.4 GHz Dual-Mode WiFi+Bluetooth" (ESP32-WROOM-32, 30/38-pin) |
-| Build | `pio run -e tx-node` / `-e pad-node` | `pio run -e tx-node-esp32s` / `-e pad-node-esp32s` |
-| Flag | `-D GSE_BOARD_ESP32_S3` (or nothing) | `-D GSE_BOARD_ESP32S` |
-| Laptop port | native USB-CDC (`/dev/ttyACM*`) | CP2102/CH340 bridge on UART0 (`/dev/ttyUSB*`, `COM5`-style) |
-| Laptop driver | none on Linux/macOS; may need the ESP32 USB driver on Windows | CP210x/CH340 driver, which every OS ships |
-| Optional LoRa UART | UART1, D16/D17, AUX D18 | UART1, D16/D17 (RX2/TX2), AUX D18 |
-| Status LED | WS2812 on GPIO48, five colours | on-board blue LED on GPIO2, blink pattern |
-| Wiring that moves | -- | PURGE D6→**D15**, IGNITER D7→**D13**, heartbeat D8→**D33** (GPIO6–11 are SPI flash) |
+1. Install the ESP32 board package in Arduino IDE (Arduino-ESP32 3.x
+   recommended; 2.x is also supported by both sketches).
+2. Open `espnow_receiver/espnow_receiver.ino`, flash the actuator board, and
+   open the Serial Monitor at 115200. Note the **Receiver MAC** it prints.
+3. Put that MAC into `RECEIVER_MAC` at the top of `espnow_sender.ino`, flash the
+   controller, and note the **Sender MAC** it prints.
+4. Put the sender's MAC into `SENDER_MAC` in the receiver sketch and reflash it.
+   (Keep `ENFORCE_SENDER_MAC = true`; set it to `false` only for a bench test
+   with a throwaway controller.)
+5. Bench-test with servo horns detached and the igniter disconnected: send
+   `1`, `2`, `3`, then `4` from the controller's Serial Monitor and watch the
+   receiver log and the PWM outputs.
 
-### Optional LoRa module wiring
+## How a command works
 
-* **M0 and M1 → GND on both modules.** They are module outputs while the factory-default `AT+SWITCH=0` is in force,
-  but the moment a module is in `AT+SWITCH=1` they become weakly-pulled-up *mode inputs*, and a floating pin parks the
-  module in AT mode, wake-on-radio or sleep — it provisions cleanly and never receives. See
-  [`hardware/wiring.md` §1.2](hardware/wiring.md#12-m0--m1-do-not-leave-them-floating).
-* **LR42 and LR41 are not the same on VCC.** LR42-24T12D takes 3.3–5.5 V (5 V typical, ≥5 V for full power);
-  LR41-24T12S is 3.3 V only. UART levels are 3.3 V on both. Check the silkscreen before you power the board.
-* **The UART is crossed.** LR42 pin 3 is `RX` (input) and goes to the ESP32's **D17**; pin 4 is `TX` (output) and
-  goes to **D16**. The vendor's reference circuit is reproduced in [`hardware/wiring.md` §1.1](hardware/wiring.md#11-the-vendors-own-reference-circuit-lr42-manual-figure-6).
-* **AUX is optional.** Wire it to D18, or leave it off and build with `-DGSE_LORA_AUX_NONE` (you lose busy-flow
-  control, nothing else). The boot log says which mode the firmware is in.
+1. Controller builds an 18-byte packet with a magic word, random token, command
+   ID, hold time, both target pulse widths, and CRC-16.
+2. The packet is transmitted 3 times, 120 ms apart, to survive a lost frame.
+3. Receiver checks sender MAC, packet length, magic, CRC, token (replay filter),
+   and pulse ranges. Subsequent copies of the same command are ignored.
+4. For servo commands, the selected servo(s) move to the requested pulse
+   immediately, hold for `holdMs` (max 5000 ms), then return to `SERVO_HOME_US`.
+   A new command while an action is running is ignored.
+5. For IGN, GPIO 32 goes HIGH for `holdMs` (max 2000 ms), then LOW. Servos stay
+   at home during ignition.
 
-Both nodes print the module's own `AT+HELP` dump at provisioning (`LOG RADIO ...`), plus the answer to a separate
-`AT+SWITCH` query (`LOG | SWITCH:0 ...` — v2.0's `AT+HELP` banner does not carry that field), so the
-configuration that decides whether the link works is in the log instead of assumed.
+### Packet layout (must match in both sketches)
 
-The three pad-node pins that move do so because GPIO6..11 are wired to the SPI flash on every
-ESP32-WROOM-32; an ESP32-S3 devkit can drive GPIO6, a WROOM-32 cannot. Everything else is the same wire.
-`src/config.h` refuses to build a pad node that puts a servo, the relay or the heartbeat on a flash pin
-or on an input-only pin (GPIO34–39), and refuses to put the igniter relay on a strapping pin. The pin
-map and the full wiring table are in [`hardware/wiring.md`](hardware/wiring.md).
+| Offset | Type | Field | Meaning |
+| --- | --- | --- | --- |
+| 0-3 | uint32 | `magic` | `0x314B4352` ("RCK1" over the air) |
+| 4-7 | uint32 | `token` | random ID; receiver remembers the last 8 |
+| 8 | uint8 | `cmd` | 1=servo0, 2=servo1, 3=both, 4=IGN |
+| 9 | uint8 | `reserved` | must be 0 |
+| 10-11 | uint16 | `holdMs` | target hold / IGN on-time in ms |
+| 12-13 | uint16 | `servo0PulseUs` | 500-2500 |
+| 14-15 | uint16 | `servo1PulseUs` | 500-2500 |
+| 16-17 | uint16 | `crc16` | CRC-16/CCITT-FALSE over bytes 0-15 |
 
-Neither flag is required: with no flag at all the build targets the ESP32-S3, so every existing command
-and every existing board keeps working unchanged.
-
-## If upload fails
-
-`Failed to connect to ESP32-S3: No serial data received` is an esptool problem, not a build problem. (An
-ESP-32S is easier here: its single micro-USB socket is a USB-UART bridge, so this failure basically cannot
-happen -- see the board-variant section above.) See
-**`docs/TROUBLESHOOTING_UPLOAD.md`** — in order: use the **UART** socket (not the native USB one), the upload
-speed is already pinned to 115200, and BOOT+RST forces download mode.
-
-## If the link won't come up
-
-`NO PAD TELEMETRY` with only `dir=tx` rows in the CSV means nothing has ever come back from the pad. See
-**`docs/TROUBLESHOOTING_LINK.md`** — the pad node now prints a boot banner, a `RADIO OK` / `RADIO FAULT` verdict
-and 1 Hz counters (`bytes`, `sof`, `valid`) on its USB port, which separates a dead radio from a dead link in
-about two seconds. On a Nucleo TX node, LD1 flashes per packet sent and LD2 per packet received, so the same
-diagnosis takes one glance at the board.
-
-## Tests
-
-```bash
-make -C tests run                 # wire-protocol tests (incl. one-frame-one-datagram) + the TX core
-sh tests/esp32_syntax_check.sh    # every ESP32 board variant compiles (host g++, no toolchain),
-                                  # LoRa and ESP-NOW, against Arduino-ESP32 2.x and 3.x
-python software/tests/test_protocol.py    # 9 host tests, incl. byte-identical golden frames
-python software/tests/test_sim_loop.py    # 6 closed-loop tests against the pad simulator
-python software/tests/test_gui_config.py  # 8 GUI tests (config panel, connect errors, banners)
-```
-
-The integration test runs the real TX core, ESP-NOW adapter and pad output loop
-with mocked radios and GPIO for both pin maps. This is not a hardware test.
-`pio run` and the physical bench/range gates still need to be run on the target
-boards; do not connect an igniter during initial tests.
-
-## Repo map
-
-```
-firmware/                  PlatformIO project, ESP-NOW defaults and optional LoRa environments
-  src/common/gse_protocol.h   wire protocol + failsafe rules (single source of truth)
-  src/config.h                all builder-editable constants (board variant, pins, channels, limits)
-  src/dxlr41.h                AT-command driver with verification
-  src/link.h                  transport seam: ESP-NOW (default) or LoRa module
-  src/pad/pad_node.cpp        pad node firmware
-  src/common/gse_hal.h        seven platform services a TX node supplies
-  src/common/gse_tx_core.c    portable laptop-side bridge (pacing, stale reject, SAFE stream)
-  src/tx/tx_platform_esp32.cpp  ESP32 platform layer (ESP32-S3 and ESP-32S)
-  src/stm32/tx_platform_nucleo.cpp  Nucleo-H753ZI platform layer (env tx-nucleo)
-  stm32/tx_platform_stm32.c   STM32Cube HAL port + README for CubeIDE users
-software/
-  run_gui.py                  launcher
-  gse_control/protocol.py     host mirror of the protocol (golden vectors)
-  gse_control/link.py         serial transport, CSV logging, simulator link
-  gse_control/sim.py          pad-node model for rehearsal and CI
-  gse_control/controller.py   GUI logic (headless-testable)
-  gse_control/app.py          tkinter GUI
-  tests/                      protocol + closed-loop tests
-tests/                        C unit tests + the ESP32 board-variant syntax check
-tools/make_figures.py         regenerates the documentation figures
-tools/build_ecr_pdf.py        renders ECR-01 markdown -> PDF (source of truth is the .md)
-tools/finish_insert.py        stamps the HCR-5100 page chrome onto the Section VI insert
-hardware/wiring.md            bench wiring sheet
-docs/                         PDFs, figures, test plan, operator card
-```
-
-## Status
-
-Draft for review. Not flight hardware until the test gates are signed and a reviewer has accepted the safety
-analysis in §6 of the ECR.
+There is no encryption: MAC filtering and CRC only guard against unintended
+senders and corrupted frames. `esp_now_send()` returning `ESP_OK` only means the
+frame was handed to the radio, not that the receiver acted on it. Do not treat
+this radio link as a safety interlock for pyrotechnics.

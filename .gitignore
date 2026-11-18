@@ -1,4 +1,0 @@
-# Local PlatformIO and Python build products
-firmware/.pio/
-__pycache__/
-*.pyc
