@@ -38,11 +38,11 @@
 // USER CONFIGURATION - edit before flashing
 // ---------------------------------------------------------------------------
 // MAC address printed by the receiver sketch at boot (STA MAC).
-static uint8_t RECEIVER_MAC[6] = {0xA4, 0xF0, 0x0F, 0x61, 0x84, 0x3C}; // A4:F0:0F:61:84:3C
+static uint8_t RECEIVER_MAC[6] = {0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8}; // A4:F0:0F:61:84:3C for #1, B0:CB:D8:89:4F:B8 for #2
 
 // PWM pulse widths sent to the receiver. DS3225 range is 500-2500 us.
-static constexpr uint16_t SERVO0_TARGET_US = 2000;  // FILL open position
-static constexpr uint16_t SERVO1_TARGET_US = 2000;  // VEH open position
+static constexpr uint16_t SERVO0_TARGET_US = 500;  // FILL open position
+static constexpr uint16_t SERVO1_TARGET_US = 500;  // VEH open position
 static constexpr uint16_t SERVO_HOLD_MS    = 500;   // test pulse hold
 static constexpr uint16_t IGN_ON_MS        = 1000;  // test IGN pulse (clamped on RX)
 
