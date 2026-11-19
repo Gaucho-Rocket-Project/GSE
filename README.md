@@ -1,19 +1,35 @@
 # ESP-NOW servo / ignition actuator link
 
-Two Arduino sketches (`.ino`, Arduino IDE compatible) that turn commands from a
-controller ESP32 into servo and ignition actions on a second ESP32:
+Two Arduino sketches (`.ino`, Arduino IDE compatible) plus a desktop controller
+binary turn commands from a controller ESP32 into servo and ignition actions on
+a second ESP32.
 
-| Command | Action on receiver |
-| --- | --- |
-| `1` | Actuate **servo0** (GPIO 18): move to target pulse, hold, return home |
-| `2` | Actuate **servo1** (GPIO 5): move to target pulse, hold, return home |
-| `3` | Actuate **servo0 + servo1** together |
-| `4` | **IGN** (GPIO 32, active HIGH): drive HIGH for the on-time, then LOW |
+```
+PC controller binary -- USB serial --> ESP32 sender -- ESP-NOW --> ESP32 receiver
+                                      (GPIO18 / GPIO5 / GPIO32 actuators)
+```
+
+There are two command families:
+
+| Command | Mode | Action on receiver |
+| --- | --- | --- |
+| `1` / `2` / `3` / `4` | TEST | Timed pulse on servo0 / servo1 / both / IGN |
+| `SV0_ON` / `SV0_OFF` | both | FILL (servo0) latched open / closed |
+| `SV1_ON` / `SV1_OFF` | both | VEH (servo1) latched open / closed |
+| `BOTH_OFF` | both | Close FILL and VEH |
+| `IGN_ARM:<ms>` | LIVE | Start IGN countdown; IGN ON stays locked out |
+| `IGN_ON` / `IGN_OFF` | both | Fire / reset latched IGN |
+| `ALL_OFF` | both | Close FILL and VEH, force IGN OFF |
+
+The TEST/LIVE operator interface, countdowns and greyed-out buttons are in
+[`../../controller/README.md`](../../controller/README.md).
 
 ## Files
 
-- `espnow_sender/espnow_sender.ino` - controller; type `1`, `2`, `3`, or `4` in the Serial Monitor.
-- `espnow_receiver/espnow_receiver.ino` - actuator board; owns the servo and IGN pins.
+- `espnow_sender/espnow_sender.ino` - controller bridge: parses USB serial text
+  commands and forwards them as ESP-NOW packets; prints receiver ACKs.
+- `espnow_receiver/espnow_receiver.ino` - actuator board: owns the servo and IGN
+  pins, enforces interlocks, and ACKs every command.
 
 Both sketches are self-contained: no third-party libraries are required (only
 the Arduino-ESP32 core and its bundled `WiFi`/`esp_now`/LEDC APIs). Folder names
@@ -46,15 +62,15 @@ Consequences for the build:
 
 | Signal | ESP32 (receiver) | Notes |
 | --- | --- | --- |
-| servo0 PWM | GPIO 18 | 50 Hz, 500-2500 us, via 220 ohm series resistor optional |
-| servo1 PWM | GPIO 5 | same |
+| servo0 PWM | GPIO 18 | FILL in live mode; 50 Hz, 500-2500 us, 220 ohm series resistor optional |
+| servo1 PWM | GPIO 5 | VEH in live mode |
 | IGN | GPIO 32 | active HIGH, drives a logic-level MOSFET / relay driver, never an igniter directly |
 | GND | any ESP32 GND | common with BEC and igniter driver |
 
-IGN output is forced LOW at boot and is only HIGH during a validated,
-time-limited command (clamped to 2000 ms). Add a 10 kohm pulldown at GPIO 32 so
-the igniter stays off during ESP32 reset/boot, plus a physical arming switch
-and a series safety interlock in the igniter wiring.
+IGN output is forced LOW at boot. In TEST mode it is a timed pulse (clamped to
+2000 ms); in LIVE mode it stays latched until `IGN_OFF` / `ALL_OFF`. Add a
+10 kohm pulldown at GPIO 32 so the igniter stays off during ESP32 reset/boot,
+plus a physical arming switch and a series safety interlock.
 
 ## Setup
 
@@ -68,34 +84,68 @@ and a series safety interlock in the igniter wiring.
    (Keep `ENFORCE_SENDER_MAC = true`; set it to `false` only for a bench test
    with a throwaway controller.)
 5. Bench-test with servo horns detached and the igniter disconnected: send
-   `1`, `2`, `3`, then `4` from the controller's Serial Monitor and watch the
-   receiver log and the PWM outputs.
+   `1`, `2`, `3`, then `4` from the controller's Serial Monitor, then test the
+   latched commands from the desktop binary.
+
+### If the MAC prints as 00:00:00:00:00:00
+
+On Arduino-ESP32 3.x, `WiFi.macAddress()` can return all zeros when the STA
+interface has not started yet. Both sketches therefore read the STA MAC via
+`esp_wifi_get_mac()` (waiting briefly for `WiFi.STA.started()` on core 3.x),
+falling back to `esp_read_mac(ESP_MAC_WIFI_STA)`. If you still see zeros, check
+that the factory MAC is programmed (`esptool.py chip_id` / `efuse_summary`) and
+that you are flashing a genuine ESP32 with a supported board package. Never put
+the printed zeros into `RECEIVER_MAC` or `SENDER_MAC`: the sender refuses to
+start with an all-zero peer MAC, and the receiver rejects every packet when
+`ENFORCE_SENDER_MAC` is enabled.
 
 ## How a command works
 
-1. Controller builds an 18-byte packet with a magic word, random token, command
-   ID, hold time, both target pulse widths, and CRC-16.
-2. The packet is transmitted 3 times, 120 ms apart, to survive a lost frame.
-3. Receiver checks sender MAC, packet length, magic, CRC, token (replay filter),
-   and pulse ranges. Subsequent copies of the same command are ignored.
-4. For servo commands, the selected servo(s) move to the requested pulse
-   immediately, hold for `holdMs` (max 5000 ms), then return to `SERVO_HOME_US`.
-   A new command while an action is running is ignored.
-5. For IGN, GPIO 32 goes HIGH for `holdMs` (max 2000 ms), then LOW. Servos stay
-   at home during ignition.
+1. The controller (desktop binary or Serial Monitor) sends one ASCII line over
+   USB at 115200 baud. The sender ESP32 maps it to a command ID.
+2. The sender builds an 18-byte packet with a magic word, random token, command
+   ID, mode flag, hold/arm time, both target pulse widths, and CRC-16.
+3. The packet is transmitted 3 times, 120 ms apart, to survive a lost frame.
+4. The receiver checks sender MAC, packet length, magic, CRC, token (replay
+   filter), and pulse ranges. Subsequent copies of the same command are ignored.
+5. Timed test commands return the servo(s) to home after the hold; latched
+   commands hold their position/state until an OFF command is received.
+6. The receiver ACKs each command with the token, command ID and an `accepted`
+   flag. A `0` means an interlock or countdown refused the action; the desktop
+   binary shows the rejection.
 
-### Packet layout (must match in both sketches)
+### Firmware-side interlocks
+
+Even if the desktop binary is bypassed, the receiver refuses to:
+
+- open VEH while FILL is open;
+- arm or fire IGN while FILL is open or VEH is open;
+- accept `IGN ON` before the requested arm delay has elapsed;
+- open FILL while VEH is open or IGN is armed/on;
+- accept a combined `BOTH ON` (VEH must never open together with FILL).
+
+### Command packet layout (must match in both sketches)
 
 | Offset | Type | Field | Meaning |
 | --- | --- | --- | --- |
 | 0-3 | uint32 | `magic` | `0x314B4352` ("RCK1" over the air) |
 | 4-7 | uint32 | `token` | random ID; receiver remembers the last 8 |
-| 8 | uint8 | `cmd` | 1=servo0, 2=servo1, 3=both, 4=IGN |
-| 9 | uint8 | `reserved` | must be 0 |
-| 10-11 | uint16 | `holdMs` | target hold / IGN on-time in ms |
+| 8 | uint8 | `cmd` | see command table above |
+| 9 | uint8 | `reserved` | 0 = timed test pulse, 1 = latched live state |
+| 10-11 | uint16 | `holdMs` | test hold / `IGN_ARM` countdown in ms |
 | 12-13 | uint16 | `servo0PulseUs` | 500-2500 |
 | 14-15 | uint16 | `servo1PulseUs` | 500-2500 |
 | 16-17 | uint16 | `crc16` | CRC-16/CCITT-FALSE over bytes 0-15 |
+
+### ACK packet (receiver to sender, 12 bytes)
+
+| Offset | Type | Field | Meaning |
+| --- | --- | --- | --- |
+| 0-3 | uint32 | `magic` | `0x314B4341` ("ACK1") |
+| 4-7 | uint32 | `token` | copied from the command |
+| 8 | uint8 | `cmd` | command ID |
+| 9 | uint8 | `accepted` | 1 = actuated, 0 = rejected |
+| 10-11 | uint16 | `crc16` | CRC-16/CCITT-FALSE over bytes 0-9 |
 
 There is no encryption: MAC filtering and CRC only guard against unintended
 senders and corrupted frames. `esp_now_send()` returning `ESP_OK` only means the

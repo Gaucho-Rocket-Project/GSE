@@ -2,9 +2,18 @@
   espnow_receiver.ino - ESP-NOW servo / ignition actuator board.
 
   Upload this sketch to the *actuator* ESP32:
-    servo0 signal : GPIO 18
-    servo1 signal : GPIO 5
+    servo0 signal : GPIO 18  (FILL in live mode)
+    servo1 signal : GPIO 5   (VEH in live mode)
     IGN           : GPIO 32, active HIGH
+
+  Two command families are supported:
+    1-4    : timed test pulses (serial monitor / test mode)
+    10-19  : latched ON/OFF states used by the desktop controller live mode
+
+  Safety interlocks are enforced here as well as in the controller:
+    - VEH and IGN cannot turn ON while FILL is open.
+    - FILL cannot open while VEH is open or IGN is armed/on.
+    - IGN ON is rejected until the arm countdown has elapsed.
 
   Servos are the DS3225 digital servos from the 52Pi D-0001 wiki:
     4.8-6.8 V supply, 500-2500 us pulse, 50-330 Hz, up to 2.9 A stall each.
@@ -31,7 +40,7 @@ static uint8_t SENDER_MAC[6] = {0xA4, 0xF0, 0x0F, 0x62, 0x0C, 0xB8}; //A4:F0:0F:
 static constexpr bool ENFORCE_SENDER_MAC = true;  // false only for bench testing
 
 static constexpr uint8_t  SERVO0_PIN = 18;
-static constexpr uint8_t  SERVO1_PIN = 15;
+static constexpr uint8_t  SERVO1_PIN = 5;
 static constexpr uint8_t  IGN_PIN    = 32;        // active HIGH
 
 // LEDC channels (only used by Arduino-ESP32 2.x; 3.x assigns channels itself).
@@ -45,32 +54,57 @@ static constexpr uint16_t PWM_PERIOD_US     = 1000000UL / PWM_FREQ_HZ;  // 20000
 static constexpr uint16_t SERVO_MIN_US      = 500;
 static constexpr uint16_t SERVO_MAX_US      = 2500;
 static constexpr uint16_t SERVO_HOME_US     = 1000; // rest/retracted position
-static constexpr uint16_t MAX_SERVO_HOLD_MS = 5000; // hard cap on servo target time
-static constexpr uint16_t MAX_IGN_ON_MS     = 2000; // hard cap on IGN on-time
+static constexpr uint16_t DEFAULT_OPEN_US   = 2000; // used if packet pulse is invalid
+static constexpr uint16_t MAX_SERVO_HOLD_MS = 5000; // hard cap on test pulse time
+static constexpr uint16_t MAX_IGN_ON_MS     = 2000; // hard cap on *test* IGN pulse
+static constexpr uint32_t MAX_IGN_ARM_MS    = 60000;
 // ---------------------------------------------------------------------------
 
 enum : uint8_t {
+  // Timed test actions (reserved = 0).
   CMD_SERVO0 = 1,
   CMD_SERVO1 = 2,
   CMD_BOTH   = 3,
-  CMD_IGN    = 4
+  CMD_IGN    = 4,
+
+  // Latched live-mode states (reserved = 1).
+  CMD_SV0_OFF  = 10,
+  CMD_SV0_ON   = 11,
+  CMD_SV1_OFF  = 12,
+  CMD_SV1_ON   = 13,
+  CMD_BOTH_OFF = 14,
+  CMD_BOTH_ON  = 15,   // rejected: FILL must be closed before VEH opens
+  CMD_IGN_OFF  = 16,
+  CMD_IGN_ARM  = 17,
+  CMD_IGN_ON   = 18,
+  CMD_ALL_OFF  = 19
 };
 
 // Wire format (must match the sender sketch byte for byte).
 static constexpr uint32_t PACKET_MAGIC = 0x314B4352U;  // "RCK1" little endian
+static constexpr uint32_t ACK_MAGIC    = 0x314B4341U;  // "ACK1" little endian
 
 struct __attribute__((packed)) CommandPacket {
   uint32_t magic;
   uint32_t token;
   uint8_t  cmd;
-  uint8_t  reserved;
-  uint16_t holdMs;
-  uint16_t servo0PulseUs;
-  uint16_t servo1PulseUs;
+  uint8_t  reserved;        // 0 = test pulse, 1 = latched live state
+  uint16_t holdMs;          // test hold / IGN arm countdown in ms
+  uint16_t servo0PulseUs;   // 500-2500
+  uint16_t servo1PulseUs;   // 500-2500
   uint16_t crc16;
 };
 
-static constexpr size_t CRC_OFFSET = offsetof(CommandPacket, crc16);
+struct __attribute__((packed)) AckPacket {
+  uint32_t magic;
+  uint32_t token;
+  uint8_t  cmd;
+  uint8_t  accepted;
+  uint16_t crc16;
+};
+
+static constexpr size_t CRC_OFFSET    = offsetof(CommandPacket, crc16);
+static constexpr size_t ACK_CRC_OFFSET = offsetof(AckPacket, crc16);
 static constexpr uint8_t SEEN_TOKEN_COUNT = 8;
 
 // CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection/XOROUT.
@@ -168,13 +202,33 @@ static bool validPulse(uint16_t pulseUs)
   return pulseUs >= SERVO_MIN_US && pulseUs <= SERVO_MAX_US;
 }
 
-static void setServoHome()
+// ---- Latched live-mode state ----------------------------------------------
+static bool     fillOpen        = false;
+static bool     vehOpen         = false;
+static bool     ignOn           = false;
+static bool     ignArmed        = false;
+static uint32_t ignArmStartMs   = 0;
+static uint32_t ignArmRequiredMs = 0;
+static uint16_t fillOpenUs      = DEFAULT_OPEN_US;
+static uint16_t vehOpenUs       = DEFAULT_OPEN_US;
+
+static void applyServoPulses()
 {
-  pwmWrite(SERVO0_PIN, SERVO0_CHANNEL, pulseToDuty(SERVO_HOME_US));
-  pwmWrite(SERVO1_PIN, SERVO1_CHANNEL, pulseToDuty(SERVO_HOME_US));
+  pwmWrite(SERVO0_PIN, SERVO0_CHANNEL, pulseToDuty(fillOpen ? fillOpenUs : SERVO_HOME_US));
+  pwmWrite(SERVO1_PIN, SERVO1_CHANNEL, pulseToDuty(vehOpen ? vehOpenUs : SERVO_HOME_US));
 }
 
-// ---- Action state machine (non-blocking) ----------------------------------
+static void clearLatched()
+{
+  fillOpen = false;
+  vehOpen = false;
+  ignOn = false;
+  ignArmed = false;
+  digitalWrite(IGN_PIN, LOW);
+  applyServoPulses();
+}
+
+// ---- Timed test action state machine (non-blocking) -----------------------
 enum class Phase : uint8_t { IDLE, SERVO_HOLD, IGN_HOLD };
 
 static Phase    phase          = Phase::IDLE;
@@ -183,52 +237,137 @@ static uint32_t phaseDuration  = 0;
 static bool     servo0Active   = false;
 static bool     servo1Active   = false;
 
-static void startAction(const CommandPacket &packet)
+// Returns true when the command was accepted. Every command gets an ACK.
+static bool startAction(const CommandPacket &packet)
 {
   if (phase != Phase::IDLE)
   {
     Serial.println("BUSY: command ignored");
-    return;
+    return false;
   }
 
-  if (packet.cmd == CMD_SERVO0 || packet.cmd == CMD_SERVO1 || packet.cmd == CMD_BOTH)
+  switch (packet.cmd)
   {
-    if (!validPulse(packet.servo0PulseUs) || !validPulse(packet.servo1PulseUs)) return;
+    // ---- Test mode: timed pulses. Starting a pulse also clears live state.
+    case CMD_SERVO0:
+    case CMD_SERVO1:
+    case CMD_BOTH:
+    {
+      if (!validPulse(packet.servo0PulseUs) || !validPulse(packet.servo1PulseUs)) return false;
+      clearLatched();
 
-    servo0Active = (packet.cmd == CMD_SERVO0 || packet.cmd == CMD_BOTH);
-    servo1Active = (packet.cmd == CMD_SERVO1 || packet.cmd == CMD_BOTH);
+      servo0Active = (packet.cmd == CMD_SERVO0 || packet.cmd == CMD_BOTH);
+      servo1Active = (packet.cmd == CMD_SERVO1 || packet.cmd == CMD_BOTH);
+      applyServoPulses();
+      pwmWrite(SERVO0_PIN, SERVO0_CHANNEL,
+               pulseToDuty(servo0Active ? packet.servo0PulseUs : SERVO_HOME_US));
+      pwmWrite(SERVO1_PIN, SERVO1_CHANNEL,
+               pulseToDuty(servo1Active ? packet.servo1PulseUs : SERVO_HOME_US));
 
-    pwmWrite(SERVO0_PIN, SERVO0_CHANNEL,
-             pulseToDuty(servo0Active ? packet.servo0PulseUs : SERVO_HOME_US));
-    pwmWrite(SERVO1_PIN, SERVO1_CHANNEL,
-             pulseToDuty(servo1Active ? packet.servo1PulseUs : SERVO_HOME_US));
+      phase = Phase::SERVO_HOLD;
+      phaseStartMs = millis();
+      phaseDuration = min(packet.holdMs, MAX_SERVO_HOLD_MS);
+      Serial.println("Test pulse started");
+      return true;
+    }
 
-    phase = Phase::SERVO_HOLD;
-    phaseStartMs = millis();
-    phaseDuration = min(packet.holdMs, MAX_SERVO_HOLD_MS);
+    case CMD_IGN:
+    {
+      if (fillOpen || vehOpen) return false;
+      clearLatched();
+      digitalWrite(IGN_PIN, HIGH);
+      phase = Phase::IGN_HOLD;
+      phaseStartMs = millis();
+      phaseDuration = (packet.holdMs == 0) ? 1 : min(packet.holdMs, MAX_IGN_ON_MS);
+      Serial.print("Test IGN HIGH for ");
+      Serial.print(phaseDuration);
+      Serial.println(" ms");
+      return true;
+    }
 
-    Serial.print("Actuating ");
-    Serial.println(servo0Active ? (servo1Active ? "servo0 + servo1" : "servo0") : "servo1");
-  }
-  else if (packet.cmd == CMD_IGN)
-  {
-    // Servos stay at home while the igniter is fired.
-    setServoHome();
-    servo0Active = false;
-    servo1Active = false;
+    // ---- Live mode: latched states.
+    case CMD_SV0_ON:
+      if (vehOpen || ignOn || ignArmed) return false;
+      if (!validPulse(packet.servo0PulseUs)) return false;
+      fillOpen = true;
+      fillOpenUs = packet.servo0PulseUs;
+      applyServoPulses();
+      Serial.println("FILL OPEN");
+      return true;
 
-    digitalWrite(IGN_PIN, HIGH);
-    phase = Phase::IGN_HOLD;
-    phaseStartMs = millis();
-    phaseDuration = (packet.holdMs == 0) ? 1 : min(packet.holdMs, MAX_IGN_ON_MS);
+    case CMD_SV0_OFF:
+      fillOpen = false;
+      applyServoPulses();
+      Serial.println("FILL CLOSED");
+      return true;
 
-    Serial.print("IGN HIGH for ");
-    Serial.print(phaseDuration);
-    Serial.println(" ms");
+    case CMD_SV1_ON:
+      if (fillOpen) return false;
+      if (!validPulse(packet.servo1PulseUs)) return false;
+      vehOpen = true;
+      vehOpenUs = packet.servo1PulseUs;
+      applyServoPulses();
+      Serial.println("VEH OPEN");
+      return true;
+
+    case CMD_SV1_OFF:
+      vehOpen = false;
+      applyServoPulses();
+      Serial.println("VEH CLOSED");
+      return true;
+
+    case CMD_BOTH_ON:
+      // Interlock: VEH must never open while FILL is open, so a combined ON
+      // command is refused by the actuator. Use test command 3 for a pulse.
+      Serial.println("BOTH ON refused: FILL must be closed for VEH");
+      return false;
+
+    case CMD_BOTH_OFF:
+      fillOpen = false;
+      vehOpen = false;
+      applyServoPulses();
+      Serial.println("FILL + VEH CLOSED");
+      return true;
+
+    case CMD_IGN_ARM:
+      if (fillOpen || vehOpen || ignOn) return false;
+      ignOn = false;
+      ignArmed = true;
+      ignArmStartMs = millis();
+      ignArmRequiredMs = min(static_cast<uint32_t>(packet.holdMs), MAX_IGN_ARM_MS);
+      digitalWrite(IGN_PIN, LOW);
+      Serial.print("IGN arming for ");
+      Serial.print(ignArmRequiredMs);
+      Serial.println(" ms");
+      return true;
+
+    case CMD_IGN_ON:
+      if (fillOpen || vehOpen) return false;
+      if (!ignArmed || (millis() - ignArmStartMs) < ignArmRequiredMs) return false;
+      ignArmed = false;
+      ignOn = true;
+      digitalWrite(IGN_PIN, HIGH);
+      Serial.println("IGN ON (latched)");
+      return true;
+
+    case CMD_IGN_OFF:
+      ignArmed = false;
+      ignOn = false;
+      digitalWrite(IGN_PIN, LOW);
+      Serial.println("IGN OFF");
+      return true;
+
+    case CMD_ALL_OFF:
+      clearLatched();
+      Serial.println("ALL OFF");
+      return true;
+
+    default:
+      return false;
   }
 }
 
-// ---- Duplicate rejection ---------------------------------------------------
+// ---- Duplicate rejection and ACK ------------------------------------------
 static uint32_t seenTokens[SEEN_TOKEN_COUNT] = {};
 static uint8_t  seenIndex = 0;
 
@@ -245,6 +384,18 @@ static void rememberToken(uint32_t token)
 {
   seenTokens[seenIndex] = token;
   seenIndex = (seenIndex + 1) % SEEN_TOKEN_COUNT;
+}
+
+static void sendAck(const uint8_t *dest, uint32_t token, uint8_t cmd, bool accepted)
+{
+  if (dest == nullptr) return;
+  AckPacket ack{};
+  ack.magic = ACK_MAGIC;
+  ack.token = token;
+  ack.cmd = cmd;
+  ack.accepted = accepted ? 1 : 0;
+  ack.crc16 = crc16Ccitt(reinterpret_cast<const uint8_t *>(&ack), ACK_CRC_OFFSET);
+  esp_now_send(dest, reinterpret_cast<const uint8_t *>(&ack), sizeof(ack));
 }
 
 // ESP-NOW receive callback signature changed between Arduino-ESP32 2.x and 3.x.
@@ -269,10 +420,11 @@ void onDataRecv(const uint8_t *src, const uint8_t *data, int len)
   if (packet.magic != PACKET_MAGIC) return;
   if (packet.crc16 != crc16Ccitt(data, CRC_OFFSET)) return;
   if (packet.token == 0 || tokenAlreadySeen(packet.token)) return;
-  if (packet.reserved != 0) return;
+  if (packet.reserved > 1) return;
 
   rememberToken(packet.token);
-  startAction(packet);
+  bool accepted = startAction(packet);
+  sendAck(src, packet.token, packet.cmd, accepted);
 }
 
 void setup()
@@ -280,8 +432,7 @@ void setup()
   Serial.begin(115200);
   delay(50);
 
-  // Ignition output is forced LOW before anything else and stays LOW except
-  // during a validated, time-limited CMD_IGN action.
+  // Ignition output is forced LOW before anything else.
   pinMode(IGN_PIN, OUTPUT);
   digitalWrite(IGN_PIN, LOW);
 
@@ -290,7 +441,7 @@ void setup()
   {
     Serial.println("LEDC setup failed");
   }
-  setServoHome();
+  applyServoPulses();
 
   if (ENFORCE_SENDER_MAC && !macConfigured(SENDER_MAC))
   {
@@ -332,17 +483,18 @@ void setup()
 
 void loop()
 {
-  // Return servos to their home pulse once the hold time has elapsed.
+  // Return servos to their home pulse once a test hold has elapsed.
   if (phase == Phase::SERVO_HOLD && (millis() - phaseStartMs) >= phaseDuration)
   {
-    setServoHome();
+    applyServoPulses();
     servo0Active = false;
     servo1Active = false;
     phase = Phase::IDLE;
     Serial.println("Servos back at home");
   }
 
-  // IGN is only ever HIGH inside this window; always time-limited.
+  // Test-mode IGN pulse is time-limited; live-mode IGN stays latched until
+  // an explicit IGN OFF / ALL OFF command.
   if (phase == Phase::IGN_HOLD && (millis() - phaseStartMs) >= phaseDuration)
   {
     digitalWrite(IGN_PIN, LOW);

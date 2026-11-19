@@ -1,16 +1,25 @@
 /*
-  espnow_sender.ino - ESP-NOW controller for the servo / ignition actuator board.
+  espnow_sender.ino - ESP-NOW bridge for the servo / ignition actuator board.
 
   Upload this sketch to the *controller* ESP32. The matching receiver sketch is
   ESPNOW/servo_ign/espnow_receiver/espnow_receiver.ino
 
   Arduino IDE:  Tools > Board > ESP32 Dev Module, Serial Monitor at 115200 baud.
 
-  Commands (type in Serial Monitor and press Enter):
-    1 = actuate servo0 (GPIO 18 on receiver)
-    2 = actuate servo1 (GPIO 5 on receiver)
-    3 = actuate servo0 and servo1 together
-    4 = IGN (GPIO 32 on receiver, active HIGH)
+  Text commands over USB serial (one per line, newline terminates):
+    Test mode (timed pulses):
+      1 / 2 / 3 / 4      servo0 / servo1 / both / IGN pulse
+    Live mode (latched states):
+      SV0_ON  SV0_OFF    FILL open / closed
+      SV1_ON  SV1_OFF    VEH open / closed
+      BOTH_OFF           close FILL and VEH
+      IGN_ARM[:ms]       start IGN countdown (default 5000 ms)
+      IGN_ON  IGN_OFF    fire / reset IGN
+      ALL_OFF            force both servos closed and IGN off
+      PING               replies PONG
+
+  The desktop controller binary sends these same commands. Every ESP-NOW
+  command is answered by the receiver with ACK <token> <cmd> <accepted>.
 
   The pulse widths and hold times below are starting values only. Tune them to
   the actual mechanism before connecting an ignition.
@@ -32,11 +41,10 @@
 static uint8_t RECEIVER_MAC[6] = {0xA4, 0xF0, 0x0F, 0x61, 0x84, 0x3C}; // A4:F0:0F:61:84:3C
 
 // PWM pulse widths sent to the receiver. DS3225 range is 500-2500 us.
-static constexpr uint16_t SERVO0_TARGET_US = 500;  // fired/target position
-static constexpr uint16_t SERVO1_TARGET_US = 500;
-static constexpr uint16_t SERVO_HOLD_MS    = 5000;   // time at target before return
-
-static constexpr uint16_t IGN_ON_MS        = 1000;  // receiver clamps to 2000 ms max
+static constexpr uint16_t SERVO0_TARGET_US = 2000;  // FILL open position
+static constexpr uint16_t SERVO1_TARGET_US = 2000;  // VEH open position
+static constexpr uint16_t SERVO_HOLD_MS    = 500;   // test pulse hold
+static constexpr uint16_t IGN_ON_MS        = 1000;  // test IGN pulse (clamped on RX)
 
 // Every command is sent a few times; the receiver filters duplicates by token.
 static constexpr uint8_t  TX_RETRIES       = 3;
@@ -44,27 +52,41 @@ static constexpr uint16_t TX_RETRY_GAP_MS  = 120;
 // ---------------------------------------------------------------------------
 
 enum : uint8_t {
-  CMD_SERVO0 = 1,
-  CMD_SERVO1 = 2,
-  CMD_BOTH   = 3,
-  CMD_IGN    = 4
+  CMD_SERVO0 = 1, CMD_SERVO1 = 2, CMD_BOTH = 3, CMD_IGN = 4,
+  CMD_SV0_OFF = 10, CMD_SV0_ON = 11,
+  CMD_SV1_OFF = 12, CMD_SV1_ON = 13,
+  CMD_BOTH_OFF = 14, CMD_BOTH_ON = 15,
+  CMD_IGN_OFF = 16, CMD_IGN_ARM = 17, CMD_IGN_ON = 18,
+  CMD_ALL_OFF = 19
 };
 
 // Wire format (must match the receiver sketch byte for byte).
 static constexpr uint32_t PACKET_MAGIC = 0x314B4352U;  // "RCK1" little endian
+static constexpr uint32_t ACK_MAGIC    = 0x314B4341U;  // "ACK1" little endian
 
 struct __attribute__((packed)) CommandPacket {
-  uint32_t magic;           // PACKET_MAGIC
-  uint32_t token;           // random, used by receiver to drop retransmissions
-  uint8_t  cmd;             // CMD_*
-  uint8_t  reserved;        // 0
-  uint16_t holdMs;          // ms at target / IGN on-time
-  uint16_t servo0PulseUs;   // 500-2500
-  uint16_t servo1PulseUs;   // 500-2500
-  uint16_t crc16;           // CRC-16/CCITT over all preceding bytes
+  uint32_t magic;
+  uint32_t token;
+  uint8_t  cmd;
+  uint8_t  reserved;        // 0 = test pulse, 1 = latched live state
+  uint16_t holdMs;
+  uint16_t servo0PulseUs;
+  uint16_t servo1PulseUs;
+  uint16_t crc16;
+};
+
+struct __attribute__((packed)) AckPacket {
+  uint32_t magic;
+  uint32_t token;
+  uint8_t  cmd;
+  uint8_t  accepted;
+  uint16_t crc16;
 };
 
 static constexpr size_t CRC_OFFSET = offsetof(CommandPacket, crc16);
+static constexpr size_t ACK_CRC_OFFSET = offsetof(AckPacket, crc16);
+
+static String rxLine;   // USB serial line buffer
 
 // CRC-16/CCITT-FALSE: poly 0x1021, init 0xFFFF, no reflection/XOROUT.
 static uint16_t crc16Ccitt(const uint8_t *data, size_t len)
@@ -128,24 +150,21 @@ static void printMac(const char *label, const uint8_t mac[6])
   Serial.println();
 }
 
-static void sendCommand(uint8_t cmd)
+static void sendCommand(uint8_t cmd, uint16_t holdMs = 0, uint8_t mode = 0)
 {
+  uint16_t hold = (holdMs != 0) ? holdMs
+                : ((cmd == CMD_IGN) ? IGN_ON_MS : SERVO_HOLD_MS);
+
   CommandPacket packet{};
   packet.magic = PACKET_MAGIC;
   packet.token = esp_random();
   if (packet.token == 0) packet.token = 1;   // 0 reserved as "no token"
   packet.cmd = cmd;
-  packet.reserved = 0;
-  packet.holdMs = (cmd == CMD_IGN) ? IGN_ON_MS : SERVO_HOLD_MS;
+  packet.reserved = mode;
+  packet.holdMs = hold;
   packet.servo0PulseUs = SERVO0_TARGET_US;
   packet.servo1PulseUs = SERVO1_TARGET_US;
   packet.crc16 = crc16Ccitt(reinterpret_cast<const uint8_t *>(&packet), CRC_OFFSET);
-
-  const char *name = "?";
-  if (cmd == CMD_SERVO0) name = "servo0";
-  else if (cmd == CMD_SERVO1) name = "servo1";
-  else if (cmd == CMD_BOTH) name = "both servos";
-  else if (cmd == CMD_IGN) name = "IGN";
 
   for (uint8_t attempt = 0; attempt < TX_RETRIES; ++attempt)
   {
@@ -154,16 +173,82 @@ static void sendCommand(uint8_t cmd)
                                  sizeof(packet));
     if (err != ESP_OK)
     {
-      Serial.print("esp_now_send failed, error 0x");
+      Serial.print("ERR send failed 0x");
       Serial.println(static_cast<int>(err), HEX);
     }
     if (attempt + 1 < TX_RETRIES) delay(TX_RETRY_GAP_MS);
   }
-  Serial.print("Sent ");
-  Serial.print(name);
-  Serial.print(" (token ");
-  Serial.print(packet.token);
-  Serial.println(")");
+  Serial.print("SENT ");
+  Serial.print(cmd);
+  Serial.print(" ");
+  Serial.println(packet.token);
+}
+
+// ESP-NOW receive callback signature changed between Arduino-ESP32 2.x and 3.x.
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+void onAckRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
+{
+  (void)info;
+#else
+void onAckRecv(const uint8_t *mac, const uint8_t *data, int len)
+{
+  (void)mac;
+#endif
+  if (data == nullptr || len != static_cast<int>(sizeof(AckPacket))) return;
+  AckPacket ack{};
+  memcpy(&ack, data, sizeof(ack));
+  if (ack.magic != ACK_MAGIC) return;
+  if (ack.crc16 != crc16Ccitt(data, ACK_CRC_OFFSET)) return;
+
+  Serial.print("ACK ");
+  Serial.print(ack.token);
+  Serial.print(" ");
+  Serial.print(ack.cmd);
+  Serial.print(" ");
+  Serial.println(ack.accepted ? "1" : "0");
+}
+
+static void handleLine(String line)
+{
+  line.trim();
+  line.toUpperCase();
+  if (line.length() == 0) return;
+
+  // Legacy single-key test commands.
+  if (line.length() == 1)
+  {
+    switch (line.charAt(0))
+    {
+      case '1': sendCommand(CMD_SERVO0); return;
+      case '2': sendCommand(CMD_SERVO1); return;
+      case '3': sendCommand(CMD_BOTH);   return;
+      case '4': sendCommand(CMD_IGN);    return;
+      default: break;
+    }
+  }
+
+  if      (line == "SV0_OFF")  sendCommand(CMD_SV0_OFF, 0, 1);
+  else if (line == "SV0_ON")   sendCommand(CMD_SV0_ON, 0, 1);
+  else if (line == "SV1_OFF")  sendCommand(CMD_SV1_OFF, 0, 1);
+  else if (line == "SV1_ON")   sendCommand(CMD_SV1_ON, 0, 1);
+  else if (line == "BOTH_OFF") sendCommand(CMD_BOTH_OFF, 0, 1);
+  else if (line == "BOTH_ON")  sendCommand(CMD_BOTH_ON, 0, 1);
+  else if (line == "IGN_OFF")  sendCommand(CMD_IGN_OFF, 0, 1);
+  else if (line == "IGN_ON")   sendCommand(CMD_IGN_ON, 0, 1);
+  else if (line == "ALL_OFF")  sendCommand(CMD_ALL_OFF, 0, 1);
+  else if (line == "PING")     Serial.println("PONG");
+  else if (line.startsWith("IGN_ARM"))
+  {
+    uint16_t ms = 5000;
+    int colon = line.indexOf(':');
+    if (colon >= 0 && colon + 1 < line.length())
+    {
+      long requested = line.substring(colon + 1).toInt();
+      if (requested > 0 && requested <= 60000) ms = static_cast<uint16_t>(requested);
+    }
+    sendCommand(CMD_IGN_ARM, ms, 1);
+  }
+  else Serial.println("ERR unknown command");
 }
 
 void setup()
@@ -204,26 +289,30 @@ void setup()
     return;
   }
 
-  Serial.println("Ready. Commands: 1=servo0  2=servo1  3=both  4=IGN");
+  esp_now_register_recv_cb(onAckRecv);
+
+  Serial.println("Ready. Test: 1/2/3/4. Live: SV0_ON, SV1_ON, IGN_ARM, IGN_ON, ALL_OFF.");
   Serial.println("TEST WITH IGNITION DISCONNECTED FIRST.");
 }
 
 void loop()
 {
-  if (Serial.available() > 0)
+  while (Serial.available() > 0)
   {
-    int incoming = Serial.read();
-    while (Serial.available() > 0) Serial.read();   // flush line ending/extra keys
-
-    switch (incoming)
+    char incoming = static_cast<char>(Serial.read());
+    if (incoming == '\n' || incoming == '\r')
     {
-      case '1': sendCommand(CMD_SERVO0); break;
-      case '2': sendCommand(CMD_SERVO1); break;
-      case '3': sendCommand(CMD_BOTH);   break;
-      case '4': sendCommand(CMD_IGN);    break;
-      default:
-        Serial.println("Use 1=servo0, 2=servo1, 3=both, 4=IGN");
-        break;
+      handleLine(rxLine);
+      rxLine = "";
+    }
+    else
+    {
+      rxLine += incoming;
+      if (rxLine.length() > 63)
+      {
+        Serial.println("ERR command too long");
+        rxLine = "";
+      }
     }
   }
 }
