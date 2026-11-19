@@ -94,7 +94,23 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual(self.state.ign_state, ARMED)
         self.assertTrue(self.state.ign_on())
         self.assertEqual(self.state.ign_state, ON)
+        self.assertTrue(self.state.veh_open, "IGN must open VEH together with ignition")
         self.assertTrue(self.state.ign_off())
+        self.assertTrue(self.state.veh_open, "IGN OFF does not close VEH")
+        self.assertEqual(self.state.ign_state, OFF)
+
+    def test_manual_veh_blocked_while_arming_or_armed(self):
+        self.assertTrue(self.state.ign_arm())
+        self.assertFalse(self.state.can_veh_on)
+        self.assertFalse(self.state.veh_on())
+        self.clock.advance(5)
+        self.state.tick()
+        self.assertFalse(self.state.can_veh_on)
+        self.assertFalse(self.state.veh_on())
+        self.assertTrue(self.state.ign_on())
+        self.assertTrue(self.state.veh_open)
+        self.state.all_off()
+        self.assertFalse(self.state.veh_open)
         self.assertEqual(self.state.ign_state, OFF)
 
     def test_ign_arm_can_be_cancelled(self):

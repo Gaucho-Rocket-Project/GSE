@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native Qt controller for the two-ESP32 ESP-NOW servo / ignition link.
 
-The binary talks to the sender ESP32 over USB serial. The firmware owns the
+The binary talks to the ground ESP32 over USB serial. The firmware owns the
 firmware-side interlocks; this application adds the operator-facing TEST and
 LIVE modes, countdowns and disabled (greyed-out) buttons.
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QIODevice, Qt, QTimer, QTime
 from PySide6.QtGui import QColor, QFont
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from telemetry import TelemetryLog, parse_telemetry
 from live_state import ARMED, ARMING, FILL_TIME_UP, IGN_ARMED, OFF, ON, REJECT, LiveState
 
 BAUD = 115200
@@ -56,6 +58,10 @@ class MainWindow(QWidget):
         self.state = LiveState()
         self.mode = "TEST"
         self.rx_buffer = ""
+        # Frozen builds write to the launch working directory; source builds to
+        # the repository root. Override for packaged deployments as needed.
+        default_root = Path.cwd() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
+        self.telemetry_log = TelemetryLog(Path(os.environ.get("GSE_DATA_DIR", default_root / "data")) / "telemetry.csv")
 
         self.serial = QSerialPort(self)
         self.serial.setBaudRate(BAUD)
@@ -77,24 +83,26 @@ class MainWindow(QWidget):
         self.setMinimumWidth(720)
         self.setStyleSheet(
             """
-            QWidget { background: #10131a; color: #e8edf5; }
-            QGroupBox { border: 1px solid #39435a; border-radius: 6px; margin-top: 8px;
-                        font-weight: bold; }
-            QLabel#big { font: bold 26px monospace; }
-            QPushButton { padding: 8px 6px; border-radius: 5px; border: 1px solid #4a5670;
-                          background: #232b3c; }
-            QPushButton:disabled { color: #5f6878; background: #171b24; border-color: #2a2f3c; }
-            QPushButton#go { background: #1d6b46; border-color: #2fa96c; }
-            QPushButton#warn { background: #7a5a13; border-color: #c99a2e; }
-            QPushButton#danger { background: #7d2020; border-color: #d04848; }
-            QComboBox, QSpinBox { background: #1b2130; border: 1px solid #39435a;
-                                  padding: 4px; border-radius: 4px; }
-            QPlainTextEdit { background: #0b0e14; border: 1px solid #2a3245;
-                             font: 11px monospace; }
+            QWidget { background: #080b0e; color: #d8dce0; font-family: monospace; font-size: 12px; }
+            QGroupBox { border: 1px solid #41474d; margin-top: 15px; padding-top: 8px; color: #ff9b26; font-weight: bold; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 5px; }
+            QLabel#big { font: bold 26px monospace; color: #ffae36; }
+            QPushButton { padding: 7px 8px; border: 1px solid #626a71; background: #20262c; color: #e6e9eb; }
+            QPushButton:hover { border-color: #ff9b26; background: #303840; }
+            QPushButton:disabled { color: #62666a; background: #111417; border-color: #292d30; }
+            QPushButton#go { background: #153c2e; border-color: #378a60; }
+            QPushButton#warn { background: #4b3215; border-color: #b87926; }
+            QPushButton#danger { background: #59211f; border-color: #b74139; }
+            QComboBox, QSpinBox { background: #151a1e; border: 1px solid #525b62; padding: 4px; color: #ffaf36; }
+            QPlainTextEdit { background: #050708; border: 1px solid #41474d; color: #d4dadc; font: 12px monospace; }
             """
         )
 
         root = QVBoxLayout(self)
+
+        header = QLabel("GSE  /  GROUND CONTROL                                      ESP-NOW   •   OPERATIONS")
+        header.setStyleSheet("background: #da7819; color: #080b0e; font-weight: bold; padding: 7px;")
+        root.addWidget(header)
 
         # Top: mode + serial link.
         top = QHBoxLayout()
@@ -162,6 +170,21 @@ class MainWindow(QWidget):
         cfg.addWidget(self.ign_seconds)
         cfg.addStretch()
         root.addLayout(cfg)
+        targets = QHBoxLayout()
+        targets.addWidget(QLabel("SERVO TARGETS  /  µs"))
+        self.fill_target = QSpinBox()
+        self.fill_target.setRange(500, 2500)
+        self.fill_target.setValue(500)
+        targets.addWidget(QLabel("FILL"))
+        targets.addWidget(self.fill_target)
+        self.veh_target = QSpinBox()
+        self.veh_target.setRange(500, 2500)
+        self.veh_target.setValue(500)
+        targets.addWidget(QLabel("VEH"))
+        targets.addWidget(self.veh_target)
+        targets.addWidget(QLabel("Applied on next actuation"))
+        targets.addStretch()
+        root.addLayout(targets)
 
         # Output controls.
         outputs = QGroupBox("Outputs")
@@ -200,6 +223,9 @@ class MainWindow(QWidget):
         self.btn_ign_on = QPushButton("IGN ON")
         self.btn_ign_on.setObjectName("danger")
         self.btn_ign_on.clicked.connect(self.ign_on_clicked)
+        self.btn_ign_pulse = QPushButton("IGN PULSE (TEST)")
+        self.btn_ign_pulse.setObjectName("danger")
+        self.btn_ign_pulse.clicked.connect(lambda: self.send("4"))
         self.btn_ign_off = QPushButton("IGN OFF / RESET")
         self.btn_ign_off.clicked.connect(self.ign_off_clicked)
 
@@ -216,12 +242,14 @@ class MainWindow(QWidget):
         grid.addWidget(self.btn_veh_on, 3, 0)
         grid.addWidget(self.btn_veh_off, 3, 1)
 
-        grid.addWidget(QLabel("BOTH servos"), 4, 0)
+        self.both_label = QLabel("BOTH servos  /  TEST only")
+        grid.addWidget(self.both_label, 4, 0)
         grid.addWidget(self.btn_both_on, 5, 0)
         grid.addWidget(self.btn_both_pulse, 5, 1)
         grid.addWidget(self.btn_both_off, 5, 2)
 
         grid.addWidget(QLabel("IGN  GPIO32 active-high"), 6, 0)
+        grid.addWidget(self.btn_ign_pulse, 7, 0)
         grid.addWidget(self.btn_ign_arm, 7, 0)
         grid.addWidget(self.btn_ign_on, 7, 1)
         grid.addWidget(self.btn_ign_off, 7, 2)
@@ -229,13 +257,34 @@ class MainWindow(QWidget):
         grid.addWidget(self.btn_all_off, 8, 0, 1, 3)
         root.addWidget(outputs)
 
+        self.telemetry_toggle = QPushButton("TELEMETRY  ▾  /  SHOW")
+        self.telemetry_toggle.setCheckable(True)
+        self.telemetry_toggle.toggled.connect(self.toggle_telemetry)
+        root.addWidget(self.telemetry_toggle)
+        self.telemetry_panel = QGroupBox("VEHICLE TELEMETRY  /  LIVE")
+        telemetry_layout = QVBoxLayout(self.telemetry_panel)
+        self.telemetry_info = QLabel(f"Waiting for data  •  CSV: {self.telemetry_log.path}")
+        self.telemetry_info.setWordWrap(True)
+        telemetry_layout.addWidget(self.telemetry_info)
+        self.telemetry_view = QPlainTextEdit()
+        self.telemetry_view.setReadOnly(True)
+        self.telemetry_view.setMaximumHeight(160)
+        self.telemetry_view.document().setMaximumBlockCount(200)
+        telemetry_layout.addWidget(self.telemetry_view)
+        self.telemetry_panel.hide()
+        root.addWidget(self.telemetry_panel)
+
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumHeight(170)
         root.addWidget(QLabel("Link log"))
         root.addWidget(self.log_view)
 
-        self.log("TEST mode selected. Connect to the sender ESP32.")
+        self.log("TEST mode selected. Connect to the ground ESP32.")
+
+    def toggle_telemetry(self, visible: bool) -> None:
+        self.telemetry_panel.setVisible(visible)
+        self.telemetry_toggle.setText("TELEMETRY  ▴  /  HIDE" if visible else "TELEMETRY  ▾  /  SHOW")
 
     # --------------------------------------------------------------- serial
     def refresh_ports(self) -> None:
@@ -272,6 +321,8 @@ class MainWindow(QWidget):
             self.log(f"NO LINK - {command} NOT SENT")
             self.flash_status("NO LINK - command not sent", "#e67e22")
             return False
+        if command in ("1", "2", "3", "SV0_ON", "SV1_ON", "IGN_ON"):
+            command = f"{command}:{self.fill_target.value()},{self.veh_target.value()}"
         self.serial.write((command + "\n").encode("ascii"))
         self.log(f"TX  {command}")
         return True
@@ -280,12 +331,25 @@ class MainWindow(QWidget):
         self.rx_buffer += bytes(self.serial.readAll()).decode("utf-8", "replace")
         while "\n" in self.rx_buffer:
             line, self.rx_buffer = self.rx_buffer.split("\n", 1)
-            self.parse_line(line.strip())
+            self.parse_line(line.rstrip("\r"))
 
     def parse_line(self, line: str) -> None:
         if not line:
             return
-        if line.startswith("ACK "):
+        if line.startswith("TLM "):
+            sample = parse_telemetry(line)
+            if sample is None:
+                self.log("Invalid telemetry record discarded")
+                return
+            try:
+                timestamp = self.telemetry_log.append(sample)
+            except OSError as exc:
+                self.log(f"Telemetry CSV write failed: {exc}")
+                self.flash_status("TELEMETRY CSV ERROR", "#e74c3c")
+                timestamp = "NOT SAVED"
+            self.telemetry_info.setText(f"Latest #{sample[0]}  |  vehicle uptime {sample[1]} ms  |  {timestamp}  |  CSV: {self.telemetry_log.path}")
+            self.telemetry_view.appendPlainText(f"{timestamp}  #{sample[0]}  {sample[2]}")
+        elif line.startswith("ACK "):
             parts = line.split()
             if len(parts) >= 4 and parts[3] == "0":
                 self.log(f"REJECTED by actuator: cmd {parts[2]} (interlock/countdown)")
@@ -295,10 +359,10 @@ class MainWindow(QWidget):
         elif line == "PONG":
             self.log("Link OK (PONG)")
         elif line.startswith("SENT"):
-            pass  # local echo from the sender
+            pass  # local echo from ground
         elif line.startswith("ERR"):
             self.log(line)
-            self.flash_status("Sender error", "#e74c3c")
+            self.flash_status("Ground error", "#e74c3c")
         else:
             self.log(f"RX  {line}")
 
@@ -486,9 +550,14 @@ class MainWindow(QWidget):
         self.btn_fill_extend.setEnabled(connected and (state.can_fill_extend if live else False))
         self.btn_veh_on.setEnabled(connected and (state.can_veh_on if live else True))
         self.btn_veh_off.setEnabled(connected and (state.can_veh_off if live else True))
+        for widget in (self.both_label, self.btn_both_on, self.btn_both_pulse, self.btn_both_off):
+            widget.setVisible(not live)
         self.btn_both_on.setEnabled(connected and not live)
-        self.btn_both_pulse.setEnabled(connected)
-        self.btn_both_off.setEnabled(connected)
+        self.btn_both_pulse.setEnabled(connected and not live)
+        self.btn_both_off.setEnabled(connected and not live)
+        self.btn_ign_pulse.setVisible(not live)
+        self.btn_ign_pulse.setEnabled(connected and not live)
+        self.btn_ign_arm.setVisible(live)
         self.btn_ign_arm.setEnabled(connected and (state.can_ign_arm if live else False))
         self.btn_ign_on.setEnabled(connected and (state.can_ign_on if live else False))
         self.btn_ign_off.setEnabled(connected and (state.can_ign_off if live else True))
@@ -498,7 +567,7 @@ class MainWindow(QWidget):
 def main() -> int:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setFont(QFont("Segoe UI", 10))
+    app.setFont(QFont("Monospace", 10))
     window = MainWindow()
     window.show()
     return app.exec()

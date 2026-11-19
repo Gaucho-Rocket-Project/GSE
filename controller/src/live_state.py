@@ -112,8 +112,8 @@ class LiveState:
         if self.veh_open:
             self._emit(REJECT, "VEH is already OPEN")
             return False
-        if self.fill_open:
-            self._emit(REJECT, "VEH refused: FILL must be CLOSED first")
+        if self.fill_open or self.ign_state in (ARMING, ARMED):
+            self._emit(REJECT, "VEH refused: FILL must be CLOSED and IGN not arming")
             return False
         self.veh_open = True
         self._emit("VEH_OPEN", "VEH OPEN")
@@ -148,8 +148,9 @@ class LiveState:
             self._emit(REJECT, "IGN ON locked out until the countdown completes")
             return False
         self.ign_state = ON
+        self.veh_open = True
         self.ign_deadline = None
-        self._emit("IGN_ON", "IGN ON (latched - reset with IGN OFF)")
+        self._emit("IGN_ON", "IGN ON + VEH OPEN (latched - reset with IGN OFF)")
         return True
 
     def ign_off(self) -> bool:
@@ -230,7 +231,7 @@ class LiveState:
 
     @property
     def can_veh_on(self) -> bool:
-        return not self.veh_open and not self.fill_open
+        return not self.veh_open and not self.fill_open and self.ign_state not in (ARMING, ARMED)
 
     @property
     def can_veh_off(self) -> bool:

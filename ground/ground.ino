@@ -1,8 +1,8 @@
 /*
-  espnow_sender.ino - ESP-NOW bridge for the servo / ignition actuator board.
+  ground.ino - ESP-NOW bridge for the servo / ignition actuator board.
 
-  Upload this sketch to the *controller* ESP32. The matching receiver sketch is
-  ESPNOW/servo_ign/espnow_receiver/espnow_receiver.ino
+  Upload this sketch to the *controller* ESP32. The matching vehicle sketch is
+  vehicle/vehicle.ino
 
   Arduino IDE:  Tools > Board > ESP32 Dev Module, Serial Monitor at 115200 baud.
 
@@ -19,7 +19,7 @@
       PING               replies PONG
 
   The desktop controller binary sends these same commands. Every ESP-NOW
-  command is answered by the receiver with ACK <token> <cmd> <accepted>.
+  command is answered by the vehicle with ACK <token> <cmd> <accepted>.
 
   The pulse widths and hold times below are starting values only. Tune them to
   the actual mechanism before connecting an ignition.
@@ -31,22 +31,24 @@
 #include <esp_wifi.h>     // esp_wifi_get_mac()
 #include <esp_mac.h>      // esp_read_mac(), ESP_MAC_WIFI_STA
 #include <esp_system.h>   // esp_random()
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <stddef.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
 // USER CONFIGURATION - edit before flashing
 // ---------------------------------------------------------------------------
-// MAC address printed by the receiver sketch at boot (STA MAC).
-static uint8_t RECEIVER_MAC[6] = {0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8}; // A4:F0:0F:61:84:3C for #1, B0:CB:D8:89:4F:B8 for #2
+// MAC address printed by the vehicle sketch at boot (STA MAC).
+static uint8_t VEHICLE_MAC[6] = {0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8}; // A4:F0:0F:61:84:3C for #1, B0:CB:D8:89:4F:B8 for #2
 
-// PWM pulse widths sent to the receiver. DS3225 range is 500-2500 us.
-static constexpr uint16_t SERVO0_TARGET_US = 500;  // FILL open position
-static constexpr uint16_t SERVO1_TARGET_US = 500;  // VEH open position
+// PWM pulse widths sent to the vehicle. DS3225 range is 500-2500 us.
+static uint16_t servo0TargetUs = 500;  // FILL open position
+static uint16_t servo1TargetUs = 500;  // VEH open position
 static constexpr uint16_t SERVO_HOLD_MS    = 500;   // test pulse hold
 static constexpr uint16_t IGN_ON_MS        = 1000;  // test IGN pulse (clamped on RX)
 
-// Every command is sent a few times; the receiver filters duplicates by token.
+// Every command is sent a few times; the vehicle filters duplicates by token.
 static constexpr uint8_t  TX_RETRIES       = 3;
 static constexpr uint16_t TX_RETRY_GAP_MS  = 120;
 // ---------------------------------------------------------------------------
@@ -60,7 +62,7 @@ enum : uint8_t {
   CMD_ALL_OFF = 19
 };
 
-// Wire format (must match the receiver sketch byte for byte).
+// Wire format (must match the vehicle sketch byte for byte).
 static constexpr uint32_t PACKET_MAGIC = 0x314B4352U;  // "RCK1" little endian
 static constexpr uint32_t ACK_MAGIC    = 0x314B4341U;  // "ACK1" little endian
 
@@ -83,6 +85,20 @@ struct __attribute__((packed)) AckPacket {
   uint16_t crc16;
 };
 
+static constexpr size_t TELEMETRY_MAX = 200;
+static constexpr uint32_t TELEMETRY_MAGIC = 0x314D4C54U;
+struct __attribute__((packed)) TelemetryPacket {
+  uint32_t magic;
+  uint32_t sequence;
+  uint32_t uptimeMs;
+  uint8_t length;
+  char data[TELEMETRY_MAX];
+  uint16_t crc16;
+};
+static_assert(sizeof(TelemetryPacket) <= 250, "ESP-NOW payload too large");
+// Receive callbacks run in the Wi-Fi task. Print complete records in loop().
+struct ReceivedMessage { bool telemetry; AckPacket ack; TelemetryPacket sample; };
+static QueueHandle_t receivedQueue = nullptr;
 static constexpr size_t CRC_OFFSET = offsetof(CommandPacket, crc16);
 static constexpr size_t ACK_CRC_OFFSET = offsetof(AckPacket, crc16);
 
@@ -162,13 +178,13 @@ static void sendCommand(uint8_t cmd, uint16_t holdMs = 0, uint8_t mode = 0)
   packet.cmd = cmd;
   packet.reserved = mode;
   packet.holdMs = hold;
-  packet.servo0PulseUs = SERVO0_TARGET_US;
-  packet.servo1PulseUs = SERVO1_TARGET_US;
+  packet.servo0PulseUs = servo0TargetUs;
+  packet.servo1PulseUs = servo1TargetUs;
   packet.crc16 = crc16Ccitt(reinterpret_cast<const uint8_t *>(&packet), CRC_OFFSET);
 
   for (uint8_t attempt = 0; attempt < TX_RETRIES; ++attempt)
   {
-    esp_err_t err = esp_now_send(RECEIVER_MAC,
+    esp_err_t err = esp_now_send(VEHICLE_MAC,
                                  reinterpret_cast<const uint8_t *>(&packet),
                                  sizeof(packet));
     if (err != ESP_OK)
@@ -194,18 +210,27 @@ void onAckRecv(const uint8_t *mac, const uint8_t *data, int len)
 {
   (void)mac;
 #endif
-  if (data == nullptr || len != static_cast<int>(sizeof(AckPacket))) return;
-  AckPacket ack{};
-  memcpy(&ack, data, sizeof(ack));
-  if (ack.magic != ACK_MAGIC) return;
-  if (ack.crc16 != crc16Ccitt(data, ACK_CRC_OFFSET)) return;
+  const uint8_t *src =
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+      info ? info->src_addr : nullptr;
+#else
+      mac;
+#endif
+  if (!src || memcmp(src, VEHICLE_MAC, 6) != 0 || !data || !receivedQueue) return;
+  ReceivedMessage msg{};
+  if (len == static_cast<int>(sizeof(AckPacket))) {
+    memcpy(&msg.ack, data, sizeof(msg.ack));
+    if (msg.ack.magic != ACK_MAGIC || msg.ack.crc16 != crc16Ccitt(data, ACK_CRC_OFFSET)) return;
+  } else if (len == static_cast<int>(sizeof(TelemetryPacket))) {
+    memcpy(&msg.sample, data, sizeof(msg.sample));
+    if (msg.sample.magic != TELEMETRY_MAGIC || msg.sample.length == 0 || msg.sample.length > TELEMETRY_MAX ||
+        msg.sample.crc16 != crc16Ccitt(data, offsetof(TelemetryPacket, crc16))) return;
+    for (size_t i = 0; i < msg.sample.length; ++i)
+      if (msg.sample.data[i] < 32 || msg.sample.data[i] > 126) return;
+    msg.telemetry = true;
+  } else return;
+  xQueueSend(receivedQueue, &msg, 0);
 
-  Serial.print("ACK ");
-  Serial.print(ack.token);
-  Serial.print(" ");
-  Serial.print(ack.cmd);
-  Serial.print(" ");
-  Serial.println(ack.accepted ? "1" : "0");
 }
 
 static void handleLine(String line)
@@ -213,6 +238,22 @@ static void handleLine(String line)
   line.trim();
   line.toUpperCase();
   if (line.length() == 0) return;
+
+  // Optional per-command pulse targets: COMMAND:<fill>,<veh>. Validated as
+  // a pair before sending; legacy commands retain the most recent targets.
+  if (!line.startsWith("IGN_ARM") && line.indexOf(':') >= 0) {
+    int colon = line.indexOf(':');
+    int comma = line.indexOf(',', colon + 1);
+    if (comma < 0) { Serial.println("ERR invalid targets"); return; }
+    String a = line.substring(colon + 1, comma), b = line.substring(comma + 1);
+    if (!a.length() || !b.length()) { Serial.println("ERR invalid targets"); return; }
+    for (size_t i = 0; i < a.length(); ++i) if (!isDigit(a[i])) { Serial.println("ERR invalid targets"); return; }
+    for (size_t i = 0; i < b.length(); ++i) if (!isDigit(b[i])) { Serial.println("ERR invalid targets"); return; }
+    long fill = a.toInt(), veh = b.toInt();
+    if (fill < 500 || fill > 2500 || veh < 500 || veh > 2500) { Serial.println("ERR targets out of range"); return; }
+    servo0TargetUs = fill; servo1TargetUs = veh;
+    line = line.substring(0, colon);
+  }
 
   // Legacy single-key test commands.
   if (line.length() == 1)
@@ -256,10 +297,10 @@ void setup()
   Serial.begin(115200);
   delay(50);
 
-  Serial.println("ESP-NOW servo/IGN sender");
-  if (!macConfigured(RECEIVER_MAC))
+  Serial.println("ESP-NOW servo/IGN ground");
+  if (!macConfigured(VEHICLE_MAC))
   {
-    Serial.println("ERROR: set RECEIVER_MAC to the receiver's STA MAC and reflash.");
+    Serial.println("ERROR: set VEHICLE_MAC to the vehicle's STA MAC and reflash.");
     return;
   }
 
@@ -267,8 +308,8 @@ void setup()
   WiFi.disconnect();
 
   uint8_t myMac[6] = {};
-  if (readStaMac(myMac)) printMac("Sender MAC (copy into receiver sketch): ", myMac);
-  else Serial.println("Could not read sender MAC");
+  if (readStaMac(myMac)) printMac("Ground MAC (copy into vehicle sketch): ", myMac);
+  else Serial.println("Could not read ground MAC");
 
   if (esp_now_init() != ESP_OK)
   {
@@ -277,7 +318,7 @@ void setup()
   }
 
   esp_now_peer_info_t peer{};
-  memcpy(peer.peer_addr, RECEIVER_MAC, 6);
+  memcpy(peer.peer_addr, VEHICLE_MAC, 6);
   peer.channel = 0;      // use the ESP32's own Wi-Fi channel
   peer.encrypt = false;  // CRC + MAC filter used instead of encryption
 
@@ -289,6 +330,8 @@ void setup()
     return;
   }
 
+  receivedQueue = xQueueCreate(16, sizeof(ReceivedMessage));
+  if (!receivedQueue) { Serial.println("ERROR: receive queue allocation failed"); return; }
   esp_now_register_recv_cb(onAckRecv);
 
   Serial.println("Ready. Test: 1/2/3/4. Live: SV0_ON, SV1_ON, IGN_ARM, IGN_ON, ALL_OFF.");
@@ -297,6 +340,19 @@ void setup()
 
 void loop()
 {
+  ReceivedMessage msg{};
+  while (receivedQueue && xQueueReceive(receivedQueue, &msg, 0) == pdTRUE) {
+    if (msg.telemetry) {
+      Serial.print("TLM "); Serial.print(msg.sample.sequence); Serial.print(" ");
+      Serial.print(msg.sample.uptimeMs); Serial.print(" ");
+      Serial.write(reinterpret_cast<const uint8_t *>(msg.sample.data), msg.sample.length);
+      Serial.println();
+    } else {
+      Serial.print("ACK "); Serial.print(msg.ack.token); Serial.print(" ");
+      Serial.print(msg.ack.cmd); Serial.print(" "); Serial.println(msg.ack.accepted ? "1" : "0");
+    }
+  }
+
   while (Serial.available() > 0)
   {
     char incoming = static_cast<char>(Serial.read());
