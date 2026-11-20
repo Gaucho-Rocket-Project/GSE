@@ -25,16 +25,18 @@ working directory unless `GSE_DATA_DIR` is set.
    checks the USB bridge, not the vehicle radio or output state.
 2. Open the **TELEMETRY** panel to see recent records live; closing it does not
    stop recording. CSV is appended in `data/telemetry.csv`; see root README.
-3. Set FILL and VEH open targets in microseconds (500–2500). These values are
-   sent with the next actuation, including VEH opening on ignition. Set and
+3. Set FILL and SRV open targets in microseconds (500–2500). These values are
+   sent with the next actuation, including SRV opening on ignition. Set and
    verify endpoints with horns detached.
-4. TEST retains individual FILL/VEH controls, combined pulse/close, and IGN
-   pulse/reset. LIVE hides combined-servo controls; ALL OFF remains available.
+4. TEST retains individual FILL/SRV controls, combined pulse/close, and IGN
+   pulse/reset. LIVE hides the SRV and combined-servo control rows; ALL OFF
+   remains available. LIVE opens SRV only through IGN ON.
    Switching modes requests ALL OFF.
 5. LIVE FILL OPEN starts its countdown. At zero an alert sounds but FILL stays
-   open. Close or extend manually. With FILL and VEH closed, arm IGN and wait
-   for the countdown. IGN ON commands ignition **and VEH open** together.
-   IGN OFF resets ignition but does not close VEH; use VEH CLOSE or ALL OFF.
+   open. Close or extend manually. While FILL is commanded open, IGN ARM and
+   IGN ON are greyed out, including after the FILL timer expires. With FILL and
+   SRV closed, arm IGN and wait for the countdown. IGN ON commands ignition **and SRV open** together.
+   IGN OFF resets ignition but does not close SRV; use ALL OFF in LIVE.
 
 The desktop's states and countdowns are optimistic; they are not a hardware
 readback. Rejections appear in the log but do not automatically reconcile the

@@ -8,7 +8,7 @@ LIVE modes, countdowns and disabled (greyed-out) buttons.
 Live-mode policy:
   * FILL timeout notifies but leaves FILL OPEN; operator closes early or
     extends the deadline.
-  * VEH and IGN controls are disabled while FILL is open.
+  * SRV and IGN controls are disabled while FILL is open.
   * IGN ON is locked out until the arming countdown finishes.
 """
 
@@ -177,11 +177,11 @@ class MainWindow(QWidget):
         self.fill_target.setValue(1860)
         targets.addWidget(QLabel("FILL"))
         targets.addWidget(self.fill_target)
-        self.veh_target = QSpinBox()
-        self.veh_target.setRange(500, 2500)
-        self.veh_target.setValue(1860)
-        targets.addWidget(QLabel("VEH"))
-        targets.addWidget(self.veh_target)
+        self.srv_target = QSpinBox()
+        self.srv_target.setRange(500, 2500)
+        self.srv_target.setValue(1860)
+        targets.addWidget(QLabel("SRV"))
+        targets.addWidget(self.srv_target)
         targets.addWidget(QLabel("Applied on next actuation"))
         targets.addStretch()
         root.addLayout(targets)
@@ -200,16 +200,16 @@ class MainWindow(QWidget):
         self.btn_fill_extend.setObjectName("warn")
         self.btn_fill_extend.clicked.connect(self.fill_extend_clicked)
 
-        self.btn_veh_on = QPushButton("VEH OPEN")
-        self.btn_veh_on.setObjectName("go")
-        self.btn_veh_on.clicked.connect(self.veh_on_clicked)
-        self.btn_veh_off = QPushButton("VEH CLOSE")
-        self.btn_veh_off.setObjectName("warn")
-        self.btn_veh_off.clicked.connect(self.veh_off_clicked)
+        self.btn_srv_on = QPushButton("SRV OPEN")
+        self.btn_srv_on.setObjectName("go")
+        self.btn_srv_on.clicked.connect(self.srv_on_clicked)
+        self.btn_srv_off = QPushButton("SRV CLOSE")
+        self.btn_srv_off.setObjectName("warn")
+        self.btn_srv_off.clicked.connect(self.srv_off_clicked)
 
         self.btn_both_on = QPushButton("BOTH OPEN")
         self.btn_both_on.setObjectName("go")
-        self.btn_both_on.setToolTip("Live mode uses individual controls: FILL must be closed for VEH")
+        self.btn_both_on.setToolTip("Combined controls are available only in TEST mode")
         self.btn_both_on.clicked.connect(self.both_on_clicked)
         self.btn_both_pulse = QPushButton("BOTH PULSE")
         self.btn_both_pulse.clicked.connect(self.both_pulse_clicked)
@@ -219,9 +219,11 @@ class MainWindow(QWidget):
 
         self.btn_ign_arm = QPushButton("IGN ARM")
         self.btn_ign_arm.setObjectName("warn")
+        self.btn_ign_arm.setToolTip("LIVE: FILL and SRV must be closed before IGN can be armed.")
         self.btn_ign_arm.clicked.connect(self.ign_arm_clicked)
         self.btn_ign_on = QPushButton("IGN ON")
         self.btn_ign_on.setObjectName("danger")
+        self.btn_ign_on.setToolTip("LIVE: FILL and SRV must be closed and the IGN countdown complete.")
         self.btn_ign_on.clicked.connect(self.ign_on_clicked)
         self.btn_ign_pulse = QPushButton("IGN PULSE (TEST)")
         self.btn_ign_pulse.setObjectName("danger")
@@ -238,9 +240,10 @@ class MainWindow(QWidget):
         grid.addWidget(self.btn_fill_close, 1, 1)
         grid.addWidget(self.btn_fill_extend, 1, 2)
 
-        grid.addWidget(QLabel("VEH  servo1 / GPIO5"), 2, 0)
-        grid.addWidget(self.btn_veh_on, 3, 0)
-        grid.addWidget(self.btn_veh_off, 3, 1)
+        self.srv_label = QLabel("SRV  servo1 / GPIO5")
+        grid.addWidget(self.srv_label, 2, 0)
+        grid.addWidget(self.btn_srv_on, 3, 0)
+        grid.addWidget(self.btn_srv_off, 3, 1)
 
         self.both_label = QLabel("BOTH servos  /  TEST only")
         grid.addWidget(self.both_label, 4, 0)
@@ -249,6 +252,8 @@ class MainWindow(QWidget):
         grid.addWidget(self.btn_both_off, 5, 2)
 
         grid.addWidget(QLabel("IGN  GPIO32 active-high"), 6, 0)
+        self.ign_gate_label = QLabel()
+        grid.addWidget(self.ign_gate_label, 6, 1, 1, 2)
         grid.addWidget(self.btn_ign_pulse, 7, 0)
         grid.addWidget(self.btn_ign_arm, 7, 0)
         grid.addWidget(self.btn_ign_on, 7, 1)
@@ -322,7 +327,7 @@ class MainWindow(QWidget):
             self.flash_status("NO LINK - command not sent", "#e67e22")
             return False
         if command in ("1", "2", "3", "SV0_ON", "SV1_ON", "IGN_ON"):
-            command = f"{command}:{self.fill_target.value()},{self.veh_target.value()}"
+            command = f"{command}:{self.fill_target.value()},{self.srv_target.value()}"
         self.serial.write((command + "\n").encode("ascii"))
         self.log(f"TX  {command}")
         return True
@@ -392,6 +397,8 @@ class MainWindow(QWidget):
 
     def flush_state_events(self) -> None:
         self.process_events(self.state.drain_events())
+        # Update gates immediately after an action, not on the next timer tick.
+        self.update_view()
 
     def on_tick(self) -> None:
         if self.mode == "LIVE":
@@ -410,7 +417,7 @@ class MainWindow(QWidget):
         if new_mode == self.mode:
             return
         if self.mode == "LIVE" and (
-            self.state.fill_open or self.state.veh_open or self.state.ign_state != OFF
+            self.state.fill_open or self.state.srv_open or self.state.ign_state != OFF
         ):
             answer = QMessageBox.question(
                 self,
@@ -452,30 +459,28 @@ class MainWindow(QWidget):
             self.log("FILL close deadline extended (no radio command needed)")
         self.flush_state_events()
 
-    def veh_on_clicked(self) -> None:
+    def srv_on_clicked(self) -> None:
         if self.mode == "TEST":
             self.send("SV1_ON")
-            self.log("TEST: VEH latched ON")
-        elif self.state.veh_on():
-            self.send("SV1_ON")
+            self.log("TEST: SRV latched ON")
         self.flush_state_events()
 
-    def veh_off_clicked(self) -> None:
+    def srv_off_clicked(self) -> None:
         if self.mode == "TEST":
             self.send("SV1_OFF")
-            self.log("TEST: VEH latched OFF")
-        elif self.state.veh_off():
-            self.send("SV1_OFF")
+            self.log("TEST: SRV latched OFF")
         self.flush_state_events()
 
     def both_on_clicked(self) -> None:
-        # Disabled in LIVE mode: FILL must be closed before VEH opens.
+        # Disabled in LIVE mode: FILL must be closed before SRV opens.
         if self.mode == "TEST":
             self.send("3")  # timed both-servo pulse
             self.log("TEST: both-servo pulse")
         self.flush_state_events()
 
     def both_pulse_clicked(self) -> None:
+        if self.mode != "TEST":
+            return
         self.send("3")
         self.log("TEST: both-servo pulse")
         self.flush_state_events()
@@ -484,7 +489,7 @@ class MainWindow(QWidget):
         self.send("BOTH_OFF")
         if self.mode == "LIVE":
             self.state.fill_open = False
-            self.state.veh_open = False
+            self.state.srv_open = False
             self.state.fill_deadline = None
         self.flush_state_events()
 
@@ -548,8 +553,10 @@ class MainWindow(QWidget):
         self.btn_fill_on.setEnabled(connected and (state.can_fill_on if live else True))
         self.btn_fill_close.setEnabled(connected and (state.can_fill_close if live else True))
         self.btn_fill_extend.setEnabled(connected and (state.can_fill_extend if live else False))
-        self.btn_veh_on.setEnabled(connected and (state.can_veh_on if live else True))
-        self.btn_veh_off.setEnabled(connected and (state.can_veh_off if live else True))
+        for widget in (self.srv_label, self.btn_srv_on, self.btn_srv_off):
+            widget.setVisible(not live)
+        self.btn_srv_on.setEnabled(connected and not live)
+        self.btn_srv_off.setEnabled(connected and not live)
         for widget in (self.both_label, self.btn_both_on, self.btn_both_pulse, self.btn_both_off):
             widget.setVisible(not live)
         self.btn_both_on.setEnabled(connected and not live)
@@ -557,6 +564,10 @@ class MainWindow(QWidget):
         self.btn_both_off.setEnabled(connected and not live)
         self.btn_ign_pulse.setVisible(not live)
         self.btn_ign_pulse.setEnabled(connected and not live)
+        self.ign_gate_label.setText(
+            "FILL OPEN — IGN LOCKED" if live and state.fill_open else
+            "FILL CLOSED (COMMANDED) — OTHER INTERLOCKS APPLY" if live else "TEST MODE"
+        )
         self.btn_ign_arm.setVisible(live)
         self.btn_ign_arm.setEnabled(connected and (state.can_ign_arm if live else False))
         self.btn_ign_on.setEnabled(connected and (state.can_ign_on if live else False))

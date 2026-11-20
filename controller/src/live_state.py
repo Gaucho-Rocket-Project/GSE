@@ -24,7 +24,7 @@ REJECT = "REJECT"
 
 
 class LiveState:
-    """Tracks FILL / VEH / IGN state and the two countdowns."""
+    """Tracks FILL / SRV / IGN state and the two countdowns."""
 
     def __init__(
         self,
@@ -41,7 +41,7 @@ class LiveState:
         self.fill_open = False
         self.fill_deadline: float | None = None
         self.fill_notified = False
-        self.veh_open = False
+        self.srv_open = False
         self.ign_state = OFF
         self.ign_deadline: float | None = None
         self._events: List[Tuple[str, str]] = []
@@ -77,8 +77,8 @@ class LiveState:
         if self.fill_open:
             self._emit(REJECT, "FILL is already OPEN")
             return False
-        if self.veh_open or self.ign_state != OFF:
-            self._emit(REJECT, "FILL refused: close VEH and reset IGN first")
+        if self.srv_open or self.ign_state != OFF:
+            self._emit(REJECT, "FILL refused: close SRV and reset IGN first")
             return False
         self.fill_open = True
         self.fill_deadline = self._now() + self.fill_seconds
@@ -107,33 +107,19 @@ class LiveState:
         self._emit("FILL_EXTENDED", f"FILL close delayed by {amount:.0f}s")
         return True
 
-    # -------------------------------------------------------------- VEH (svc1)
-    def veh_on(self) -> bool:
-        if self.veh_open:
-            self._emit(REJECT, "VEH is already OPEN")
-            return False
-        if self.fill_open or self.ign_state in (ARMING, ARMED):
-            self._emit(REJECT, "VEH refused: FILL must be CLOSED and IGN not arming")
-            return False
-        self.veh_open = True
-        self._emit("VEH_OPEN", "VEH OPEN")
-        return True
-
-    def veh_off(self) -> bool:
-        if not self.veh_open:
-            self._emit(REJECT, "VEH is already CLOSED")
-            return False
-        self.veh_open = False
-        self._emit("VEH_CLOSED", "VEH CLOSED")
-        return True
+    # -------------------------------------------------------------- SRV (svc1)
+    def srv_on(self) -> bool:
+        """LIVE SRV can only be opened by a completed IGN sequence."""
+        self._emit(REJECT, "SRV opens only with IGN in LIVE mode")
+        return False
 
     # ----------------------------------------------------------------- IGN
     def ign_arm(self) -> bool:
         if self.ign_state != OFF:
             self._emit(REJECT, "IGN must be reset to OFF before arming again")
             return False
-        if self.fill_open or self.veh_open:
-            self._emit(REJECT, "IGN refused: FILL must be CLOSED (and VEH closed)")
+        if self.fill_open or self.srv_open:
+            self._emit(REJECT, "IGN refused: FILL must be CLOSED (and SRV closed)")
             return False
         self.ign_state = ARMING
         self.ign_deadline = self._now() + self.ign_seconds
@@ -141,16 +127,16 @@ class LiveState:
         return True
 
     def ign_on(self) -> bool:
-        if self.fill_open or self.veh_open:
+        if self.fill_open or self.srv_open:
             self._emit(REJECT, "IGN refused: FILL must be CLOSED")
             return False
         if self.ign_state != ARMED:
             self._emit(REJECT, "IGN ON locked out until the countdown completes")
             return False
         self.ign_state = ON
-        self.veh_open = True
+        self.srv_open = True
         self.ign_deadline = None
-        self._emit("IGN_ON", "IGN ON + VEH OPEN (latched - reset with IGN OFF)")
+        self._emit("IGN_ON", "IGN ON + SRV OPEN (latched - reset with IGN OFF)")
         return True
 
     def ign_off(self) -> bool:
@@ -167,10 +153,10 @@ class LiveState:
         self.fill_open = False
         self.fill_deadline = None
         self.fill_notified = False
-        self.veh_open = False
+        self.srv_open = False
         self.ign_state = OFF
         self.ign_deadline = None
-        self._emit("ALL_OFF", "ALL OFF - FILL/VEH closed, IGN reset")
+        self._emit("ALL_OFF", "ALL OFF - FILL/SRV closed, IGN reset")
 
     def tick(self) -> List[Tuple[str, str]]:
         """Advance countdowns; call periodically. Returns newly fired events."""
@@ -219,7 +205,7 @@ class LiveState:
     # ------------------------------------------------------- button gating
     @property
     def can_fill_on(self) -> bool:
-        return not self.fill_open and not self.veh_open and self.ign_state == OFF
+        return not self.fill_open and not self.srv_open and self.ign_state == OFF
 
     @property
     def can_fill_close(self) -> bool:
@@ -230,20 +216,16 @@ class LiveState:
         return self.fill_open
 
     @property
-    def can_veh_on(self) -> bool:
-        return not self.veh_open and not self.fill_open and self.ign_state not in (ARMING, ARMED)
-
-    @property
-    def can_veh_off(self) -> bool:
-        return self.veh_open
+    def can_srv_on(self) -> bool:
+        return False  # LIVE SRV is opened only by IGN ON
 
     @property
     def can_ign_arm(self) -> bool:
-        return self.ign_state == OFF and not self.fill_open and not self.veh_open
+        return self.ign_state == OFF and not self.fill_open and not self.srv_open
 
     @property
     def can_ign_on(self) -> bool:
-        return self.ign_state == ARMED and not self.fill_open and not self.veh_open
+        return self.ign_state == ARMED and not self.fill_open and not self.srv_open
 
     @property
     def can_ign_off(self) -> bool:

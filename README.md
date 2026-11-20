@@ -1,6 +1,6 @@
 # GSE ESP-NOW ground / vehicle link
 
-Two ESP32 Arduino sketches and a Qt desktop controller operate FILL, VEH and IGN
+Two ESP32 Arduino sketches and a Qt desktop controller operate FILL, SRV and IGN
 and relay vehicle telemetry to the ground computer:
 
 ```
@@ -29,14 +29,14 @@ or radio send is not proof of actuation. Verify behavior on hardware before use.
    sketch to the other board's MAC and reflash. Keep `ENFORCE_GROUND_MAC`
    enabled. Both ESP32s must use the same Wi-Fi channel. Never use an all-zero
    MAC. Telemetry always goes to the configured ground MAC.
-3. Connect vehicle GPIO18 to FILL servo signal, GPIO5 to VEH servo signal, and
+3. Connect vehicle GPIO18 to FILL servo signal, GPIO5 to SRV servo signal, and
    GPIO32 to a suitable active-high ignition **driver**, not an igniter
    directly. GPIO32 is forced LOW on boot; use a 10 kΩ pulldown as well.
 4. Use a separate 5–6 V BEC rated for at least 6 A peak for two DS3225 servos;
    do not power them from the ESP32 5 V pin. Common the BEC, driver, telemetry
    source, and ESP32 grounds. Check 3.3 V signal compatibility and mechanical
-   endpoints. Home is 1000 µs in vehicle firmware; the desktop open targets
-   default to 500 µs and can be set independently from 500–2500 µs. Calibrate
+   endpoints. Home is 2500 µs in vehicle firmware; the desktop open targets
+   default to 1860 µs and can be set independently from 500–2500 µs. Calibrate
    before attaching the mechanism. Changing a target affects the next command,
    not an already-open servo.
 5. Connect telemetry source TX to vehicle RX2 GPIO16; connect source RX to
@@ -74,21 +74,24 @@ the desktop must be connected and running to capture data.
 ## Controls and interlocks
 
 See [controller/README.md](controller/README.md) for installation and operation.
-In LIVE, FILL must be closed before VEH or IGN. IGN arming requires both
-servos closed. During arming/armed, manual VEH open is blocked. Once the IGN
-countdown completes, `IGN_ON` opens VEH to the commanded pulse **and** latches
+In LIVE, there are no manual SRV controls; SRV opens only when IGN is triggered.
+FILL must be closed before IGN, and IGN arming requires both servos closed. Once the IGN
+countdown completes, `IGN_ON` opens SRV to the commanded pulse **and** latches
 IGN on in one vehicle-side command, after validating the interlocks, countdown,
-and pulse range. `IGN_OFF` resets ignition but leaves VEH open; close VEH
-separately or use `ALL_OFF`. FILL remains open at its timer expiration until
+and pulse range. `IGN_OFF` resets ignition but leaves SRV open; use `ALL_OFF`
+to close it in LIVE. FILL remains open at its timer expiration until
 manually closed. The combined-servo controls are TEST-only; test pulse `3`
 remains available there.
 
 Ground accepts one line per USB command at 115200 baud: `1`, `2`, `3`, `4`,
 `SV0_ON`, `SV0_OFF`, `SV1_ON`, `SV1_OFF`, `BOTH_OFF`, `IGN_ARM:<ms>`, `IGN_ON`,
-`IGN_OFF`, `ALL_OFF`, `PING`. The desktop adds `:<fill_us>,<veh_us>` to servo
+`IGN_OFF`, `ALL_OFF`, `PING`. The desktop adds `:<fill_us>,<srv_us>` to servo
 actuation commands and `IGN_ON`, e.g. `IGN_ON:500,1500`; ground validates both
 values and embeds them in the existing command packet. Unadorned commands use
-the last targets (500 µs after boot). Command and ACK packets use CRC and MAC
-checks, not encryption. The vehicle checks commands and sends `ACK <token>
+the last targets (1800 µs after ground boot). Command and ACK packets use CRC and MAC
+checks, not encryption. `SV1_ON` remains available over the raw serial protocol
+for TEST and bypasses the desktop's LIVE-only restriction; the firmware does not
+track desktop mode, so do not use raw commands as a LIVE safety interlock. The
+vehicle checks commands and sends `ACK <token>
 <cmd> <accepted>`; duplicate command tokens are ignored. A missing ACK does not
 prove that no action occurred.

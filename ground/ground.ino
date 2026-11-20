@@ -11,8 +11,8 @@
       1 / 2 / 3 / 4      servo0 / servo1 / both / IGN pulse
     Live mode (latched states):
       SV0_ON  SV0_OFF    FILL open / closed
-      SV1_ON  SV1_OFF    VEH open / closed
-      BOTH_OFF           close FILL and VEH
+      SV1_ON  SV1_OFF    SRV open / closed
+      BOTH_OFF           close FILL and SRV
       IGN_ARM[:ms]       start IGN countdown (default 5000 ms)
       IGN_ON  IGN_OFF    fire / reset IGN
       ALL_OFF            force both servos closed and IGN off
@@ -44,7 +44,7 @@ static uint8_t VEHICLE_MAC[6] = {0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8}; // A4:F0:0
 
 // PWM pulse widths sent to the vehicle. DS3225 range is 500-2500 us.
 static uint16_t servo0TargetUs = 1800;  // FILL open position
-static uint16_t servo1TargetUs = 1800;  // VEH open position
+static uint16_t servo1TargetUs = 1800;  // SRV open position
 static constexpr uint16_t SERVO_HOLD_MS    = 500;   // test pulse hold
 static constexpr uint16_t IGN_ON_MS        = 1000;  // test IGN pulse (clamped on RX)
 
@@ -239,7 +239,7 @@ static void handleLine(String line)
   line.toUpperCase();
   if (line.length() == 0) return;
 
-  // Optional per-command pulse targets: COMMAND:<fill>,<veh>. Validated as
+  // Optional per-command pulse targets: COMMAND:<fill>,<srv>. Validated as
   // a pair before sending; legacy commands retain the most recent targets.
   if (!line.startsWith("IGN_ARM") && line.indexOf(':') >= 0) {
     int colon = line.indexOf(':');
@@ -249,9 +249,9 @@ static void handleLine(String line)
     if (!a.length() || !b.length()) { Serial.println("ERR invalid targets"); return; }
     for (size_t i = 0; i < a.length(); ++i) if (!isDigit(a[i])) { Serial.println("ERR invalid targets"); return; }
     for (size_t i = 0; i < b.length(); ++i) if (!isDigit(b[i])) { Serial.println("ERR invalid targets"); return; }
-    long fill = a.toInt(), veh = b.toInt();
-    if (fill < 500 || fill > 2500 || veh < 500 || veh > 2500) { Serial.println("ERR targets out of range"); return; }
-    servo0TargetUs = fill; servo1TargetUs = veh;
+    long fill = a.toInt(), srv = b.toInt();
+    if (fill < 500 || fill > 2500 || srv < 500 || srv > 2500) { Serial.println("ERR targets out of range"); return; }
+    servo0TargetUs = fill; servo1TargetUs = srv;
     line = line.substring(0, colon);
   }
 

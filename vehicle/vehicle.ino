@@ -3,7 +3,7 @@
 
   Upload this sketch to the *actuator* ESP32:
     servo0 signal : GPIO 18  (FILL in live mode)
-    servo1 signal : GPIO 5   (VEH in live mode)
+    servo1 signal : GPIO 5   (SRV in live mode)
     IGN           : GPIO 32, active HIGH
 
   Two command families are supported:
@@ -11,8 +11,8 @@
     10-19  : latched ON/OFF states used by the desktop controller live mode
 
   Safety interlocks are enforced here as well as in the controller:
-    - VEH and IGN cannot turn ON while FILL is open.
-    - FILL cannot open while VEH is open or IGN is armed/on.
+    - SRV and IGN cannot turn ON while FILL is open.
+    - FILL cannot open while SRV is open or IGN is armed/on.
     - IGN ON is rejected until the arm countdown has elapsed.
 
   Servos are the DS3225 digital servos from the 52Pi D-0001 wiki:
@@ -80,7 +80,7 @@ enum : uint8_t {
   CMD_SV1_OFF  = 12,
   CMD_SV1_ON   = 13,
   CMD_BOTH_OFF = 14,
-  CMD_BOTH_ON  = 15,   // rejected: FILL must be closed before VEH opens
+  CMD_BOTH_ON  = 15,   // rejected: FILL must be closed before SRV opens
   CMD_IGN_OFF  = 16,
   CMD_IGN_ARM  = 17,
   CMD_IGN_ON   = 18,
@@ -228,24 +228,24 @@ static bool validPulse(uint16_t pulseUs)
 
 // ---- Latched live-mode state ----------------------------------------------
 static bool     fillOpen        = false;
-static bool     vehOpen         = false;
+static bool     srvOpen         = false;
 static bool     ignOn           = false;
 static bool     ignArmed        = false;
 static uint32_t ignArmStartMs   = 0;
 static uint32_t ignArmRequiredMs = 0;
 static uint16_t fillOpenUs      = DEFAULT_OPEN_US;
-static uint16_t vehOpenUs       = DEFAULT_OPEN_US;
+static uint16_t srvOpenUs       = DEFAULT_OPEN_US;
 
 static void applyServoPulses()
 {
   pwmWrite(SERVO0_PIN, SERVO0_CHANNEL, pulseToDuty(fillOpen ? fillOpenUs : SERVO_HOME_US));
-  pwmWrite(SERVO1_PIN, SERVO1_CHANNEL, pulseToDuty(vehOpen ? vehOpenUs : SERVO_HOME_US));
+  pwmWrite(SERVO1_PIN, SERVO1_CHANNEL, pulseToDuty(srvOpen ? srvOpenUs : SERVO_HOME_US));
 }
 
 static void clearLatched()
 {
   fillOpen = false;
-  vehOpen = false;
+  srvOpen = false;
   ignOn = false;
   ignArmed = false;
   digitalWrite(IGN_PIN, LOW);
@@ -297,7 +297,7 @@ static bool startAction(const CommandPacket &packet)
 
     case CMD_IGN:
     {
-      if (fillOpen || vehOpen) return false;
+      if (fillOpen || srvOpen) return false;
       clearLatched();
       digitalWrite(IGN_PIN, HIGH);
       phase = Phase::IGN_HOLD;
@@ -311,7 +311,7 @@ static bool startAction(const CommandPacket &packet)
 
     // ---- Live mode: latched states.
     case CMD_SV0_ON:
-      if (vehOpen || ignOn || ignArmed) return false;
+      if (srvOpen || ignOn || ignArmed) return false;
       if (!validPulse(packet.servo0PulseUs)) return false;
       fillOpen = true;
       fillOpenUs = packet.servo0PulseUs;
@@ -328,33 +328,33 @@ static bool startAction(const CommandPacket &packet)
     case CMD_SV1_ON:
       if (fillOpen || ignArmed) return false;
       if (!validPulse(packet.servo1PulseUs)) return false;
-      vehOpen = true;
-      vehOpenUs = packet.servo1PulseUs;
+      srvOpen = true;
+      srvOpenUs = packet.servo1PulseUs;
       applyServoPulses();
-      Serial.println("VEH OPEN");
+      Serial.println("SRV OPEN");
       return true;
 
     case CMD_SV1_OFF:
-      vehOpen = false;
+      srvOpen = false;
       applyServoPulses();
-      Serial.println("VEH CLOSED");
+      Serial.println("SRV CLOSED");
       return true;
 
     case CMD_BOTH_ON:
-      // Interlock: VEH must never open while FILL is open, so a combined ON
+      // Interlock: SRV must never open while FILL is open, so a combined ON
       // command is refused by the actuator. Use test command 3 for a pulse.
-      Serial.println("BOTH ON refused: FILL must be closed for VEH");
+      Serial.println("BOTH ON refused: FILL must be closed for SRV");
       return false;
 
     case CMD_BOTH_OFF:
       fillOpen = false;
-      vehOpen = false;
+      srvOpen = false;
       applyServoPulses();
-      Serial.println("FILL + VEH CLOSED");
+      Serial.println("FILL + SRV CLOSED");
       return true;
 
     case CMD_IGN_ARM:
-      if (fillOpen || vehOpen || ignOn) return false;
+      if (fillOpen || srvOpen || ignOn) return false;
       ignOn = false;
       ignArmed = true;
       ignArmStartMs = millis();
@@ -366,18 +366,18 @@ static bool startAction(const CommandPacket &packet)
       return true;
 
     case CMD_IGN_ON:
-      if (fillOpen || vehOpen) return false;
+      if (fillOpen || srvOpen) return false;
       if (!ignArmed || (millis() - ignArmStartMs) < ignArmRequiredMs) return false;
       if (!validPulse(packet.servo1PulseUs)) return false;
       // One validated command applies both outputs; no separate radio command
-      // can be lost between ignition and VEH opening.
-      vehOpenUs = packet.servo1PulseUs;
-      vehOpen = true;
+      // can be lost between ignition and SRV opening.
+      srvOpenUs = packet.servo1PulseUs;
+      srvOpen = true;
       applyServoPulses();
       ignArmed = false;
       ignOn = true;
       digitalWrite(IGN_PIN, HIGH);
-      Serial.println("IGN ON + VEH OPEN (latched)");
+      Serial.println("IGN ON + SRV OPEN (latched)");
       return true;
 
     case CMD_IGN_OFF:
