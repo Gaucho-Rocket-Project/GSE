@@ -43,8 +43,8 @@
 static uint8_t VEHICLE_MAC[6] = {0xB0, 0xCB, 0xD8, 0x89, 0x4F, 0xB8}; // A4:F0:0F:61:84:3C for #1, B0:CB:D8:89:4F:B8 for #2
 
 // PWM pulse widths sent to the vehicle. DS3225 range is 500-2500 us.
-static uint16_t servo0TargetUs = 500;  // FILL open position
-static uint16_t servo1TargetUs = 500;  // VEH open position
+static uint16_t servo0TargetUs = 1800;  // FILL open position
+static uint16_t servo1TargetUs = 1800;  // VEH open position
 static constexpr uint16_t SERVO_HOLD_MS    = 500;   // test pulse hold
 static constexpr uint16_t IGN_ON_MS        = 1000;  // test IGN pulse (clamped on RX)
 

@@ -60,7 +60,7 @@ static constexpr uint16_t PWM_PERIOD_US     = 1000000UL / PWM_FREQ_HZ;  // 20000
 
 static constexpr uint16_t SERVO_MIN_US      = 500;
 static constexpr uint16_t SERVO_MAX_US      = 2500;
-static constexpr uint16_t SERVO_HOME_US     = 1000; // rest/retracted position
+static constexpr uint16_t SERVO_HOME_US     = 2500; // rest/retracted position
 static constexpr uint16_t DEFAULT_OPEN_US   = 2000; // initial latched target; commands must be valid
 static constexpr uint16_t MAX_SERVO_HOLD_MS = 5000; // hard cap on test pulse time
 static constexpr uint16_t MAX_IGN_ON_MS     = 2000; // hard cap on *test* IGN pulse
