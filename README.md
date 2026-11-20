@@ -1,153 +1,97 @@
-# ESP-NOW servo / ignition actuator link
+# GSE ESP-NOW ground / vehicle link
 
-Two Arduino sketches (`.ino`, Arduino IDE compatible) plus a desktop controller
-binary turn commands from a controller ESP32 into servo and ignition actions on
-a second ESP32.
+Two ESP32 Arduino sketches and a Qt desktop controller operate FILL, SRV and IGN
+and relay vehicle telemetry to the ground computer:
 
 ```
-PC controller binary -- USB serial --> ESP32 sender -- ESP-NOW --> ESP32 receiver
-                                      (GPIO18 / GPIO5 / GPIO32 actuators)
+telemetry source -- UART2 --> vehicle ESP32 <-- ESP-NOW --> ground ESP32 <-- USB --> desktop
+                           GPIO16 RX / 17 TX              GPIO18 / 5 / 32 outputs on vehicle
 ```
 
-There are two command families:
+- [`vehicle/vehicle.ino`](vehicle/vehicle.ino): actuator and UART telemetry input (formerly receiver).
+- [`ground/ground.ino`](ground/ground.ino): ESP-NOW / USB serial bridge (formerly sender).
+- [`controller/`](controller/README.md): desktop app and tests.
 
-| Command | Mode | Action on receiver |
-| --- | --- | --- |
-| `1` / `2` / `3` / `4` | TEST | Timed pulse on servo0 / servo1 / both / IGN |
-| `SV0_ON` / `SV0_OFF` | both | FILL (servo0) latched open / closed |
-| `SV1_ON` / `SV1_OFF` | both | VEH (servo1) latched open / closed |
-| `BOTH_OFF` | both | Close FILL and VEH |
-| `IGN_ARM:<ms>` | LIVE | Start IGN countdown; IGN ON stays locked out |
-| `IGN_ON` / `IGN_OFF` | both | Fire / reset latched IGN |
-| `ALL_OFF` | both | Close FILL and VEH, force IGN OFF |
+**Safety:** These are starting points, not flight-qualified controls. Do not
+rely on software, MAC filtering, CRC, or ESP-NOW as a safety interlock. Use a
+physical arming switch, series ignition interlock and GPIO32 pulldown. Test with
+the igniter disconnected and servo horns detached. The desktop displays
+optimistic commanded state, not verified output position; rejected or lost
+commands can leave it out of sync with the vehicle. A successful serial write
+or radio send is not proof of actuation. Verify behavior on hardware before use.
 
-The TEST/LIVE operator interface, countdowns and greyed-out buttons are in
-[`../../controller/README.md`](../../controller/README.md).
+## Setup and wiring
 
-## Files
+1. Install Arduino-ESP32 3.x (2.x is also supported). Open the sketches from
+   their matching directories in Arduino IDE; reflash **both** boards.
+2. Flash each board and note its STA MAC from the serial monitor (115200 baud).
+   Set `VEHICLE_MAC` in the ground sketch and `GROUND_MAC` in the vehicle
+   sketch to the other board's MAC and reflash. Keep `ENFORCE_GROUND_MAC`
+   enabled. Both ESP32s must use the same Wi-Fi channel. Never use an all-zero
+   MAC. Telemetry always goes to the configured ground MAC.
+3. Connect vehicle GPIO18 to FILL servo signal, GPIO5 to SRV servo signal, and
+   GPIO32 to a suitable active-high ignition **driver**, not an igniter
+   directly. GPIO32 is forced LOW on boot; use a 10 kΩ pulldown as well.
+4. Use a separate 5–6 V BEC rated for at least 6 A peak for two DS3225 servos;
+   do not power them from the ESP32 5 V pin. Common the BEC, driver, telemetry
+   source, and ESP32 grounds. Check 3.3 V signal compatibility and mechanical
+   endpoints. Home is 2500 µs in vehicle firmware; the desktop open targets
+   default to 1860 µs and can be set independently from 500–2500 µs. Calibrate
+   before attaching the mechanism. Changing a target affects the next command,
+   not an already-open servo.
+5. Connect telemetry source TX to vehicle RX2 GPIO16; connect source RX to
+   vehicle TX2 GPIO17 only if needed. Use 3.3 V TTL UART, not RS-232 voltages.
+   Serial2 is configured 115200 baud, 8N1; change `TELEMETRY_BAUD` if needed.
 
-- `espnow_sender/espnow_sender.ino` - controller bridge: parses USB serial text
-  commands and forwards them as ESP-NOW packets; prints receiver ACKs.
-- `espnow_receiver/espnow_receiver.ino` - actuator board: owns the servo and IGN
-  pins, enforces interlocks, and ACKs every command.
+## Telemetry protocol and storage
 
-Both sketches are self-contained: no third-party libraries are required (only
-the Arduino-ESP32 core and its bundled `WiFi`/`esp_now`/LEDC APIs). Folder names
-match sketch names so Arduino IDE can open them directly.
+The UART source must emit newline-terminated, nonempty **printable ASCII**
+records (1–200 bytes, excluding CR/LF), for example `pressure,12.5`. CRLF is
+accepted. Overlong and non-printable records are discarded whole. No schema is
+assumed: a record is stored as one CSV payload field, including commas and
+quotes. Binary, UTF-8 non-ASCII, and partial lines are not supported.
 
-## Servo specifications used
+Vehicle samples the latest complete record at most once per
+`TELEMETRY_INTERVAL_MS` (default 500 ms, set in `vehicle.ino` before flashing).
+Intermediate lines are overwritten if the UART is faster; no repeated/stale
+record is sent when the source is idle. ESP-NOW telemetry is best-effort and
+not retried, so it is not a complete data logger. Its sequence and vehicle
+uptime (32-bit milliseconds, wrapping) help detect gaps. The packed TLM1
+packet contains magic, sequence, send uptime, length, 200-byte zero-padded
+payload and CRC-16/CCITT-FALSE. Ground verifies source MAC, length and CRC and
+forwards `TLM <sequence> <uptime_ms> <payload>` over USB. Its bounded receive
+queue can drop records under load.
 
-The servo is the DS3225 (52Pi D-0001),
-[datasheet](https://wiki.52pi.com/index.php?title=D-0001):
+While connected, the desktop app appends rows to `data/telemetry.csv` under the
+repository root, regardless of whether the telemetry panel is open. Columns:
+`received_utc,sequence,vehicle_uptime_ms,payload`. UTC timestamps are desktop
+receive times; sequence resets on vehicle reboot. CSV is flushed on each row,
+is gitignored, and write errors are shown in the link log. For a frozen binary,
+`data` is relative to the launch working directory; set `GSE_DATA_DIR` to an
+absolute writable directory to override it. Ground ESP32 itself has no storage;
+the desktop must be connected and running to capture data.
 
-- Operating voltage: 4.8-6.8 V (5 V / 6 V nominal)
-- Control: PWM, 500-2500 us pulse width, 50-330 Hz (sketches use 50 Hz / 20 ms)
-- Stall current: 2.1 A @ 5 V, 2.9 A @ 6.8 V **per servo**
-- 180 deg or 270 deg variant exists: verify the mechanical endpoints on your unit
+## Controls and interlocks
 
-Consequences for the build:
+See [controller/README.md](controller/README.md) for installation and operation.
+In LIVE, there are no manual SRV controls; SRV opens only when IGN is triggered.
+FILL must be closed before IGN, and IGN arming requires both servos closed. Once the IGN
+countdown completes, `IGN_ON` opens SRV to the commanded pulse **and** latches
+IGN on in one vehicle-side command, after validating the interlocks, countdown,
+and pulse range. `IGN_OFF` resets ignition but leaves SRV open; use `ALL_OFF`
+to close it in LIVE. FILL remains open at its timer expiration until
+manually closed. The combined-servo controls are TEST-only; test pulse `3`
+remains available there.
 
-- **Do not power servos from the ESP32 5 V / VIN pin.** Use a separate 5-6 V BEC
-  rated for at least 6 A peak (two servos can stall simultaneously), with a
-  wide-enough bulk capacitor near the servo connector.
-- **Connect the BEC ground, both servos, the IGN driver, and the ESP32 ground
-  together.**
-- ESP32 outputs 3.3 V logic; the servo signal pin is usually tolerant of this,
-  but verify on your specific servo or use a level shifter if it misbehaves.
-- `SERVO_HOME_US` (1000) and the `*_TARGET_US` values (2000) are starting points,
-  not calibrated endpoints. Set them with the servo horn detached so a wrong
-  value cannot jam the mechanism.
-
-## Wiring
-
-| Signal | ESP32 (receiver) | Notes |
-| --- | --- | --- |
-| servo0 PWM | GPIO 18 | FILL in live mode; 50 Hz, 500-2500 us, 220 ohm series resistor optional |
-| servo1 PWM | GPIO 5 | VEH in live mode |
-| IGN | GPIO 32 | active HIGH, drives a logic-level MOSFET / relay driver, never an igniter directly |
-| GND | any ESP32 GND | common with BEC and igniter driver |
-
-IGN output is forced LOW at boot. In TEST mode it is a timed pulse (clamped to
-2000 ms); in LIVE mode it stays latched until `IGN_OFF` / `ALL_OFF`. Add a
-10 kohm pulldown at GPIO 32 so the igniter stays off during ESP32 reset/boot,
-plus a physical arming switch and a series safety interlock.
-
-## Setup
-
-1. Install the ESP32 board package in Arduino IDE (Arduino-ESP32 3.x
-   recommended; 2.x is also supported by both sketches).
-2. Open `espnow_receiver/espnow_receiver.ino`, flash the actuator board, and
-   open the Serial Monitor at 115200. Note the **Receiver MAC** it prints.
-3. Put that MAC into `RECEIVER_MAC` at the top of `espnow_sender.ino`, flash the
-   controller, and note the **Sender MAC** it prints.
-4. Put the sender's MAC into `SENDER_MAC` in the receiver sketch and reflash it.
-   (Keep `ENFORCE_SENDER_MAC = true`; set it to `false` only for a bench test
-   with a throwaway controller.)
-5. Bench-test with servo horns detached and the igniter disconnected: send
-   `1`, `2`, `3`, then `4` from the controller's Serial Monitor, then test the
-   latched commands from the desktop binary.
-
-### If the MAC prints as 00:00:00:00:00:00
-
-On Arduino-ESP32 3.x, `WiFi.macAddress()` can return all zeros when the STA
-interface has not started yet. Both sketches therefore read the STA MAC via
-`esp_wifi_get_mac()` (waiting briefly for `WiFi.STA.started()` on core 3.x),
-falling back to `esp_read_mac(ESP_MAC_WIFI_STA)`. If you still see zeros, check
-that the factory MAC is programmed (`esptool.py chip_id` / `efuse_summary`) and
-that you are flashing a genuine ESP32 with a supported board package. Never put
-the printed zeros into `RECEIVER_MAC` or `SENDER_MAC`: the sender refuses to
-start with an all-zero peer MAC, and the receiver rejects every packet when
-`ENFORCE_SENDER_MAC` is enabled.
-
-## How a command works
-
-1. The controller (desktop binary or Serial Monitor) sends one ASCII line over
-   USB at 115200 baud. The sender ESP32 maps it to a command ID.
-2. The sender builds an 18-byte packet with a magic word, random token, command
-   ID, mode flag, hold/arm time, both target pulse widths, and CRC-16.
-3. The packet is transmitted 3 times, 120 ms apart, to survive a lost frame.
-4. The receiver checks sender MAC, packet length, magic, CRC, token (replay
-   filter), and pulse ranges. Subsequent copies of the same command are ignored.
-5. Timed test commands return the servo(s) to home after the hold; latched
-   commands hold their position/state until an OFF command is received.
-6. The receiver ACKs each command with the token, command ID and an `accepted`
-   flag. A `0` means an interlock or countdown refused the action; the desktop
-   binary shows the rejection.
-
-### Firmware-side interlocks
-
-Even if the desktop binary is bypassed, the receiver refuses to:
-
-- open VEH while FILL is open;
-- arm or fire IGN while FILL is open or VEH is open;
-- accept `IGN ON` before the requested arm delay has elapsed;
-- open FILL while VEH is open or IGN is armed/on;
-- accept a combined `BOTH ON` (VEH must never open together with FILL).
-
-### Command packet layout (must match in both sketches)
-
-| Offset | Type | Field | Meaning |
-| --- | --- | --- | --- |
-| 0-3 | uint32 | `magic` | `0x314B4352` ("RCK1" over the air) |
-| 4-7 | uint32 | `token` | random ID; receiver remembers the last 8 |
-| 8 | uint8 | `cmd` | see command table above |
-| 9 | uint8 | `reserved` | 0 = timed test pulse, 1 = latched live state |
-| 10-11 | uint16 | `holdMs` | test hold / `IGN_ARM` countdown in ms |
-| 12-13 | uint16 | `servo0PulseUs` | 500-2500 |
-| 14-15 | uint16 | `servo1PulseUs` | 500-2500 |
-| 16-17 | uint16 | `crc16` | CRC-16/CCITT-FALSE over bytes 0-15 |
-
-### ACK packet (receiver to sender, 12 bytes)
-
-| Offset | Type | Field | Meaning |
-| --- | --- | --- | --- |
-| 0-3 | uint32 | `magic` | `0x314B4341` ("ACK1") |
-| 4-7 | uint32 | `token` | copied from the command |
-| 8 | uint8 | `cmd` | command ID |
-| 9 | uint8 | `accepted` | 1 = actuated, 0 = rejected |
-| 10-11 | uint16 | `crc16` | CRC-16/CCITT-FALSE over bytes 0-9 |
-
-There is no encryption: MAC filtering and CRC only guard against unintended
-senders and corrupted frames. `esp_now_send()` returning `ESP_OK` only means the
-frame was handed to the radio, not that the receiver acted on it. Do not treat
-this radio link as a safety interlock for pyrotechnics.
+Ground accepts one line per USB command at 115200 baud: `1`, `2`, `3`, `4`,
+`SV0_ON`, `SV0_OFF`, `SV1_ON`, `SV1_OFF`, `BOTH_OFF`, `IGN_ARM:<ms>`, `IGN_ON`,
+`IGN_OFF`, `ALL_OFF`, `PING`. The desktop adds `:<fill_us>,<srv_us>` to servo
+actuation commands and `IGN_ON`, e.g. `IGN_ON:500,1500`; ground validates both
+values and embeds them in the existing command packet. Unadorned commands use
+the last targets (1800 µs after ground boot). Command and ACK packets use CRC and MAC
+checks, not encryption. `SV1_ON` remains available over the raw serial protocol
+for TEST and bypasses the desktop's LIVE-only restriction; the firmware does not
+track desktop mode, so do not use raw commands as a LIVE safety interlock. The
+vehicle checks commands and sends `ACK <token>
+<cmd> <accepted>`; duplicate command tokens are ignored. A missing ACK does not
+prove that no action occurred.

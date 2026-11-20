@@ -1,0 +1,2 @@
+# Captured telemetry may be large or contain sensitive flight data.
+/data/*.csv

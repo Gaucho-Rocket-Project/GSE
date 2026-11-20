@@ -59,25 +59,62 @@ class LiveStateTests(unittest.TestCase):
         self.clock.advance(5)
         self.assertEqual([code for code, _ in self.state.tick()], [FILL_TIME_UP])
 
-    def test_veh_and_ign_are_locked_out_while_fill_open(self):
+    def test_srv_and_ign_are_locked_out_while_fill_open(self):
         self.state.fill_on()
-        self.assertFalse(self.state.veh_on())
+        self.assertFalse(self.state.srv_on())
         self.assertFalse(self.state.ign_arm())
         self.assertFalse(self.state.ign_on())
         self.assertEqual(self.codes().count(REJECT), 3)
-        self.assertFalse(self.state.veh_open)
+        self.assertFalse(self.state.srv_open)
         self.assertEqual(self.state.ign_state, OFF)
 
-    def test_veh_available_after_fill_closed(self):
+    def test_fill_interlock_survives_timeout_until_manual_close(self):
+        self.assertTrue(self.state.can_ign_arm)
+        self.assertTrue(self.state.fill_on())
+        self.assertFalse(self.state.can_ign_arm)
+        self.assertFalse(self.state.can_ign_on)
+        self.clock.advance(60)
+        self.state.tick()
+        self.assertTrue(self.state.fill_open)
+        self.assertFalse(self.state.can_ign_arm)
+        self.assertFalse(self.state.can_ign_on)
+        self.assertFalse(self.state.ign_arm())
+        self.assertFalse(self.state.ign_on())
+        self.assertTrue(self.state.fill_close())
+        self.assertTrue(self.state.can_ign_arm)
+        self.assertFalse(self.state.can_ign_on)
+        self.assertTrue(self.state.ign_arm())
+        self.clock.advance(5)
+        self.state.tick()
+        self.assertTrue(self.state.can_ign_on)
+
+    def test_ign_fire_is_blocked_if_fill_is_open_even_when_armed(self):
+        self.assertTrue(self.state.ign_arm())
+        self.clock.advance(5)
+        self.state.tick()
+        # Defense in depth if state is ever inconsistent or changed externally.
+        self.state.fill_open = True
+        self.assertFalse(self.state.can_ign_on)
+        self.assertFalse(self.state.ign_on())
+        self.assertFalse(self.state.srv_open)
+        self.assertEqual(self.state.ign_state, ARMED)
+        self.assertTrue(self.state.can_ign_off)  # reset must remain available
+
+    def test_srv_only_opens_with_ign_after_fill_closed(self):
         self.state.fill_on()
         self.state.fill_close()
         self.codes()
-        self.assertTrue(self.state.veh_on())
-        self.assertTrue(self.state.veh_open)
-        self.assertFalse(self.state.fill_on(), "FILL must not open while VEH is open")
-        self.assertFalse(self.state.ign_arm(), "IGN must not arm while VEH is open")
-        self.assertTrue(self.state.veh_off())
-        self.assertTrue(self.state.veh_open is False)
+        self.assertFalse(self.state.srv_on(), "manual LIVE SRV open must be rejected")
+        self.assertFalse(self.state.srv_open)
+        self.assertTrue(self.state.ign_arm())
+        self.clock.advance(5)
+        self.state.tick()
+        self.assertTrue(self.state.ign_on())
+        self.assertTrue(self.state.srv_open)
+        self.assertFalse(self.state.fill_on(), "FILL must not open while SRV is open")
+        self.assertFalse(self.state.ign_arm(), "IGN must not re-arm while SRV is open")
+        self.state.all_off()
+        self.assertFalse(self.state.srv_open)
 
     def test_ign_cannot_be_prematurely_triggered(self):
         self.assertTrue(self.state.ign_arm())
@@ -94,7 +131,23 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual(self.state.ign_state, ARMED)
         self.assertTrue(self.state.ign_on())
         self.assertEqual(self.state.ign_state, ON)
+        self.assertTrue(self.state.srv_open, "IGN must open SRV together with ignition")
         self.assertTrue(self.state.ign_off())
+        self.assertTrue(self.state.srv_open, "IGN OFF does not close SRV")
+        self.assertEqual(self.state.ign_state, OFF)
+
+    def test_manual_srv_blocked_while_arming_or_armed(self):
+        self.assertTrue(self.state.ign_arm())
+        self.assertFalse(self.state.can_srv_on)
+        self.assertFalse(self.state.srv_on())
+        self.clock.advance(5)
+        self.state.tick()
+        self.assertFalse(self.state.can_srv_on)
+        self.assertFalse(self.state.srv_on())
+        self.assertTrue(self.state.ign_on())
+        self.assertTrue(self.state.srv_open)
+        self.state.all_off()
+        self.assertFalse(self.state.srv_open)
         self.assertEqual(self.state.ign_state, OFF)
 
     def test_ign_arm_can_be_cancelled(self):
@@ -110,7 +163,7 @@ class LiveStateTests(unittest.TestCase):
         self.clock.advance(1)
         self.state.all_off()
         self.assertFalse(self.state.fill_open)
-        self.assertFalse(self.state.veh_open)
+        self.assertFalse(self.state.srv_open)
         self.assertEqual(self.state.ign_state, OFF)
         self.assertIsNone(self.state.fill_deadline)
         self.assertIsNone(self.state.ign_deadline)
@@ -118,11 +171,11 @@ class LiveStateTests(unittest.TestCase):
 
     def test_button_gates(self):
         self.assertTrue(self.state.can_fill_on)
-        self.assertTrue(self.state.can_veh_on)   # FILL is closed, so VEH is allowed
+        self.assertFalse(self.state.can_srv_on)  # only IGN opens SRV in LIVE
         self.assertFalse(self.state.can_ign_on)  # IGN still needs its countdown
         self.state.fill_on()
         self.assertTrue(self.state.can_fill_close and self.state.can_fill_extend)
-        self.assertFalse(self.state.can_veh_on or self.state.can_ign_arm or self.state.can_ign_on)
+        self.assertFalse(self.state.can_srv_on or self.state.can_ign_arm or self.state.can_ign_on)
         self.state.fill_close()
         self.assertTrue(self.state.can_ign_arm)
         self.assertFalse(self.state.can_ign_on)
