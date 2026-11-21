@@ -10,16 +10,20 @@ Live-mode policy:
     extends the deadline.
   * SRV and IGN controls are disabled while FILL is open.
   * IGN ON is locked out until the arming countdown finishes.
+
+DAQ data arrives inside vehicle telemetry (TLM lines) and is shown in the DAQ
+panel (daq.py / daq_panel.py).  --sim runs without hardware (sim_ground.py).
 """
 
 from __future__ import annotations
 
+import argparse
 import math
 import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QIODevice, Qt, QTimer, QTime
+from PySide6.QtCore import QIODevice, QSettings, Qt, QTimer, QTime
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 from PySide6.QtWidgets import (
@@ -32,7 +36,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +47,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from telemetry import TelemetryLog, parse_telemetry
 from live_state import ARMED, ARMING, FILL_TIME_UP, IGN_ARMED, OFF, ON, REJECT, LiveState
+from daq import DaqState
+from daq_panel import DaqPanel, load_settings
+from sim_ground import SimGround, SimSerial
 
 BAUD = 115200
 
@@ -53,8 +62,11 @@ def mmss(seconds: float | None) -> str:
 
 
 class MainWindow(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, sim: bool = False, sim_ambient_f: float = 70.0,
+                 sim_interval_ms: int = 500, store: QSettings | None = None) -> None:
         super().__init__()
+        self.sim = sim
+        self.store = store if store is not None else QSettings("GSE", "GroundController")
         self.state = LiveState()
         self.mode = "TEST"
         self.rx_buffer = ""
@@ -63,10 +75,22 @@ class MainWindow(QWidget):
         default_root = Path.cwd() if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[2]
         self.telemetry_log = TelemetryLog(Path(os.environ.get("GSE_DATA_DIR", default_root / "data")) / "telemetry.csv")
 
-        self.serial = QSerialPort(self)
-        self.serial.setBaudRate(BAUD)
-        self.serial.readyRead.connect(self.on_ready_read)
-        self.serial.errorOccurred.connect(self.on_serial_error)
+        daq_settings, daq_format = load_settings(self.store)
+        self.daq = DaqState(daq_settings, daq_format, data_dir=self.telemetry_log.path.parent)
+
+        if sim:
+            self.sim_ground = SimGround(sim_ambient_f, sim_interval_ms, daq_format)
+            self.serial = SimSerial(self.sim_ground)
+            self.sim_timer = QTimer(self)
+            self.sim_timer.setInterval(20)
+            self.sim_timer.timeout.connect(self.on_sim_poll)
+            self.sim_timer.start()
+        else:
+            self.sim_ground = None
+            self.serial = QSerialPort(self)
+            self.serial.setBaudRate(BAUD)
+            self.serial.readyRead.connect(self.on_ready_read)
+            self.serial.errorOccurred.connect(self.on_serial_error)
 
         self.timer = QTimer(self)
         self.timer.setInterval(100)
@@ -79,8 +103,14 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------------- UI
     def build_ui(self) -> None:
-        self.setWindowTitle("Rocket Ground Controller - ESP-NOW")
+        self.setWindowTitle("Rocket Ground Controller - ESP-NOW"
+                            + ("  [SIMULATION]" if self.sim else ""))
         self.setMinimumWidth(720)
+        # Open at a size that fits the screen (small laptops included).
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        self.resize(min(1500, avail.width() - 40) if avail else 1500,
+                    min(900, avail.height() - 60) if avail else 900)
         self.setStyleSheet(
             """
             QWidget { background: #080b0e; color: #d8dce0; font-family: monospace; font-size: 12px; }
@@ -98,11 +128,21 @@ class MainWindow(QWidget):
             """
         )
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
 
         header = QLabel("GSE  /  GROUND CONTROL                                      ESP-NOW   •   OPERATIONS")
         header.setStyleSheet("background: #da7819; color: #080b0e; font-weight: bold; padding: 7px;")
-        root.addWidget(header)
+        outer.addWidget(header)
+
+        # Controls on the left, DAQ panel on the right in a scroll area, with a
+        # draggable divider, so the window still fits a small laptop screen.
+        body = QSplitter(Qt.Horizontal)
+        body.setChildrenCollapsible(False)
+        outer.addWidget(body, 1)
+        left = QWidget()
+        root = QVBoxLayout(left)
+        root.setContentsMargins(0, 0, 6, 0)
+        body.addWidget(left)
 
         # Top: mode + serial link.
         top = QHBoxLayout()
@@ -284,6 +324,17 @@ class MainWindow(QWidget):
         self.log_view.setMaximumHeight(170)
         root.addWidget(QLabel("Link log"))
         root.addWidget(self.log_view)
+        root.addStretch()
+
+        self.daq_panel = DaqPanel(self.daq, self.store, log=self.log,
+                                  on_format_changed=self.on_daq_format_changed)
+        daq_scroll = QScrollArea()
+        daq_scroll.setWidgetResizable(True)
+        daq_scroll.setWidget(self.daq_panel)
+        daq_scroll.setMinimumWidth(320)
+        body.addWidget(daq_scroll)
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
 
         self.log("TEST mode selected. Connect to the ground ESP32.")
 
@@ -295,6 +346,9 @@ class MainWindow(QWidget):
     def refresh_ports(self) -> None:
         current = self.port_combo.currentData()
         self.port_combo.clear()
+        if self.sim:
+            self.port_combo.addItem("SIMULATION - ground + vehicle + DAQ", "SIM")
+            return
         for info in QSerialPortInfo.availablePorts():
             self.port_combo.addItem(f"{info.portName()} - {info.description()}", info.systemLocation())
         if current:
@@ -305,6 +359,7 @@ class MainWindow(QWidget):
     def toggle_serial(self) -> None:
         if self.serial.isOpen():
             self.serial.close()
+            self.daq.close()
             self.log("Serial port closed")
             self.flash_status("Disconnected", "#95a5a6")
         else:
@@ -316,6 +371,7 @@ class MainWindow(QWidget):
             if not self.serial.open(QIODevice.ReadWrite):
                 self.log(f"Could not open {port}: {self.serial.errorString()}")
                 return
+            self.daq.reset()                     # new DAQ CSV per connection
             self.log(f"Connected {port} @ {BAUD}")
             self.flash_status("Connected", "#2ecc71")
             self.send("PING")
@@ -354,6 +410,14 @@ class MainWindow(QWidget):
                 timestamp = "NOT SAVED"
             self.telemetry_info.setText(f"Latest #{sample[0]}  |  vehicle uptime {sample[1]} ms  |  {timestamp}  |  CSV: {self.telemetry_log.path}")
             self.telemetry_view.appendPlainText(f"{timestamp}  #{sample[0]}  {sample[2]}")
+            # The DAQ panel must never disturb the command link: contain its errors.
+            try:
+                self.daq.feed_tlm(*sample)
+            except OSError as exc:
+                self.log(f"DAQ CSV write failed: {exc}")
+                self.flash_status("DAQ CSV ERROR", "#e74c3c")
+            except Exception as exc:                     # noqa: BLE001
+                self.log(f"DAQ data error (record ignored): {exc!r}")
         elif line.startswith("ACK "):
             parts = line.split()
             if len(parts) >= 4 and parts[3] == "0":
@@ -370,6 +434,18 @@ class MainWindow(QWidget):
             self.flash_status("Ground error", "#e74c3c")
         else:
             self.log(f"RX  {line}")
+
+    def on_sim_poll(self) -> None:
+        if self.serial.poll():
+            self.on_ready_read()
+
+    def on_daq_format_changed(self, fmt: str) -> None:
+        if self.sim_ground is not None:
+            self.sim_ground.set_format(fmt)      # the simulated DAQ follows the toggle
+
+    def closeEvent(self, event) -> None:
+        self.daq.close()
+        super().closeEvent(event)
 
     def on_serial_error(self, error) -> None:
         if self.serial.isOpen():
@@ -404,6 +480,12 @@ class MainWindow(QWidget):
         if self.mode == "LIVE":
             self.process_events(self.state.tick())
         self.update_view()
+        try:
+            self.daq_panel.refresh()
+        except Exception as exc:                         # noqa: BLE001
+            if not getattr(self, "_daq_refresh_failed", False):
+                self._daq_refresh_failed = True          # log once, keep the controls running
+                self.log(f"DAQ panel display error: {exc!r}")
 
     def on_durations_changed(self, _value=None) -> None:
         self.state.set_durations(
@@ -576,11 +658,27 @@ class MainWindow(QWidget):
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
+    # A --windowed PyInstaller build has no console: give argparse somewhere
+    # to write (--help, a bad option) instead of crashing on a None stream.
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w"))
+    parser = argparse.ArgumentParser(description="GSE ESP-NOW ground controller")
+    parser.add_argument("--sim", action="store_true",
+                        help="simulate the ground + vehicle boards and the DAQ (no hardware)")
+    parser.add_argument("--sim-ambient", type=float, default=70.0,
+                        help="--sim: ambient deg F for the simulated tank (HCR-5100 Table 2.6)")
+    parser.add_argument("--sim-interval-ms", type=int, default=500,
+                        help="--sim: vehicle TELEMETRY_INTERVAL_MS (default 500 = 2 Hz)")
+    args, qt_args = parser.parse_known_args()
+    app = QApplication([sys.argv[0]] + qt_args)
     app.setStyle("Fusion")
     app.setFont(QFont("Monospace", 10))
-    window = MainWindow()
+    window = MainWindow(sim=args.sim, sim_ambient_f=args.sim_ambient,
+                        sim_interval_ms=args.sim_interval_ms)
     window.show()
+    if args.sim:
+        window.toggle_serial()                   # connect to the simulated ground board
     return app.exec()
 
 
