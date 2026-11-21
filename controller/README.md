@@ -35,8 +35,11 @@ working directory unless `GSE_DATA_DIR` is set.
 5. LIVE FILL OPEN starts its countdown. At zero an alert sounds but FILL stays
    open. Close or extend manually. While FILL is commanded open, IGN ARM and
    IGN ON are greyed out, including after the FILL timer expires. With FILL and
-   SRV closed, arm IGN and wait for the countdown. IGN ON commands ignition **and SRV open** together.
-   IGN OFF resets ignition but does not close SRV; use ALL OFF in LIVE.
+   SRV closed, arm IGN and wait for the countdown. IGN ON commands a timed
+   GPIO32 ignition pulse **and SRV open** together. SRV stays commanded open
+   after the pulse; IGN OFF / RESET or ALL OFF stops the pulse and closes SRV.
+   The `FIRED` indicator means a trigger was commanded and reset is required;
+   it is not a measurement of GPIO32 or servo position.
 
 The desktop's states and countdowns are optimistic; they are not a hardware
 readback. Rejections appear in the log but do not automatically reconcile the

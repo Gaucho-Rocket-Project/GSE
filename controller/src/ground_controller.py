@@ -229,6 +229,7 @@ class MainWindow(QWidget):
         self.btn_ign_pulse.setObjectName("danger")
         self.btn_ign_pulse.clicked.connect(lambda: self.send("4"))
         self.btn_ign_off = QPushButton("IGN OFF / RESET")
+        self.btn_ign_off.setToolTip("Stop IGN and close SRV. ALL OFF is also available.")
         self.btn_ign_off.clicked.connect(self.ign_off_clicked)
 
         self.btn_all_off = QPushButton("ALL OFF")
@@ -544,7 +545,7 @@ class MainWindow(QWidget):
             self.ign_time_label.setText("ARMED")
             self.ign_time_label.setStyleSheet("color: #f1c40f;")
         elif state.ign_state == ON:
-            self.ign_time_label.setText("ON")
+            self.ign_time_label.setText("FIRED")
             self.ign_time_label.setStyleSheet("color: #e74c3c;")
         else:
             self.ign_time_label.setText("OFF")

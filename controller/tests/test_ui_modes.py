@@ -48,6 +48,16 @@ class ModeControlsTests(unittest.TestCase):
         now[0] += 5
         window.on_tick()
         self.assertTrue(window.btn_ign_on.isEnabled())
+        window.ign_on_clicked()
+        self.assertTrue(window.state.srv_open)
+        self.assertEqual(window.ign_time_label.text(), "FIRED")
+        now[0] += 10
+        window.on_tick()
+        self.assertTrue(window.state.srv_open)
+        self.assertTrue(window.btn_ign_off.isEnabled())
+        window.ign_off_clicked()
+        self.assertFalse(window.state.srv_open)
+        self.assertEqual(window.ign_time_label.text(), "OFF")
         window.close()
 
     def test_srv_and_combined_controls_are_test_only(self):

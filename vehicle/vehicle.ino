@@ -8,7 +8,7 @@
 
   Two command families are supported:
     1-4    : timed test pulses (serial monitor / test mode)
-    10-19  : latched ON/OFF states used by the desktop controller live mode
+    10-19  : live state commands; IGN is pulsed, SRV remains open until reset
 
   Safety interlocks are enforced here as well as in the controller:
     - SRV and IGN cannot turn ON while FILL is open.
@@ -28,6 +28,8 @@
 #include <esp_now.h>
 #include <esp_wifi.h>     // esp_wifi_set_ps(), esp_wifi_get_mac()
 #include <esp_mac.h>      // esp_read_mac(), ESP_MAC_WIFI_STA
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -63,7 +65,10 @@ static constexpr uint16_t SERVO_MAX_US      = 2500;
 static constexpr uint16_t SERVO_HOME_US     = 2500; // rest/retracted position
 static constexpr uint16_t DEFAULT_OPEN_US   = 2000; // initial latched target; commands must be valid
 static constexpr uint16_t MAX_SERVO_HOLD_MS = 5000; // hard cap on test pulse time
-static constexpr uint16_t MAX_IGN_ON_MS     = 2000; // hard cap on *test* IGN pulse
+static constexpr uint16_t MAX_IGN_ON_MS     = 2000; // hard cap on test IGN pulse
+static constexpr uint16_t LIVE_IGN_PULSE_MS  = 1000; // GPIO32 HIGH duration; set before flashing
+static_assert(LIVE_IGN_PULSE_MS > 0 && LIVE_IGN_PULSE_MS <= MAX_IGN_ON_MS,
+              "LIVE ignition pulse must be 1–2000 ms");
 static constexpr uint32_t MAX_IGN_ARM_MS    = 60000;
 // ---------------------------------------------------------------------------
 
@@ -229,6 +234,8 @@ static bool validPulse(uint16_t pulseUs)
 // ---- Latched live-mode state ----------------------------------------------
 static bool     fillOpen        = false;
 static bool     srvOpen         = false;
+// A fired LIVE cycle remains latched until IGN_OFF/ALL_OFF. It does not mean
+// that GPIO32 is still HIGH after the timed pulse.
 static bool     ignOn           = false;
 static bool     ignArmed        = false;
 static uint32_t ignArmStartMs   = 0;
@@ -242,13 +249,47 @@ static void applyServoPulses()
   pwmWrite(SERVO1_PIN, SERVO1_CHANNEL, pulseToDuty(srvOpen ? srvOpenUs : SERVO_HOME_US));
 }
 
+// ESP-NOW callbacks and loop execute on different tasks. Serialize pulse
+// start/stop/timeout so a stale timeout cannot overwrite a new pulse or reset.
+static portMUX_TYPE ignPulseMux = portMUX_INITIALIZER_UNLOCKED;
+static bool liveIgnPulseActive = false;
+static uint32_t liveIgnPulseStartMs = 0;
+
+static void startLiveIgnPulse()
+{
+  portENTER_CRITICAL(&ignPulseMux);
+  liveIgnPulseStartMs = millis();
+  liveIgnPulseActive = true;
+  digitalWrite(IGN_PIN, HIGH);
+  portEXIT_CRITICAL(&ignPulseMux);
+}
+
+static void stopLiveIgnPulse()
+{
+  portENTER_CRITICAL(&ignPulseMux);
+  liveIgnPulseActive = false;
+  digitalWrite(IGN_PIN, LOW);
+  portEXIT_CRITICAL(&ignPulseMux);
+}
+
+static void serviceLiveIgnPulse()
+{
+  portENTER_CRITICAL(&ignPulseMux);
+  if (liveIgnPulseActive && (millis() - liveIgnPulseStartMs) >= LIVE_IGN_PULSE_MS)
+  {
+    liveIgnPulseActive = false;
+    digitalWrite(IGN_PIN, LOW);
+  }
+  portEXIT_CRITICAL(&ignPulseMux);
+}
+
 static void clearLatched()
 {
   fillOpen = false;
   srvOpen = false;
   ignOn = false;
   ignArmed = false;
-  digitalWrite(IGN_PIN, LOW);
+  stopLiveIgnPulse();
   applyServoPulses();
 }
 
@@ -266,8 +307,14 @@ static bool startAction(const CommandPacket &packet)
 {
   if (phase != Phase::IDLE)
   {
-    Serial.println("BUSY: command ignored");
-    return false;
+    // Safety commands must remain available even during a timed test action.
+    if (packet.cmd != CMD_IGN_OFF && packet.cmd != CMD_ALL_OFF) {
+      Serial.println("BUSY: command ignored");
+      return false;
+    }
+    phase = Phase::IDLE;
+    servo0Active = false;
+    servo1Active = false;
   }
 
   switch (packet.cmd)
@@ -277,6 +324,8 @@ static bool startAction(const CommandPacket &packet)
     case CMD_SERVO1:
     case CMD_BOTH:
     {
+      // Never clear a fired/live cycle as a side effect of a test pulse.
+      if (srvOpen || ignOn || ignArmed) return false;
       if (!validPulse(packet.servo0PulseUs) || !validPulse(packet.servo1PulseUs)) return false;
       clearLatched();
 
@@ -326,7 +375,7 @@ static bool startAction(const CommandPacket &packet)
       return true;
 
     case CMD_SV1_ON:
-      if (fillOpen || ignArmed) return false;
+      if (fillOpen || ignArmed || ignOn) return false;
       if (!validPulse(packet.servo1PulseUs)) return false;
       srvOpen = true;
       srvOpenUs = packet.servo1PulseUs;
@@ -335,6 +384,7 @@ static bool startAction(const CommandPacket &packet)
       return true;
 
     case CMD_SV1_OFF:
+      if (ignOn) return false; // fired cycle must be reset with IGN_OFF/ALL_OFF
       srvOpen = false;
       applyServoPulses();
       Serial.println("SRV CLOSED");
@@ -347,6 +397,7 @@ static bool startAction(const CommandPacket &packet)
       return false;
 
     case CMD_BOTH_OFF:
+      if (ignOn) return false;
       fillOpen = false;
       srvOpen = false;
       applyServoPulses();
@@ -376,15 +427,17 @@ static bool startAction(const CommandPacket &packet)
       applyServoPulses();
       ignArmed = false;
       ignOn = true;
-      digitalWrite(IGN_PIN, HIGH);
-      Serial.println("IGN ON + SRV OPEN (latched)");
+      startLiveIgnPulse();
+      Serial.println("IGN PULSE + SRV OPEN (until reset)");
       return true;
 
     case CMD_IGN_OFF:
       ignArmed = false;
       ignOn = false;
-      digitalWrite(IGN_PIN, LOW);
-      Serial.println("IGN OFF");
+      srvOpen = false;
+      stopLiveIgnPulse();
+      applyServoPulses();
+      Serial.println("IGN OFF + SRV CLOSED");
       return true;
 
     case CMD_ALL_OFF:
@@ -514,9 +567,12 @@ void setup()
 
 void loop()
 {
+  serviceLiveIgnPulse();
   // Keep only complete, non-empty lines; overlong or non-printable frames are
   // discarded in their entirety rather than silently truncating sensor data.
-  while (Serial2.available() > 0)
+  // Bound each iteration so a continuous UART stream cannot starve the
+  // ignition pulse timeout.
+  for (size_t bytesRead = 0; bytesRead < 256 && Serial2.available() > 0; ++bytesRead)
   {
     char c = static_cast<char>(Serial2.read());
     if (c == '\n')
@@ -558,12 +614,13 @@ void loop()
     Serial.println("Servos back at home");
   }
 
-  // Test-mode IGN pulse is time-limited; live-mode IGN stays latched until
-  // an explicit IGN OFF / ALL OFF command.
+  // Test-mode IGN pulse is time-limited. LIVE pulse timing is independent of
+  // this phase so IGN_OFF and ALL_OFF can cancel it immediately.
   if (phase == Phase::IGN_HOLD && (millis() - phaseStartMs) >= phaseDuration)
   {
     digitalWrite(IGN_PIN, LOW);
     phase = Phase::IDLE;
     Serial.println("IGN LOW");
   }
+  serviceLiveIgnPulse();
 }

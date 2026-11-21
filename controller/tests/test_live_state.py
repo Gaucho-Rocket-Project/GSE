@@ -133,8 +133,31 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual(self.state.ign_state, ON)
         self.assertTrue(self.state.srv_open, "IGN must open SRV together with ignition")
         self.assertTrue(self.state.ign_off())
-        self.assertTrue(self.state.srv_open, "IGN OFF does not close SRV")
+        self.assertFalse(self.state.srv_open, "IGN OFF must close SRV")
         self.assertEqual(self.state.ign_state, OFF)
+
+    def test_fired_cycle_stays_open_until_reset_even_after_time_passes(self):
+        self.assertTrue(self.state.ign_arm())
+        self.clock.advance(5)
+        self.state.tick()
+        self.assertTrue(self.state.ign_on())
+        self.clock.advance(100)
+        self.state.tick()
+        self.assertTrue(self.state.srv_open)
+        self.assertEqual(self.state.ign_state, ON)
+        self.assertTrue(self.state.can_ign_off)
+        self.assertFalse(self.state.can_ign_arm)
+        self.assertTrue(self.state.ign_off())
+        self.assertFalse(self.state.srv_open)
+        self.assertEqual(self.state.ign_state, OFF)
+        self.assertTrue(self.state.can_ign_arm)
+
+    def test_ign_off_remains_available_when_srv_open(self):
+        self.state.srv_open = True
+        self.assertEqual(self.state.ign_state, OFF)
+        self.assertTrue(self.state.can_ign_off)
+        self.assertTrue(self.state.ign_off())
+        self.assertFalse(self.state.srv_open)
 
     def test_manual_srv_blocked_while_arming_or_armed(self):
         self.assertTrue(self.state.ign_arm())

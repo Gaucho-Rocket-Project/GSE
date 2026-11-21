@@ -16,7 +16,7 @@ from typing import Callable, List, Tuple
 OFF = "OFF"
 ARMING = "ARMING"
 ARMED = "ARMED"
-ON = "ON"
+ON = "ON"  # LIVE firing cycle has been triggered; GPIO is a timed pulse
 
 FILL_TIME_UP = "FILL_TIME_UP"
 IGN_ARMED = "IGN_ARMED"
@@ -136,16 +136,17 @@ class LiveState:
         self.ign_state = ON
         self.srv_open = True
         self.ign_deadline = None
-        self._emit("IGN_ON", "IGN ON + SRV OPEN (latched - reset with IGN OFF)")
+        self._emit("IGN_ON", "IGN PULSE commanded + SRV OPEN (reset with IGN OFF)")
         return True
 
     def ign_off(self) -> bool:
-        if self.ign_state == OFF:
-            self._emit(REJECT, "IGN is already OFF")
+        if self.ign_state == OFF and not self.srv_open:
+            self._emit(REJECT, "IGN is already OFF and SRV CLOSED")
             return False
         self.ign_state = OFF
+        self.srv_open = False
         self.ign_deadline = None
-        self._emit("IGN_OFF", "IGN reset to OFF")
+        self._emit("IGN_OFF", "IGN reset to OFF + SRV CLOSED")
         return True
 
     # --------------------------------------------------------------- global
@@ -229,4 +230,4 @@ class LiveState:
 
     @property
     def can_ign_off(self) -> bool:
-        return self.ign_state != OFF
+        return self.ign_state != OFF or self.srv_open

@@ -19,6 +19,8 @@ the igniter disconnected and servo horns detached. The desktop displays
 optimistic commanded state, not verified output position; rejected or lost
 commands can leave it out of sync with the vehicle. A successful serial write
 or radio send is not proof of actuation. Verify behavior on hardware before use.
+Pulse timing depends on firmware running; use independent hardware timing and
+interlocks where required, and do not rely on software alone to de-energize IGN.
 
 ## Setup and wiring
 
@@ -76,10 +78,15 @@ the desktop must be connected and running to capture data.
 See [controller/README.md](controller/README.md) for installation and operation.
 In LIVE, there are no manual SRV controls; SRV opens only when IGN is triggered.
 FILL must be closed before IGN, and IGN arming requires both servos closed. Once the IGN
-countdown completes, `IGN_ON` opens SRV to the commanded pulse **and** latches
-IGN on in one vehicle-side command, after validating the interlocks, countdown,
-and pulse range. `IGN_OFF` resets ignition but leaves SRV open; use `ALL_OFF`
-to close it in LIVE. FILL remains open at its timer expiration until
+countdown completes, `IGN_ON` opens SRV to the commanded position and starts a
+single active-high GPIO32 pulse in one vehicle-side command, after validating
+the interlocks, countdown, and servo pulse range. `LIVE_IGN_PULSE_MS` in
+`vehicle/vehicle.ino` controls the pulse length (1000 ms by default; 1–2000 ms).
+GPIO32 returns LOW at pulse end, but SRV stays commanded open until `IGN_OFF`
+(IGN OFF / RESET) or `ALL_OFF` is received. Either command also stops a pulse
+in progress. The UI shows `FIRED` until reset; this is commanded state, not a
+GPIO or servo readback. Test-servo and manual SRV commands are rejected during
+a fired cycle; `ALL_OFF` remains an emergency close. FILL remains open at its timer expiration until
 manually closed. The combined-servo controls are TEST-only; test pulse `3`
 remains available there.
 
@@ -88,7 +95,8 @@ Ground accepts one line per USB command at 115200 baud: `1`, `2`, `3`, `4`,
 `IGN_OFF`, `ALL_OFF`, `PING`. The desktop adds `:<fill_us>,<srv_us>` to servo
 actuation commands and `IGN_ON`, e.g. `IGN_ON:500,1500`; ground validates both
 values and embeds them in the existing command packet. Unadorned commands use
-the last targets (1800 µs after ground boot). Command and ACK packets use CRC and MAC
+the last targets (1800 µs after ground boot). LIVE ignition pulse duration is
+configured on the vehicle, not by the command packet. Command and ACK packets use CRC and MAC
 checks, not encryption. `SV1_ON` remains available over the raw serial protocol
 for TEST and bypasses the desktop's LIVE-only restriction; the firmware does not
 track desktop mode, so do not use raw commands as a LIVE safety interlock. The
