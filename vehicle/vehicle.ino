@@ -15,11 +15,8 @@
     - FILL cannot open while SRV is open or IGN is armed/on.
     - IGN ON is rejected until the arm countdown has elapsed.
 
-  Servos are the DS3225 digital servos (270 degree version) from the 52Pi
-  D-0001 wiki:
+  Servos are the DS3225 digital servos from the 52Pi D-0001 wiki:
     4.8-6.8 V supply, 500-2500 us pulse, 50-330 Hz, up to 2.9 A stall each.
-    500-2500 us spans ~270 deg, so ~7.4 us per degree; 90 deg from home
-    (2500 us) is ~1833 us.
     Power them from a separate BEC (>= 6 A peak for two servos) and connect
     the BEC ground to the ESP32 ground. Never power them from the ESP32 5 V pin.
 

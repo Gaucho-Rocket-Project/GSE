@@ -25,7 +25,6 @@ from PySide6.QtSerialPort import QSerialPort, QSerialPortInfo
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -44,21 +43,6 @@ from telemetry import TelemetryLog, parse_telemetry
 from live_state import ARMED, ARMING, FILL_TIME_UP, IGN_ARMED, OFF, ON, REJECT, LiveState
 
 BAUD = 115200
-
-# Servo geometry: DS3225 270-degree version. The vehicle firmware parks both
-# servos at SERVO_HOME_US (closed); the open target is entered as degrees of
-# travel away from that home position and converted to a pulse width here.
-SERVO_HOME_US = 2500
-SERVO_MIN_US = 500
-SERVO_RANGE_DEG = 270.0
-US_PER_DEG = (SERVO_HOME_US - SERVO_MIN_US) / SERVO_RANGE_DEG  # ~7.41 us/deg
-DEFAULT_OPEN_DEG = 86.4  # = 1860 us, the previous default target
-
-
-def degrees_to_us(degrees: float) -> int:
-    """Open angle in degrees from closed (home) -> servo pulse width in us."""
-    degrees = min(max(degrees, 0.0), SERVO_RANGE_DEG)
-    return int(round(SERVO_HOME_US - degrees * US_PER_DEG))
 
 
 def mmss(seconds: float | None) -> str:
@@ -94,20 +78,6 @@ class MainWindow(QWidget):
         self.update_view()
 
     # ------------------------------------------------------------------- UI
-    def _make_target_box(self) -> tuple[QDoubleSpinBox, QLabel]:
-        """Degree entry for one servo plus a label showing the pulse it sends."""
-        box = QDoubleSpinBox()
-        box.setDecimals(1)
-        box.setSingleStep(1.0)
-        box.setRange(0.0, SERVO_RANGE_DEG)
-        box.setSuffix("°")
-        us_label = QLabel()
-        us_label.setMinimumWidth(70)
-        box.valueChanged.connect(lambda v: us_label.setText(f"= {degrees_to_us(v)} µs"))
-        box.setValue(DEFAULT_OPEN_DEG)
-        us_label.setText(f"= {degrees_to_us(box.value())} µs")
-        return box, us_label
-
     def build_ui(self) -> None:
         self.setWindowTitle("Rocket Ground Controller - ESP-NOW")
         self.setMinimumWidth(720)
@@ -123,7 +93,7 @@ class MainWindow(QWidget):
             QPushButton#go { background: #153c2e; border-color: #378a60; }
             QPushButton#warn { background: #4b3215; border-color: #b87926; }
             QPushButton#danger { background: #59211f; border-color: #b74139; }
-            QComboBox, QSpinBox, QDoubleSpinBox { background: #151a1e; border: 1px solid #525b62; padding: 4px; color: #ffaf36; }
+            QComboBox, QSpinBox { background: #151a1e; border: 1px solid #525b62; padding: 4px; color: #ffaf36; }
             QPlainTextEdit { background: #050708; border: 1px solid #41474d; color: #d4dadc; font: 12px monospace; }
             """
         )
@@ -201,15 +171,17 @@ class MainWindow(QWidget):
         cfg.addStretch()
         root.addLayout(cfg)
         targets = QHBoxLayout()
-        targets.addWidget(QLabel("SERVO TARGETS  /  ° open from closed"))
-        self.fill_target, self.fill_us_label = self._make_target_box()
+        targets.addWidget(QLabel("SERVO TARGETS  /  µs"))
+        self.fill_target = QSpinBox()
+        self.fill_target.setRange(500, 2500)
+        self.fill_target.setValue(1860)
         targets.addWidget(QLabel("FILL"))
         targets.addWidget(self.fill_target)
-        targets.addWidget(self.fill_us_label)
-        self.srv_target, self.srv_us_label = self._make_target_box()
+        self.srv_target = QSpinBox()
+        self.srv_target.setRange(500, 2500)
+        self.srv_target.setValue(1860)
         targets.addWidget(QLabel("SRV"))
         targets.addWidget(self.srv_target)
-        targets.addWidget(self.srv_us_label)
         targets.addWidget(QLabel("Applied on next actuation"))
         targets.addStretch()
         root.addLayout(targets)
@@ -355,9 +327,7 @@ class MainWindow(QWidget):
             self.flash_status("NO LINK - command not sent", "#e67e22")
             return False
         if command in ("1", "2", "3", "SV0_ON", "SV1_ON", "IGN_ON"):
-            fill_us = degrees_to_us(self.fill_target.value())
-            srv_us = degrees_to_us(self.srv_target.value())
-            command = f"{command}:{fill_us},{srv_us}"
+            command = f"{command}:{self.fill_target.value()},{self.srv_target.value()}"
         self.serial.write((command + "\n").encode("ascii"))
         self.log(f"TX  {command}")
         return True

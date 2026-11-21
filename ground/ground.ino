@@ -18,15 +18,6 @@
       ALL_OFF            force both servos closed and IGN off
       PING               replies PONG
 
-    Optional servo targets on any command: COMMAND:<fill_us>,<srv_us>
-      e.g. SV0_ON:1833,1833
-
-  Servo targets here are in microseconds (500-2500), NOT degrees.
-  For the 270 degree DS3225, closed/home is 2500 us and:
-      us = 2500 - degrees * 7.41      (90 deg = 1833 us)
-  The desktop app accepts degrees and converts them before sending, so only
-  raw commands typed into the Serial Monitor need to be in us.
-
   The desktop controller binary sends these same commands. Every ESP-NOW
   command is answered by the vehicle with ACK <token> <cmd> <accepted>.
 
