@@ -36,7 +36,8 @@ or radio send is not proof of actuation. Verify behavior on hardware before use.
    do not power them from the ESP32 5 V pin. Common the BEC, driver, telemetry
    source, and ESP32 grounds. Check 3.3 V signal compatibility and mechanical
    endpoints. Home is 2500 µs in vehicle firmware; the desktop open targets
-   default to 1860 µs and can be set independently from 500–2500 µs. Calibrate
+   are entered in degrees from closed (0–270° for the 270° DS3225, converted
+   to 2500–500 µs), default to 86.4° (1860 µs), and are set independently. Calibrate
    before attaching the mechanism. Changing a target affects the next command,
    not an already-open servo.
 5. Connect telemetry source TX to vehicle RX2 GPIO16; connect source RX to

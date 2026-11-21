@@ -7,9 +7,42 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 try:
     from PySide6.QtWidgets import QApplication
-    from ground_controller import MainWindow
+    from ground_controller import MainWindow, degrees_to_us
 except ImportError:
     QApplication = None
+
+
+@unittest.skipUnless(QApplication, "PySide6 or native Qt libraries not installed")
+class DegreeTargetTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_degrees_to_us_270_servo(self):
+        self.assertEqual(degrees_to_us(0), 2500)       # closed / home
+        self.assertEqual(degrees_to_us(90), 1833)
+        self.assertEqual(degrees_to_us(86.4), 1860)    # previous default
+        self.assertEqual(degrees_to_us(270), 500)
+        self.assertEqual(degrees_to_us(-5), 2500)      # clamped
+        self.assertEqual(degrees_to_us(300), 500)      # clamped
+
+    def test_send_appends_targets_converted_to_us(self):
+        window = MainWindow()
+        written = []
+        class FakeSerial:
+            def isOpen(self):
+                return True
+            def write(self, data):
+                written.append(data.decode("ascii"))
+        window.serial = FakeSerial()
+        self.assertEqual(window.fill_us_label.text(), "= 1860 µs")
+        window.fill_target.setValue(90)
+        window.srv_target.setValue(45)
+        self.assertEqual(window.fill_us_label.text(), "= 1833 µs")
+        window.send("SV0_ON")
+        window.send("SV0_OFF")
+        self.assertEqual(written, ["SV0_ON:1833,2167\n", "SV0_OFF\n"])
+        window.close()
 
 
 @unittest.skipUnless(QApplication, "PySide6 or native Qt libraries not installed")

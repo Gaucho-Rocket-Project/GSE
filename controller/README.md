@@ -25,9 +25,12 @@ working directory unless `GSE_DATA_DIR` is set.
    checks the USB bridge, not the vehicle radio or output state.
 2. Open the **TELEMETRY** panel to see recent records live; closing it does not
    stop recording. CSV is appended in `data/telemetry.csv`; see root README.
-3. Set FILL and SRV open targets in microseconds (500–2500). These values are
-   sent with the next actuation, including SRV opening on ignition. Set and
-   verify endpoints with horns detached.
+3. Set FILL and SRV open targets in degrees of travel from closed (0–270°,
+   for the 270° DS3225). The app converts them to a pulse width
+   (`µs = 2500 − degrees × 7.41`, shown next to each box; 90° = 1833 µs) and
+   sends that with the next actuation, including SRV opening on ignition.
+   Degrees assume a linear 270° servo; set and verify endpoints with horns
+   detached.
 4. TEST retains individual FILL/SRV controls, combined pulse/close, and IGN
    pulse/reset. LIVE hides the SRV and combined-servo control rows; ALL OFF
    remains available. LIVE opens SRV only through IGN ON.
